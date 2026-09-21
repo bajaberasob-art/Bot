@@ -16,3 +16,6 @@ description: Non-obvious decisions behind the guild-settings persistence, dashbo
   **Why:** rerendering from a stale registry snapshot makes a successful save appear to revert aliases and policy controls.
 - Chip editors must include valid text still pending in the input when the save button is clicked, and successful saves should keep the detail drawer open.
   **Why:** mobile users commonly save without pressing Enter, and closing/reloading the drawer made a successful mutation look like a reset.
+- The dashboard cookie uses a sliding expiry on authenticated `/api/me` requests, but the authoritative session store remains process-local.
+  **Why:** refreshing the browser lifetime improves long-running dashboard use without pretending that an in-memory OAuth session survives a bot process restart.
+  **How to apply:** preserve the server-side expiry check and do not describe cookie renewal as restart persistence; use the existing publishing/login follow-up for cross-restart auth.
