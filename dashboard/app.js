@@ -477,15 +477,20 @@
     settings: { label: "الإعدادات", icon: "⚙", hint: "Configuration" },
     system: { label: "النظام", icon: "⌁", hint: "Runtime" },
   };
-  function navigateView(view) {
-    if (!viewLabels[view]) return;
-    state.activeView = view;
-    state.drawerOpen = false;
-    sessionStorage.setItem("dashboard-view", view);
+  function closeMobileMoreMenus() {
     document.querySelectorAll(".mobile-more-menu").forEach((menu) => {
       menu.hidden = true;
       menu.parentElement?.querySelector('[aria-expanded="true"]')?.setAttribute("aria-expanded", "false");
     });
+  }
+  function navigateView(view) {
+    if (!viewLabels[view]) return;
+    state.activeView = view;
+    sessionStorage.setItem("dashboard-view", view);
+    // Close the live drawer before rendering the next view. Setting the state
+    // alone leaves the existing sidebar class and scrim in the DOM.
+    closeMobileMoreMenus();
+    toggleDrawer(false);
     document.querySelectorAll("[data-nav-view]").forEach((item) => {
       item.classList.toggle("active", item.dataset.navView === view);
       item.setAttribute("aria-current", item.dataset.navView === view ? "page" : "false");
@@ -499,6 +504,7 @@
     $(".drawer-scrim")?.classList.toggle("show", state.drawerOpen);
     document.body.classList.toggle("drawer-visible", state.drawerOpen);
     $(".menu-toggle")?.setAttribute("aria-expanded", String(state.drawerOpen));
+    $(".workspace-nav")?.setAttribute("aria-hidden", String(!state.drawerOpen));
     navigator.vibrate?.(12);
   }
   function openCommandPalette() {

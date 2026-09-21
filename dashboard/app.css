@@ -7634,6 +7634,166 @@ textarea:focus {
   }
 }
 
+/* Mobile navigation v2: a focused command sheet instead of a cramped side rail. */
+@media (max-width: 720px) {
+  body.drawer-visible {
+    overflow: hidden;
+  }
+
+  .drawer-scrim {
+    z-index: 45;
+    background:
+      radial-gradient(circle at 50% 8%, #2854a033, transparent 42%),
+      #02050bcc;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  .workspace-nav {
+    top: 74px;
+    right: 10px;
+    bottom: calc(84px + env(safe-area-inset-bottom));
+    left: 10px;
+    z-index: 60;
+    width: auto;
+    min-height: 0;
+    max-height: none;
+    padding: 18px 14px 14px;
+    border-color: #315fa0;
+    border-radius: 24px;
+    background:
+      radial-gradient(circle at 100% 0, #536dff2e, transparent 38%),
+      radial-gradient(circle at 0 100%, #06b6d41c, transparent 42%),
+      linear-gradient(145deg, #0b1426f7, #050a14f8);
+    box-shadow:
+      0 28px 70px #000e,
+      inset 0 1px #ffffff16,
+      0 0 38px #4169e438;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-12px) scale(.97);
+    transition: opacity .2s ease, transform .2s ease;
+    overscroll-behavior: contain;
+  }
+
+  .workspace-nav.drawer-open {
+    display: flex;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+  }
+
+  .workspace-nav-head {
+    padding: 4px 8px 15px;
+    text-align: right;
+  }
+
+  .workspace-nav-head strong {
+    margin-top: 5px;
+    font-size: 20px;
+    letter-spacing: -.03em;
+  }
+
+  .workspace-nav-head small {
+    font-size: 10px;
+  }
+
+  .nav-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-content: start;
+    gap: 8px;
+    min-height: 0;
+    padding: 15px 0;
+    overflow: auto;
+    scrollbar-width: thin;
+  }
+
+  .workspace-nav .nav-item {
+    min-height: 67px;
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 5px;
+    padding: 9px 6px;
+    border-color: #1c3150;
+    border-radius: 15px;
+    background: #0a1729b8;
+    text-align: center;
+  }
+
+  .workspace-nav .nav-item:hover {
+    transform: translateY(-1px);
+    background: #10233d;
+  }
+
+  .workspace-nav .nav-item.active {
+    border-color: #7187ff;
+    background: linear-gradient(145deg, #4533a8d9, #18285ce8);
+    box-shadow: inset 0 1px #ffffff2a, 0 0 22px #5c68ff42;
+  }
+
+  .workspace-nav .nav-icon {
+    width: 27px;
+    height: 27px;
+    border-radius: 9px;
+    font-size: 14px;
+  }
+
+  .workspace-nav .nav-copy {
+    justify-items: center;
+    gap: 1px;
+  }
+
+  .workspace-nav .nav-copy b {
+    font-size: 11px;
+    line-height: 1.2;
+  }
+
+  .workspace-nav .nav-copy small {
+    color: #8da1bf;
+    font-size: 8px;
+    line-height: 1.2;
+  }
+
+  .workspace-nav-foot {
+    flex: none;
+    margin-top: 0;
+    padding: 11px 8px 2px;
+    font-size: 9px;
+  }
+
+  .mobile-nav-wrap {
+    z-index: 30;
+    transition: opacity .18s ease, transform .18s ease;
+  }
+
+  body.drawer-visible .mobile-nav-wrap {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(18px);
+  }
+
+  .mobile-nav {
+    min-height: 66px;
+    gap: 5px;
+    padding: 6px;
+    border-radius: 21px;
+    background: #081323f2;
+  }
+
+  .mobile-nav .nav-item {
+    min-height: 52px;
+    border-radius: 14px;
+  }
+
+  .mobile-nav .nav-item.active {
+    border-color: #6d8dff;
+    background: linear-gradient(145deg, #285fa8, #182e68);
+    box-shadow: inset 0 1px #ffffff2a, 0 0 18px #397be855;
+  }
+}
+
 /* PR1ME Team overview: live operational Bento surface */
 .dashboard-bento-section {
   display: grid;
