@@ -7,4 +7,4 @@ The Replit development workspace runs the Vite PRIME dashboard on 8099, so the P
 
 **Why:** Both services previously attempted to bind 8099, causing the bot to retry startup, leak client sessions, and leave the Python health probe unavailable even though the Vite preview was responding.
 
-**How to apply:** Preserve the local `DASHBOARD_PORT=8098` split when running the multi-workflow Replit workspace. Do not carry that fallback into Koyeb; production `PORT` must remain authoritative.
+**How to apply:** Preserve the local `DASHBOARD_PORT=8098` split when running the multi-workflow Replit workspace. Do not carry that fallback into Koyeb; production `PORT` must remain authoritative. If the bot is restarted with a changed local port, restart the API proxy in the same cycle so it rereads `DASHBOARD_PORT`; otherwise `/api/dashboard/` returns 502 while the bot itself is healthy.
