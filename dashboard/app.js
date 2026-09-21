@@ -117,6 +117,10 @@
     activeView: sessionStorage.getItem("dashboard-view") || "overview",
     drawerOpen: false,
   };
+  // Public lookup maps keep Discord snowflakes out of labels while preserving
+  // the string IDs used by every existing API form and handler.
+  window.guildChannels = Object.create(null);
+  window.guildRoles = Object.create(null);
   let deferredInstallPrompt = null;
   let installBanner = null;
 
@@ -697,7 +701,7 @@
   }
   function multiSettingSelect(key, label, type, hint = "") {
     const choices =
-      type === "channel" ? state.meta?.channels || [] : state.meta?.roles || [];
+      type === "channel" ? Object.values(window.guildChannels) : Object.values(window.guildRoles);
     const selected = new Set(
       (Array.isArray(state.draft[key]) ? state.draft[key] : []).map(String),
     );
@@ -801,10 +805,10 @@
     wrap.append(b, pop);
     let choices =
         type === "channel"
-          ? state.meta.channels
+          ? Object.values(window.guildChannels)
           : type === "sticker"
             ? state.meta.stickers || []
-            : state.meta.roles,
+            : Object.values(window.guildRoles),
       active = 0;
     const value = () => state.draft[key];
     const nameFor = (id) =>
@@ -848,10 +852,10 @@
     function build() {
       choices =
         type === "channel"
-          ? state.meta.channels
+          ? Object.values(window.guildChannels)
           : type === "sticker"
             ? state.meta.stickers || []
-            : state.meta.roles;
+            : Object.values(window.guildRoles);
       const q = search.value.trim().toLowerCase();
       list.replaceChildren();
       const add = (x, txt, group) => {
@@ -1432,7 +1436,25 @@
     return wrap;
   }
   function roleName(id) {
-    return state.meta?.roles?.find((role) => String(role.id) === String(id))?.name || "بدون رتبة";
+    return window.guildRoles[String(id)]?.name || "بدون رتبة";
+  }
+  function channelName(id) {
+    return window.guildChannels[String(id)]?.name || "بدون قناة";
+  }
+  function applyGuildMeta(meta) {
+    const normalized = {
+      ...(meta || {}),
+      channels: Array.isArray(meta?.channels) ? meta.channels : [],
+      roles: Array.isArray(meta?.roles) ? meta.roles : [],
+    };
+    window.guildChannels = Object.fromEntries(
+      normalized.channels.map((channel) => [String(channel.id), channel]),
+    );
+    window.guildRoles = Object.fromEntries(
+      normalized.roles.map((role) => [String(role.id), role]),
+    );
+    state.meta = normalized;
+    return normalized;
   }
   function normalizePanelColor(value) {
     return /^#[0-9a-f]{6}$/i.test(String(value || "")) ? String(value) : "#5865f2";
@@ -5400,7 +5422,8 @@
       emojis: [],
     });
     if (state.guild?.id !== id) return meta;
-    state.meta = meta;
+    applyGuildMeta(meta);
+    if (meta.stats) state.stats = meta.stats;
     state.commandStudio = {
       ...(state.commandStudio || {}),
       roles: meta.roles || [],
@@ -5556,7 +5579,7 @@
         broadcastHistory,
       ] = urls.map((_, index) => payload(index));
       if (state.guild.id !== id) return;
-      state.meta = meta;
+      applyGuildMeta(meta);
       state.broadcast.history = broadcastHistory.history || [];
       state.commandStudio = {
         commands: commands.commands || [],
@@ -5591,7 +5614,7 @@
       state.whitelist = incidents.whitelist || [];
       state.lockdown = Boolean(incidents.locked);
       state.protectedChannels = incidents.protected_channels || [];
-      state.stats = stats;
+      state.stats = stats?.counts ? stats : meta.stats || stats;
       state.actions = actions.actions || [];
       state.gaming = gaming.scrims || [];
       state.clanOps = {

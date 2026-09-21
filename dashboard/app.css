@@ -1,5 +1,5 @@
 :root {
-  --bg: #000;
+  --bg: #05070B;
   --surface: #0a0e17;
   --surface-2: #111827;
   --line: #1e293b;
@@ -23,13 +23,13 @@
   box-sizing: border-box;
 }
 html {
-  background: #000;
+  background: #05070B;
   scroll-behavior: smooth;
 }
 body {
   margin: 0;
   min-width: 320px;
-  background: #000;
+  background: #05070B;
   min-height: 100dvh;
 }
 button,
@@ -6532,9 +6532,9 @@ body {
    ================================================================ */
 :root {
   /* True AMOLED surfaces */
-  --bg-pitch: #04060A;
+  --bg-pitch: #05070B;
   --bg-surface: #080D1A;
-  --bg-card: rgba(13, 19, 33, 0.75);
+  --bg-card: rgba(13, 19, 33, 0.72);
   --bg-card-hover: rgba(19, 27, 46, 0.85);
   --border-subtle: rgba(255, 255, 255, 0.08);
   --border-active: rgba(99, 102, 241, 0.4);
@@ -6586,8 +6586,8 @@ body {
 
 body {
   background:
-    radial-gradient(circle at 88% -12%, rgba(99, 102, 241, .16), transparent 30rem),
-    radial-gradient(circle at 10% 40%, rgba(139, 92, 246, .07), transparent 24rem),
+    radial-gradient(circle at 88% -12%, rgba(99, 102, 241, .14), transparent 30rem),
+    radial-gradient(circle at 10% 40%, rgba(139, 92, 246, .06), transparent 24rem),
     var(--bg-pitch);
 }
 
@@ -6997,6 +6997,34 @@ textarea:focus {
 .mobile-nav .nav-item.active .nav-icon {
   color: var(--accent-prime);
   filter: drop-shadow(0 0 8px var(--accent-prime));
+}
+
+/* Keep the shell readable on narrow screens without changing the existing
+   navigation hooks or the fixed mobile dock contract. */
+.mobile-nav-wrap {
+  z-index: 60;
+}
+
+@media (max-width: 720px) {
+  .app {
+    padding-bottom: calc(128px + env(safe-area-inset-bottom));
+  }
+
+  .page {
+    max-width: 100%;
+  }
+
+  .overview-view,
+  .overview-columns,
+  .overview-metrics {
+    min-width: 0;
+  }
+
+  .overview-metric,
+  .overview-panel,
+  .overview-hero {
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .62), inset 0 1px rgba(255, 255, 255, .06);
+  }
 }
 
 @media (max-width: 992px) {
