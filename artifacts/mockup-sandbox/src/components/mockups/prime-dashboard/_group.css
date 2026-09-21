@@ -1,0 +1,700 @@
+@import url("https://fonts.googleapis.com/css2?family=Cairo:wght@500;600;700;800;900&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap");
+
+.prime-preview {
+  --prime-bg: #03070d;
+  --prime-surface: #07111e;
+  --prime-surface-2: #0a1b2d;
+  --prime-line: #183757;
+  --prime-line-soft: #112b46;
+  --prime-copy: #f4f9ff;
+  --prime-muted: #7895b2;
+  --prime-cyan: #5fc9ff;
+  --prime-green: #59e8bb;
+  --prime-red: #ff8296;
+  --prime-purple: #c6aeff;
+  min-height: 100vh;
+  box-sizing: border-box;
+  direction: rtl;
+  color: var(--prime-copy);
+  background:
+    radial-gradient(circle at 12% 0%, #0b2540 0, transparent 32rem),
+    radial-gradient(circle at 100% 12%, #092338 0, transparent 29rem),
+    var(--prime-bg);
+  font-family: "Cairo", "IBM Plex Sans Arabic", system-ui, sans-serif;
+}
+
+.prime-preview *,
+.prime-preview *::before,
+.prime-preview *::after {
+  box-sizing: border-box;
+}
+
+.prime-preview button {
+  font: inherit;
+}
+
+.prime-shell {
+  width: min(100%, 1160px);
+  margin: 0 auto;
+  padding: 22px 24px 34px;
+}
+
+.prime-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.prime-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  text-align: right;
+}
+
+.prime-brand-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #2678a5;
+  border-radius: 13px;
+  color: #d9f5ff;
+  background: linear-gradient(145deg, #10456b, #071b31);
+  box-shadow: 0 0 24px #0286c52b, inset 0 1px #ffffff1f;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: -.12em;
+}
+
+.prime-brand strong,
+.prime-brand small {
+  display: block;
+}
+
+.prime-brand strong {
+  color: #f2f8ff;
+  font-size: 14px;
+  letter-spacing: .04em;
+}
+
+.prime-brand small {
+  margin-top: 2px;
+  color: #6483a5;
+  font-size: 9px;
+  letter-spacing: .1em;
+  direction: ltr;
+  text-align: right;
+}
+
+.prime-preview-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid #185d78;
+  border-radius: 999px;
+  color: #74e6ff;
+  background: #062436;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.prime-preview-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #49e6bd;
+  box-shadow: 0 0 12px #49e6bd;
+}
+
+.prime-hero {
+  position: relative;
+  min-height: 238px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 24px;
+  overflow: hidden;
+  padding: 29px 29px 23px;
+  border: 1px solid #15528a;
+  border-radius: 21px;
+  background: linear-gradient(180deg, #081a30f0, #06101e 72%), #06111e;
+  box-shadow: inset 0 1px #ffffff12, 0 18px 36px #0009, 0 0 25px #0876c52b;
+}
+
+.prime-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: .9;
+  background:
+    linear-gradient(142deg, transparent 0 59%, #1e74ac20 59.2% 59.7%, transparent 60%),
+    linear-gradient(28deg, transparent 0 69%, #28b9da17 69.2% 69.7%, transparent 70%),
+    radial-gradient(ellipse at 87% 110%, #08769d3c, transparent 40%);
+  pointer-events: none;
+}
+
+.prime-hero-art {
+  position: absolute;
+  inset: auto 0 0;
+  height: 104px;
+  opacity: .76;
+  background:
+    linear-gradient(145deg, transparent 0 24%, #092745 24.2% 38%, transparent 38.2%),
+    linear-gradient(35deg, transparent 0 42%, #0a3151 42.2% 55%, transparent 55.2%),
+    linear-gradient(160deg, transparent 0 58%, #08223c 58.2% 76%, transparent 76.2%);
+  clip-path: polygon(0 100%, 0 64%, 14% 40%, 23% 62%, 36% 18%, 48% 63%, 61% 30%, 74% 65%, 86% 42%, 100% 64%, 100% 100%);
+  pointer-events: none;
+}
+
+.prime-hero-copy,
+.prime-hero-status {
+  position: relative;
+  z-index: 1;
+}
+
+.prime-eyebrow {
+  color: var(--prime-cyan);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+
+.prime-hero h1 {
+  margin: 10px 0 7px;
+  color: #f5f9ff;
+  font-size: clamp(27px, 4vw, 44px);
+  line-height: 1.17;
+  letter-spacing: -.045em;
+}
+
+.prime-hero p {
+  max-width: 500px;
+  margin: 0;
+  color: #9bb5d4;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.prime-hero-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--prime-green);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.prime-hero-meta small {
+  color: #7892b2;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.prime-status-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--prime-green);
+  box-shadow: 0 0 13px var(--prime-green);
+}
+
+.prime-hero-status {
+  min-width: 174px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  padding: 13px;
+  border: 1px solid #1d4d70;
+  border-radius: 15px;
+  background: #061426d9;
+}
+
+.prime-hero-status strong,
+.prime-hero-status small {
+  display: block;
+}
+
+.prime-hero-status strong {
+  color: #eaf8ff;
+  font-size: 12px;
+}
+
+.prime-hero-status small {
+  margin-top: 4px;
+  color: #7f9dbd;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.prime-shield {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #1b6b9b;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #0d4268, #0a253e);
+}
+
+.prime-shield::before,
+.prime-health-icon::before {
+  content: "";
+  width: 15px;
+  height: 17px;
+  border: 2px solid #51dfff;
+  border-radius: 7px 7px 9px 9px;
+  clip-path: polygon(50% 0, 100% 17%, 91% 71%, 50% 100%, 9% 71%, 0 17%);
+}
+
+.prime-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 10px;
+}
+
+.prime-metric,
+.prime-panel {
+  border: 1px solid var(--prime-line);
+  background: linear-gradient(145deg, #091a2a, #06101b);
+  box-shadow: inset 0 1px #ffffff08, 0 11px 27px #0006;
+}
+
+.prime-metric {
+  position: relative;
+  min-height: 112px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 16px 14px;
+  border-radius: 14px;
+}
+
+.prime-metric::before {
+  content: attr(data-icon);
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+  background: #ffffff06;
+  font-size: 11px;
+}
+
+.prime-metric-blue { color: #65cbff; }
+.prime-metric-red { color: #ff7790; }
+.prime-metric-purple { color: #bc9cff; }
+.prime-metric-green { color: #52e7b7; }
+
+.prime-metric-label {
+  padding-left: 30px;
+  color: #d6e5f6;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.prime-metric strong {
+  color: #f7fbff;
+  font-size: 27px;
+  letter-spacing: -.04em;
+}
+
+.prime-metric-blue strong { color: #64ccff; }
+.prime-metric-red strong { color: #ff8fa2; }
+.prime-metric-purple strong { color: #c6aeff; }
+.prime-metric-green strong { color: #59e8bb; }
+
+.prime-metric small {
+  color: #7691af;
+  font-size: 9px;
+}
+
+.prime-panel {
+  padding: 17px;
+  border-radius: 16px;
+}
+
+.prime-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.prime-panel-heading h2 {
+  margin: 0;
+  color: #edf6ff;
+  font-size: 16px;
+}
+
+.prime-text-link {
+  border: 0;
+  padding: 0;
+  color: #4dbcf6;
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.prime-services {
+  margin-top: 10px;
+}
+
+.prime-service-list,
+.prime-health-list {
+  display: grid;
+  gap: 7px;
+}
+
+.prime-service-row {
+  width: 100%;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 37px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  border: 1px solid var(--prime-line-soft);
+  border-radius: 11px;
+  color: #f5f9ff;
+  background: linear-gradient(90deg, #0a2035, #0b192a);
+  text-align: right;
+  cursor: pointer;
+  transition: .18s ease;
+}
+
+.prime-service-row:hover,
+.prime-service-row:focus-visible {
+  transform: translateX(-2px);
+  border-color: #2d8bc4;
+  background: #0c2841;
+}
+
+.prime-service-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #24577d;
+  border-radius: 9px;
+  color: #72ceff;
+  background: #0d2c48;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.prime-service-row strong,
+.prime-service-row small {
+  display: block;
+}
+
+.prime-service-row strong {
+  color: #e7f1ff;
+  font-size: 11px;
+}
+
+.prime-service-row small {
+  margin-top: 3px;
+  color: #7795b4;
+  font-size: 9px;
+}
+
+.prime-service-chevron {
+  color: #64c8ff;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.prime-lower-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.prime-activity-row {
+  min-height: 59px;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 0;
+  border-bottom: 1px solid #122b44;
+}
+
+.prime-activity-row:last-child,
+.prime-health-row:last-child {
+  border-bottom: 0;
+}
+
+.prime-activity-icon,
+.prime-health-icon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: #0d2c48;
+}
+
+.prime-activity-icon::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #42d9e8;
+  box-shadow: 0 0 10px #42d9e8;
+}
+
+.prime-activity-icon.red::before {
+  background: #ff6d84;
+  box-shadow: 0 0 10px #ff6d84;
+}
+
+.prime-activity-row strong,
+.prime-activity-row small,
+.prime-health-row strong,
+.prime-health-row small {
+  display: block;
+}
+
+.prime-activity-row strong {
+  overflow: hidden;
+  color: #e4effd;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prime-activity-row small,
+.prime-health-row small {
+  overflow: hidden;
+  margin-top: 3px;
+  color: #7795b4;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prime-activity-row time {
+  color: #6f8ca9;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.prime-health-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 57px;
+  border-bottom: 1px solid #122b44;
+}
+
+.prime-health-icon {
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+  background: #073e40;
+}
+
+.prime-health-icon::before {
+  width: 11px;
+  height: 12px;
+  border-width: 1px;
+  border-color: #4ae6c5;
+}
+
+.prime-health-icon::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #081a2a;
+  border-radius: 50%;
+  background: #18d9a0;
+}
+
+.prime-health-row strong {
+  color: #e2effd;
+  font-size: 10px;
+}
+
+.prime-health-state {
+  color: #45dbb1;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.prime-notice {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #1b4564;
+  border-radius: 11px;
+  color: #8eabc6;
+  background: #071827;
+  font-size: 9px;
+  line-height: 1.65;
+}
+
+.prime-bottom-nav {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .prime-shell {
+    max-width: 520px;
+    padding: 15px 12px 86px;
+  }
+
+  .prime-topbar {
+    margin-bottom: 12px;
+  }
+
+  .prime-brand-mark {
+    width: 37px;
+    height: 37px;
+    border-radius: 11px;
+    font-size: 14px;
+  }
+
+  .prime-brand strong {
+    font-size: 12px;
+  }
+
+  .prime-brand small {
+    font-size: 8px;
+  }
+
+  .prime-preview-badge {
+    padding: 7px 9px;
+    font-size: 9px;
+  }
+
+  .prime-hero {
+    min-height: 230px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 13px;
+    padding: 22px 17px 15px;
+    border-radius: 17px;
+  }
+
+  .prime-hero h1 {
+    margin-top: 8px;
+    font-size: clamp(27px, 8vw, 36px);
+  }
+
+  .prime-hero p {
+    max-width: 310px;
+    font-size: 11px;
+  }
+
+  .prime-hero-status {
+    width: fit-content;
+    min-width: 162px;
+    justify-self: start;
+  }
+
+  .prime-metrics {
+    gap: 7px;
+  }
+
+  .prime-metric {
+    min-height: 96px;
+    padding: 12px 10px;
+    border-radius: 12px;
+  }
+
+  .prime-metric-label {
+    padding-left: 22px;
+    font-size: 9px;
+  }
+
+  .prime-metric strong {
+    font-size: 22px;
+  }
+
+  .prime-metric small {
+    font-size: 8px;
+  }
+
+  .prime-metric::before {
+    top: 9px;
+    left: 8px;
+    width: 19px;
+    height: 19px;
+    font-size: 9px;
+  }
+
+  .prime-lower-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .prime-panel {
+    padding: 13px;
+    border-radius: 14px;
+  }
+
+  .prime-bottom-nav {
+    position: fixed;
+    right: 12px;
+    bottom: 10px;
+    left: 12px;
+    z-index: 10;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid #194568;
+    border-radius: 17px;
+    background: #061322eF;
+    box-shadow: 0 14px 30px #000b, inset 0 1px #ffffff10;
+    backdrop-filter: blur(16px);
+  }
+
+  .prime-bottom-nav button {
+    min-height: 43px;
+    border: 0;
+    border-radius: 11px;
+    color: #7795b4;
+    background: transparent;
+    cursor: pointer;
+    font-size: 9px;
+  }
+
+  .prime-bottom-nav button.active {
+    color: #dff7ff;
+    background: #0b385a;
+    box-shadow: inset 0 1px #ffffff12;
+  }
+
+  .prime-bottom-nav span {
+    display: block;
+    margin-bottom: 2px;
+    color: #5bcaff;
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 370px) {
+  .prime-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
