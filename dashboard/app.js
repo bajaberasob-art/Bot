@@ -3814,6 +3814,51 @@
       el("small", { text: hint }),
     );
   }
+  function dashboardBentoCard({
+    eyebrow,
+    title,
+    description,
+    value,
+    valueLabel,
+    icon,
+    tone,
+    view,
+    span = 6,
+    action = "فتح القسم",
+  }) {
+    return el(
+      "article",
+      { class: `dashboard-bento-card bento-span-${span} bento-tone-${tone}` },
+      el(
+        "div",
+        { class: "dashboard-bento-head" },
+        el("span", { class: "dashboard-bento-icon", text: icon, "aria-hidden": "true" }),
+        el(
+          "div",
+          {},
+          el("span", { class: "dashboard-bento-eyebrow", text: eyebrow }),
+          el("h3", { text: title }),
+        ),
+      ),
+      el("p", { class: "dashboard-bento-description", text: description }),
+      el(
+        "div",
+        { class: "dashboard-bento-stat" },
+        el("strong", { text: String(value) }),
+        el("span", { text: valueLabel }),
+      ),
+      el(
+        "button",
+        {
+          class: "dashboard-bento-action",
+          type: "button",
+          onClick: () => navigateView(view),
+        },
+        el("span", { text: action }),
+        el("span", { text: "←", "aria-hidden": "true" }),
+      ),
+    );
+  }
   function chartCard(title, subtitle, canvasId, tone = "blue") {
     const canvas = el("canvas", {
       class: `metric-chart chart-${tone}`,
@@ -3927,6 +3972,12 @@
     const openIncidents = state.incidents.length;
     const enabledCommands = state.commandStudio.commands.filter((command) => command.enabled !== false).length;
     const responders = state.autoResponses.length;
+    const pendingApplications = state.clanOps.applications.filter(
+      (application) => !["approved", "rejected", "closed"].includes(String(application.status || "").toLowerCase()),
+    ).length;
+    const rosterMembers = state.clanOps.roster.length;
+    const broadcastCount = state.broadcast.history.length;
+    const lockdownValue = state.lockdown ? "مفعل" : "جاهز";
     const latestIncidents = state.incidents.slice().reverse().slice(0, 3);
     const quickActions = [
       ["التذاكر", "راجع التذاكر المفتوحة والأرشيف", "tickets", "▣"],
@@ -3982,6 +4033,87 @@
         overviewMetric("الحوادث الأمنية", openIncidents, "آخر الأحداث", "red", "security"),
         overviewMetric("الأوامر المفعلة", enabledCommands, "أمر متاح", "blue", "commands"),
         overviewMetric("الردود التلقائية", responders, "رد مفعّل", "green", "commands"),
+      ),
+      el(
+        "section",
+        { class: "dashboard-bento-section", "aria-labelledby": "dashboard-bento-title" },
+        el(
+          "div",
+          { class: "dashboard-section-heading" },
+          el(
+            "div",
+            {},
+            el("span", { class: "eyebrow", text: "PR1ME OPERATIONS / LIVE" }),
+            el("h2", { id: "dashboard-bento-title", text: "مركز عمليات الفريق" }),
+          ),
+          el("span", { class: "live-badge", text: "● مباشر" }),
+        ),
+        el(
+          "div",
+          { class: "dashboard-bento-grid" },
+          dashboardBentoCard({
+            eyebrow: "CLAN OPS HUB",
+            title: "طلبات الكلان",
+            description: "راجع طلبات الانضمام ونظّم قائمة أعضاء الفريق من مكان واحد.",
+            value: pendingApplications,
+            valueLabel: "طلبات تنتظر المراجعة",
+            icon: "♛",
+            tone: "indigo",
+            view: "clan",
+            span: 8,
+            action: "فتح صندوق الطلبات",
+          }),
+          dashboardBentoCard({
+            eyebrow: "ROSTER BUILDER",
+            title: "تشكيلة الفريق",
+            description: "أعضاء مسجلون في التشكيلة الحالية مع إدارة الرتب والأدوار.",
+            value: rosterMembers,
+            valueLabel: "عضو في التشكيلة",
+            icon: "⌘",
+            tone: "violet",
+            view: "clan",
+            span: 4,
+            action: "إدارة التشكيلة",
+          }),
+          dashboardBentoCard({
+            eyebrow: "ADVANCED TICKETS",
+            title: "مركز التذاكر",
+            description: "صمّم التصنيفات والنماذج وتابع التذاكر المفتوحة.",
+            value: activeTickets,
+            valueLabel: "تذكرة نشطة",
+            icon: "▣",
+            tone: "cyan",
+            view: "tickets",
+            span: 6,
+            action: "فتح Ticket Builder",
+          }),
+          dashboardBentoCard({
+            eyebrow: "BROADCAST STUDIO",
+            title: "استوديو الإعلانات",
+            description: "حرّر الرسائل ومعاينة Embed ثم انشرها إلى Discord.",
+            value: broadcastCount,
+            valueLabel: "إعلان محفوظ",
+            icon: "✦",
+            tone: "purple",
+            view: "broadcast",
+            span: 6,
+            action: "فتح الاستوديو",
+          }),
+          dashboardBentoCard({
+            eyebrow: "EMERGENCY MATRIX",
+            title: "مصفوفة الطوارئ",
+            description: state.lockdown
+              ? "وضع الإغلاق مفعّل. راجع القنوات المحمية قبل إلغاء الحالة."
+              : "الحماية جاهزة وتراقب الأحداث الأمنية في السيرفر.",
+            value: lockdownValue,
+            valueLabel: `${openIncidents} تنبيه أمني مسجل`,
+            icon: "◈",
+            tone: state.lockdown ? "danger" : "success",
+            view: "security",
+            span: 12,
+            action: state.lockdown ? "مراجعة وضع الإغلاق" : "فتح مركز الحماية",
+          }),
+        ),
       ),
       el(
         "div",
