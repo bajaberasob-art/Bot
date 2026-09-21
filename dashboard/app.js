@@ -483,23 +483,38 @@
       menu.parentElement?.querySelector('[aria-expanded="true"]')?.setAttribute("aria-expanded", "false");
     });
   }
+  function closeNavigationOverlays() {
+    state.drawerOpen = false;
+    closeMobileMoreMenus();
+    document.querySelectorAll(".workspace-nav").forEach((nav) => {
+      nav.classList.remove("drawer-open");
+      nav.setAttribute("aria-hidden", "true");
+    });
+    document.querySelectorAll(".drawer-scrim").forEach((scrim) => {
+      scrim.classList.remove("show");
+    });
+    document.body.classList.remove("drawer-visible");
+    document.querySelectorAll(".menu-toggle").forEach((button) => {
+      button.setAttribute("aria-expanded", "false");
+    });
+  }
   function navigateView(view) {
     if (!viewLabels[view]) return;
+    // Tear down every live overlay before changing the page. This must happen
+    // before renderPage so a stale scrim cannot capture the next tap/back gesture.
+    closeNavigationOverlays();
     state.activeView = view;
     sessionStorage.setItem("dashboard-view", view);
-    // Close the live drawer before rendering the next view. Setting the state
-    // alone leaves the existing sidebar class and scrim in the DOM.
-    closeMobileMoreMenus();
-    toggleDrawer(false);
     document.querySelectorAll("[data-nav-view]").forEach((item) => {
       item.classList.toggle("active", item.dataset.navView === view);
       item.setAttribute("aria-current", item.dataset.navView === view ? "page" : "false");
     });
     renderPage();
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
   function toggleDrawer(force = null) {
     state.drawerOpen = force == null ? !state.drawerOpen : Boolean(force);
+    if (state.drawerOpen) closeMobileMoreMenus();
     $(".workspace-nav")?.classList.toggle("drawer-open", state.drawerOpen);
     $(".drawer-scrim")?.classList.toggle("show", state.drawerOpen);
     document.body.classList.toggle("drawer-visible", state.drawerOpen);
@@ -561,6 +576,7 @@
         type: "button",
         "data-nav-view": view,
         "aria-current": state.activeView === view ? "page" : "false",
+        onPointerDown: closeNavigationOverlays,
         onClick: () => navigateView(view),
       },
       el("span", { class: "nav-icon", text: meta.icon, "aria-hidden": "true" }),
@@ -570,7 +586,11 @@
   function workspaceNav() {
     return el(
       "aside",
-      { class: `workspace-nav ${state.drawerOpen ? "drawer-open" : ""}`, "aria-label": "التنقل الرئيسي" },
+      {
+        class: `workspace-nav ${state.drawerOpen ? "drawer-open" : ""}`,
+        "aria-label": "التنقل الرئيسي",
+        "aria-hidden": String(!state.drawerOpen),
+      },
       el(
         "div",
         { class: "workspace-nav-head" },
