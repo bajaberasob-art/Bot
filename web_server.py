@@ -79,6 +79,8 @@ C_ID = (os.getenv("CLIENT_ID") or "").strip()
 C_SEC = (os.getenv("CLIENT_SECRET") or "").strip()
 R_URI = (os.getenv("REDIRECT_URI") or "").strip()
 DASHBOARD_BASE_PATH = (os.getenv("DASHBOARD_BASE_PATH") or "/").strip().rstrip("/") + "/"
+LOCAL_LOGIN_COOKIE = "local-dashboard-development"
+LOCAL_LOGIN_MAX_AGE = 10 * 365 * 24 * 60 * 60
 DISCORD_API = "https://discord.com/api/v10"
 ADMIN_BIT = 0x8
 MANAGE_GUILD_BIT = 0x20
@@ -136,8 +138,48 @@ def prune_expired():
             SESSIONS.pop(sid, None)
 
 
+def local_login_enabled(req=None) -> bool:
+    """Enable the persistent review session only in an explicit dev environment."""
+    if (os.getenv("DASHBOARD_LOCAL_LOGIN") or "").strip() != "1":
+        return False
+    if req is None:
+        return True
+    hosts = {str(req.host or "").split(",", 1)[0].split(":", 1)[0].lower()}
+    forwarded = req.headers.get("X-Forwarded-Host", "")
+    hosts.update(
+        item.strip().split(",", 1)[0].split(":", 1)[0].lower()
+        for item in forwarded.split(",")
+        if item.strip()
+    )
+    return any(
+        host in {"localhost", "127.0.0.1", "0.0.0.0"}
+        or host.endswith(".replit.dev")
+        for host in hosts
+    )
+
+
+def local_development_session() -> dict:
+    """Return a non-expiring local operator identity; never used by OAuth."""
+    return {
+        "id": "0",
+        "username": "Local Developer",
+        "avatar": "https://cdn.discordapp.com/embed/avatars/1.png",
+        "guilds": [],
+        "expires_at": float("inf"),
+        "csrf": "local-development-csrf",
+        "_local_dev": True,
+        "bot_ready": bot_is_connected(bot_ref),
+        "connected_guilds_count": len(getattr(bot_ref, "guilds", ()) or ()),
+    }
+
+
 def current_session(req):
     prune_expired()
+    if (
+        req.cookies.get("bot_session") == LOCAL_LOGIN_COOKIE
+        and local_login_enabled(req)
+    ):
+        return local_development_session()
     return SESSIONS.get(req.cookies.get("bot_session"))
 
 
