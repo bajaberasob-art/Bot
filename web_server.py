@@ -580,10 +580,25 @@ async def api_me(req):
     # This is intentionally derived on every request so a session created
     # before a code update still gets the recovery link.
     public_session["invite_url"] = bot_invite_url()
-    return web.json_response({
+    response = web.json_response({
         "auth": True,
         "session": public_session,
     })
+    # Refresh the browser expiry after a successful authenticated request.
+    # The server-side expiry remains authoritative and is still checked by
+    # current_session() on every request.
+    session_id = req.cookies.get("bot_session")
+    if session_id and session_id in SESSIONS:
+        response.set_cookie(
+            "bot_session",
+            session_id,
+            max_age=SESSION_TTL,
+            httponly=True,
+            secure=True,
+            samesite="Lax",
+            path="/",
+        )
+    return response
 
 
 # -------------------------------------------------------------
@@ -950,6 +965,7 @@ async def guild_meta(guild) -> dict:
         roles.append({
             "id": str(role.id), "name": role.name,
             "color": str(role.color),
+            "position": int(getattr(role, "position", 0)),
             "assignable": bool(top and role < top and not role.managed),
         })
     stickers = list(getattr(guild, "stickers", ()) or ())
@@ -1058,6 +1074,12 @@ async def dashboard_channels(guild) -> list[dict]:
             "id": str(channel.id),
             "name": str(channel.name),
             "type": channel_type,
+            "position": int(getattr(channel, "position", 0)),
+            "category_id": (
+                str(channel.category.id)
+                if getattr(channel, "category", None) is not None
+                else None
+            ),
             "category": (
                 str(channel.category.name)
                 if getattr(channel, "category", None) is not None
@@ -1194,7 +1216,20 @@ async def api_guild_meta(req):
             text=json.dumps({"error": "not_found"}),
             content_type="application/json",
         )
-    return web.json_response(await guild_meta(guild))
+    payload = await guild_meta(guild)
+    metrics = (
+        bot_ref.metrics_for_guild(guild.id)
+        if bot_ref and hasattr(bot_ref, "metrics_for_guild")
+        else []
+    )
+    # Keep /stats intact for existing consumers while giving the dashboard
+    # one complete metadata snapshot for its initial render.
+    payload["stats"] = await get_dashboard_stats(
+        guild.id,
+        member_count=guild.member_count,
+        latency_series=metrics,
+    )
+    return web.json_response(payload)
 
 
 @routes.get('/api/guild/{guild_id}/stats')
