@@ -137,7 +137,7 @@
     installBanner = el(
       "aside",
       { class: "pwa-install-pill", id: "pwa-install-banner", role: "status" },
-      el("span", { text: "📲 تثبيت التطبيق على هاتفك" }),
+      el("span", { text: "تثبيت التطبيق على هاتفك" }),
       el("button", {
         class: "pwa-install-action",
         type: "button",
@@ -463,7 +463,7 @@
   const viewLabels = {
     overview: { label: "نظرة عامة", icon: "⌂", hint: "مركز القيادة" },
     tickets: { label: "التذاكر", icon: "▣", hint: "Help Desk" },
-    gaming: { label: "السكريمات", icon: "🎮", hint: "Gaming Ops" },
+    gaming: { label: "السكريمات", icon: "◉", hint: "Gaming Ops" },
     clan: { label: "الكلان والتنافس", icon: "♛", hint: "Clan Ops" },
     broadcast: { label: "استوديو البث", icon: "✦", hint: "Broadcast Studio" },
     commands: { label: "الأوامر والأتمتة", icon: "⌘", hint: "Commands" },
@@ -3968,199 +3968,128 @@
     );
   }
   function overviewView() {
-    const activeTickets = state.tickets.active.length;
     const openIncidents = state.incidents.length;
-    const enabledCommands = state.commandStudio.commands.filter((command) => command.enabled !== false).length;
-    const responders = state.autoResponses.length;
-    const pendingApplications = state.clanOps.applications.filter(
-      (application) => !["approved", "rejected", "closed"].includes(String(application.status || "").toLowerCase()),
-    ).length;
-    const rosterMembers = state.clanOps.roster.length;
-    const broadcastCount = state.broadcast.history.length;
-    const lockdownValue = state.lockdown ? "مفعل" : "جاهز";
-    const latestIncidents = state.incidents.slice().reverse().slice(0, 3);
-    const quickActions = [
-      ["التذاكر", "راجع التذاكر المفتوحة والأرشيف", "tickets", "▣"],
-      ["الأوامر والأتمتة", "إدارة الأوامر والردود التلقائية", "commands", "⌘"],
-      ["الترحيب والأدوار", "صمّم تجربة دخول الأعضاء", "onboarding", "✦"],
-      ["الحماية", "راجع الأحداث والإجراءات الحساسة", "security", "◈"],
+    const counts = state.stats?.counts || {};
+    const members = Number(state.guild.members ?? counts.members ?? 0);
+    const latestActions = [
+      ...(state.actions || []).map((item) => ({
+        title: item.action || item.action_type || "إجراء مسجل",
+        detail: item.reason || item.target_name || "تمت معالجة الإجراء من النظام",
+        at: item.timestamp || item.created_at,
+        tone: "cyan",
+      })),
+      ...(state.incidents || []).map((item) => ({
+        title: item.action || item.type || "تنبيه أمني",
+        detail: item.reason || "تم تسجيل الحدث من محرك الحماية",
+        at: item.timestamp || item.created_at,
+        tone: "red",
+      })),
+    ].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0)).slice(0, 4);
+    const serviceRows = [
+      ["إدارة النظام", "إعدادات البوت وملفات السيرفر", "settings", "system"],
+      ["التقارير", "التحليلات والإحصائيات", "analytics", "reports"],
+      ["الحماية", "جدار الحماية والفحص", "security", "shield"],
+      ["الإعدادات", "تخصيص النظام", "settings", "tune"],
     ];
-    const recent = el("div", { class: "overview-activity" });
-    if (!latestIncidents.length) {
-      recent.append(el("div", { class: "empty-row", text: "لا توجد أحداث أمنية جديدة" }));
+    const serviceHealth = [
+      ["خادم التطبيقات", state.online ? "يعمل بشكل طبيعي" : "الاتصال يحتاج مراجعة", state.online],
+      ["قاعدة البيانات", "الحفظ والمزامنة يعملان", true],
+      ["خدمة الحماية", state.lockdown ? "وضع الإغلاق مفعّل" : "مراقبة فعّالة", !state.lockdown || openIncidents > 0],
+    ];
+    const formatTime = (value) => value
+      ? new Date(value).toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" })
+      : "الآن";
+    const activityList = el("div", { class: "overview-activity" });
+    if (!latestActions.length) {
+      activityList.append(
+        el("div", { class: "activity-empty", text: "لا توجد نشاطات جديدة في هذا السيرفر" }),
+      );
     } else {
-      latestIncidents.forEach((incident) => {
-        recent.append(
-          el(
-            "div",
-            { class: "activity-row" },
-            el("span", { class: "activity-dot" }),
-            el(
-              "div",
-              {},
-              el("strong", { text: incident.action || incident.type || "حدث أمني" }),
-              el("small", { text: incident.reason || "تم تسجيل الحدث من محرك الحماية" }),
+      latestActions.forEach((item) => {
+        activityList.append(
+          el("div", { class: `activity-row activity-${item.tone}` },
+            el("span", { class: "activity-icon", "aria-hidden": "true" }),
+            el("div", {},
+              el("strong", { text: item.title }),
+              el("small", { text: item.detail }),
             ),
+            el("time", { text: formatTime(item.at) }),
           ),
         );
       });
     }
+    const serviceList = el("div", { class: "service-list" });
+    serviceRows.forEach(([title, description, view, icon]) => {
+      serviceList.append(
+        el("button", { class: "service-row", type: "button", onClick: () => navigateView(view) },
+          el("span", { class: `service-icon service-icon-${icon}`, "aria-hidden": "true" }),
+          el("span", {}, el("strong", { text: title }), el("small", { text: description })),
+          el("span", { class: "service-chevron", text: "‹", "aria-hidden": "true" }),
+        ),
+      );
+    });
+    const healthList = el("div", { class: "health-list" });
+    serviceHealth.forEach(([title, detail, online]) => {
+      healthList.append(
+        el("div", { class: "health-row" },
+          el("span", { class: `health-icon ${online ? "" : "is-offline"}`, "aria-hidden": "true" }),
+          el("span", {}, el("strong", { text: title }), el("small", { text: detail })),
+          el("span", { class: `health-state ${online ? "" : "is-offline"}`, text: online ? "طبيعي" : "متوقف" }),
+        ),
+      );
+    });
     return el(
       "section",
       { class: "overview-view" },
       el(
         "div",
         { class: "overview-hero" },
-        el(
-          "div",
-          { class: "overview-hero-copy" },
-          el("div", { class: "eyebrow", text: `${state.guild.name} / CONTROL CENTER` }),
+        el("div", { class: "overview-hero-art", "aria-hidden": "true" }),
+        el("div", { class: "overview-hero-copy" },
+          el("div", { class: "eyebrow", text: "PR1ME TEAM / CONTROL CENTER" }),
           el("h1", { text: "كل شيء تحت السيطرة." }),
-          el("p", { text: "نظرة سريعة على صحة البوت، التذاكر، الأوامر، والحماية في سيرفرك." }),
+          el("p", { text: "مراقبة، حماية، أداء، مستمر — نظامك يعمل بكفاءة وأمان." }),
+          el("div", { class: "hero-meta" },
+            el("span", { class: `status-pulse ${state.online ? "" : "offline"}` }),
+            el("span", { text: state.online ? "النظام نشط" : "الاتصال يحتاج مراجعة" }),
+            el("small", { text: `آخر تحديث: ${formatTime(new Date())}` }),
+          ),
         ),
-        el(
-          "div",
-          { class: "overview-hero-status" },
-          el("span", { class: `status-pulse ${state.online ? "" : "offline"}` }),
-          el("strong", { text: state.online ? "البوت متصل" : "الاتصال يحتاج مراجعة" }),
-          el("small", { text: `${state.guild.members ?? "—"} عضو` }),
+        el("div", { class: "overview-hero-status" },
+          el("span", { class: `hero-shield ${state.online ? "" : "is-offline"}`, "aria-hidden": "true" }),
+          el("div", {},
+            el("strong", { text: state.online ? "آمن ومتصل" : "غير متصل" }),
+            el("small", { text: `${members || "—"} عضو متصل` }),
+          ),
         ),
       ),
       el(
         "div",
         { class: "overview-metrics" },
-        overviewMetric("التذاكر المفتوحة", activeTickets, "تحتاج متابعة", "purple", "tickets"),
-        overviewMetric("الحوادث الأمنية", openIncidents, "آخر الأحداث", "red", "security"),
-        overviewMetric("الأوامر المفعلة", enabledCommands, "أمر متاح", "blue", "commands"),
-        overviewMetric("الردود التلقائية", responders, "رد مفعّل", "green", "commands"),
+        overviewMetric("المستخدمون النشطون", members || "—", "مستخدم", "blue", "community"),
+        overviewMetric("الحوادث الأمنية", openIncidents, openIncidents ? "تحتاج مراجعة" : "لا توجد تهديدات", "red", "security"),
+        overviewMetric("الأجهزة المتصلة", counts.devices || members || "—", "جهاز متصل", "purple", "analytics"),
+        overviewMetric("حالة النظام", state.online ? "آمن" : "مراجعة", "لا توجد تهديدات", "green", "system"),
       ),
-      el(
-        "section",
-        { class: "dashboard-bento-section", "aria-labelledby": "dashboard-bento-title" },
-        el(
-          "div",
-          { class: "dashboard-section-heading" },
-          el(
-            "div",
-            {},
-            el("span", { class: "eyebrow", text: "PR1ME OPERATIONS / LIVE" }),
-            el("h2", { id: "dashboard-bento-title", text: "مركز عمليات الفريق" }),
+      el("section", { class: "overview-panel overview-services" },
+        el("div", { class: "panel-heading overview-panel-heading" },
+          el("h2", { text: "الخدمات الرئيسية" }),
+          el("button", { class: "text-link", type: "button", text: "عرض الكل", onClick: () => navigateView("settings") }),
+        ),
+        serviceList,
+      ),
+      el("div", { class: "overview-columns overview-lower-grid" },
+        el("section", { class: "overview-panel overview-recent" },
+          el("div", { class: "panel-heading overview-panel-heading" },
+            el("h2", { text: "أحدث الأنشطة" }),
+            el("button", { class: "text-link", type: "button", text: "عرض الكل", onClick: () => navigateView("security") }),
           ),
-          el("span", { class: "live-badge", text: "● مباشر" }),
+          activityList,
         ),
-        el(
-          "div",
-          { class: "dashboard-bento-grid" },
-          dashboardBentoCard({
-            eyebrow: "CLAN OPS HUB",
-            title: "طلبات الكلان",
-            description: "راجع طلبات الانضمام ونظّم قائمة أعضاء الفريق من مكان واحد.",
-            value: pendingApplications,
-            valueLabel: "طلبات تنتظر المراجعة",
-            icon: "♛",
-            tone: "indigo",
-            view: "clan",
-            span: 8,
-            action: "فتح صندوق الطلبات",
-          }),
-          dashboardBentoCard({
-            eyebrow: "ROSTER BUILDER",
-            title: "تشكيلة الفريق",
-            description: "أعضاء مسجلون في التشكيلة الحالية مع إدارة الرتب والأدوار.",
-            value: rosterMembers,
-            valueLabel: "عضو في التشكيلة",
-            icon: "⌘",
-            tone: "violet",
-            view: "clan",
-            span: 4,
-            action: "إدارة التشكيلة",
-          }),
-          dashboardBentoCard({
-            eyebrow: "ADVANCED TICKETS",
-            title: "مركز التذاكر",
-            description: "صمّم التصنيفات والنماذج وتابع التذاكر المفتوحة.",
-            value: activeTickets,
-            valueLabel: "تذكرة نشطة",
-            icon: "▣",
-            tone: "cyan",
-            view: "tickets",
-            span: 6,
-            action: "فتح Ticket Builder",
-          }),
-          dashboardBentoCard({
-            eyebrow: "BROADCAST STUDIO",
-            title: "استوديو الإعلانات",
-            description: "حرّر الرسائل ومعاينة Embed ثم انشرها إلى Discord.",
-            value: broadcastCount,
-            valueLabel: "إعلان محفوظ",
-            icon: "✦",
-            tone: "purple",
-            view: "broadcast",
-            span: 6,
-            action: "فتح الاستوديو",
-          }),
-          dashboardBentoCard({
-            eyebrow: "EMERGENCY MATRIX",
-            title: "مصفوفة الطوارئ",
-            description: state.lockdown
-              ? "وضع الإغلاق مفعّل. راجع القنوات المحمية قبل إلغاء الحالة."
-              : "الحماية جاهزة وتراقب الأحداث الأمنية في السيرفر.",
-            value: lockdownValue,
-            valueLabel: `${openIncidents} تنبيه أمني مسجل`,
-            icon: "◈",
-            tone: state.lockdown ? "danger" : "success",
-            view: "security",
-            span: 12,
-            action: state.lockdown ? "مراجعة وضع الإغلاق" : "فتح مركز الحماية",
-          }),
+        el("section", { class: "overview-panel overview-health" },
+          el("div", { class: "panel-heading" }, el("h2", { text: "حالة الخدمات" })),
+          healthList,
         ),
-      ),
-      el(
-        "div",
-        { class: "overview-columns" },
-        el(
-          "section",
-          { class: "overview-panel quick-panel" },
-          el("div", { class: "panel-heading" }, el("div", { class: "eyebrow", text: "QUICK ACTIONS" }), el("h2", { text: "الوصول السريع" })),
-          el(
-            "div",
-            { class: "quick-grid" },
-            quickActions.map(([title, description, view, icon]) =>
-              el(
-                "button",
-                { class: "quick-action", type: "button", onClick: () => navigateView(view) },
-                el("span", { class: "quick-icon", text: icon }),
-                el("span", {}, el("strong", { text: title }), el("small", { text: description })),
-                el("span", { class: "quick-arrow", text: "←" }),
-              ),
-            ),
-          ),
-        ),
-        el(
-          "section",
-          { class: "overview-panel" },
-          el("div", { class: "panel-heading" }, el("div", { class: "eyebrow", text: "SECURITY FEED" }), el("h2", { text: "آخر النشاطات" })),
-          recent,
-          el("button", { class: "text-link", type: "button", text: "فتح سجل الحماية ←", onClick: () => navigateView("security") }),
-        ),
-      ),
-      el(
-        "section",
-        { class: "overview-panel overview-footer-panel" },
-        el("div", { class: "panel-heading" }, el("div", { class: "eyebrow", text: "SYSTEM STATUS" }), el("h2", { text: "حالة الخدمات" })),
-        el(
-          "div",
-          { class: "status-grid" },
-          el("div", { class: "service-status" }, el("span", { class: "status-pulse" }), el("span", {}, el("strong", { text: "Discord Gateway" }), el("small", { text: "متصل ويستقبل الأحداث" }))),
-          el("div", { class: "service-status" }, el("span", { class: "status-pulse" }), el("span", {}, el("strong", { text: "قاعدة البيانات" }), el("small", { text: "الحفظ والمزامنة يعملان" }))),
-          el("div", { class: "service-status" }, el("span", { class: "status-pulse" }), el("span", {}, el("strong", { text: "Live Events" }), el("small", { text: "التحديثات تصل لحظياً" }))),
-        ),
-      ),
-      el(
-        "div",
-        { class: "overview-columns chart-grid" },
-        chartCard("زمن استجابة Discord", "قياس gateway بالميلي ثانية", "latency-chart", "blue"),
-        chartCard("منحنى الأعضاء", "عدد أعضاء السيرفر في القياسات الحية", "members-chart", "green"),
       ),
     );
   }
