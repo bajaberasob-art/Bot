@@ -177,8 +177,8 @@ class OAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cookie["secure"])
 
         with patch.dict("os.environ", {}, clear=False):
-            response = await dashboard.local_login(request("/__local_login"))
-        self.assertEqual(response.status, 404)
+            with self.assertRaises(dashboard.web.HTTPNotFound):
+                await dashboard.local_login(request("/__local_login"))
 
     async def test_local_session_rehydrates_after_server_restart(self):
         guild = SimpleNamespace(
