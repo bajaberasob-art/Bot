@@ -167,6 +167,44 @@ class OAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 401)
         self.assertNotIn("expired", dashboard.SESSIONS)
 
+    async def test_local_login_is_explicit_dev_only_and_persistent(self):
+        with patch.dict("os.environ", {"DASHBOARD_LOCAL_LOGIN": "1"}, clear=False):
+            response = await dashboard.local_login(request("/__local_login"))
+        self.assertEqual(response.status, 302)
+        cookie = response.cookies["bot_session"]
+        self.assertEqual(cookie.value, dashboard.LOCAL_LOGIN_COOKIE)
+        self.assertEqual(int(cookie["max-age"]), dashboard.LOCAL_LOGIN_MAX_AGE)
+        self.assertFalse(cookie["secure"])
+
+        with patch.dict("os.environ", {}, clear=False):
+            response = await dashboard.local_login(request("/__local_login"))
+        self.assertEqual(response.status, 404)
+
+    async def test_local_session_rehydrates_after_server_restart(self):
+        guild = SimpleNamespace(
+            id=777,
+            name="PR1ME TEAM",
+            member_count=82,
+            icon=None,
+            owner_id=99,
+        )
+        live_bot = SimpleNamespace(
+            guilds=[guild],
+            is_ready=lambda: True,
+            get_guild=lambda guild_id: guild if guild_id == guild.id else None,
+        )
+        with (
+            patch.dict("os.environ", {"DASHBOARD_LOCAL_LOGIN": "1"}, clear=False),
+            patch.object(dashboard, "bot_ref", live_bot),
+        ):
+            response = await dashboard.api_me(
+                request("/api/me", f"bot_session={dashboard.LOCAL_LOGIN_COOKIE}"),
+            )
+        payload = json.loads(response.text)
+        self.assertEqual(response.status, 200)
+        self.assertEqual([item["id"] for item in payload["session"]["guilds"]], ["777"])
+        self.assertNotIn(dashboard.LOCAL_LOGIN_COOKIE, dashboard.SESSIONS)
+
     async def test_manage_guild_permission_is_dashboard_authorization(self):
         guilds = {
             1: SimpleNamespace(id=1, name="managed", member_count=5),
