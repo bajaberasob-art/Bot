@@ -374,6 +374,14 @@ async def sync_session_guilds(request, session: dict) -> list[dict]:
     bot = request_bot(request)
     if bot is None:
         return session.get("guilds", [])
+    if session.get("_local_dev"):
+        session["guilds"] = [
+            dashboard_guild_payload(guild)
+            for guild in (getattr(bot, "guilds", ()) or ())
+        ]
+        session["bot_ready"] = bot_is_connected(bot)
+        session["connected_guilds_count"] = len(getattr(bot, "guilds", ()) or ())
+        return session["guilds"]
     bot_guilds = list(getattr(bot, "guilds", ()) or ())
     if not bot_is_connected(bot) and not bot_guilds:
         return session.get("guilds", [])
@@ -459,6 +467,25 @@ async def login(req):
         secure=True, samesite="Lax", path="/",
     )
     return response
+
+
+@routes.get('/__local_login')
+async def local_login(req):
+    """Development-only persistent login for reviewing every dashboard section."""
+    if not local_login_enabled(req):
+        raise web.HTTPNotFound()
+    response = web.HTTPFound(DASHBOARD_BASE_PATH)
+    response.set_cookie(
+        "bot_session",
+        LOCAL_LOGIN_COOKIE,
+        max_age=LOCAL_LOGIN_MAX_AGE,
+        httponly=True,
+        secure=req.secure or req.headers.get("X-Forwarded-Proto", "").lower() == "https",
+        samesite="Lax",
+        path="/",
+    )
+    return response
+
 
 @routes.get('/callback')
 @routes.get('/callback/')
@@ -913,6 +940,8 @@ def csrf_ok(req, session) -> bool:
 
 async def live_grant(session, guild) -> bool:
     """تحقق حي من الصلاحية عبر البوت: المالك أو بت Administrator (0x8)."""
+    if session.get("_local_dev"):
+        return True
     user_id = str(session["id"])
     cached = GRANT_CACHE.get((user_id, guild.id))
     now = time.monotonic()
