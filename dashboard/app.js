@@ -4257,9 +4257,14 @@
     return Number.isFinite(Number(value)) ? Number(value).toLocaleString("en-US") : fallback;
   }
   function overviewTime(value) {
-    return value
-      ? new Date(value).toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" })
-      : "الآن";
+    if (!value) return "الآن";
+    const numeric = Number(value);
+    const date = Number.isFinite(numeric)
+      ? new Date(numeric > 100000000000 ? numeric : numeric * 1000)
+      : new Date(value);
+    return Number.isNaN(date.getTime())
+      ? "الآن"
+      : date.toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" });
   }
   function overviewCounterCard(label, value, hint, tone, icon, view, status = "") {
     const numeric = Number(value);
@@ -4316,9 +4321,14 @@
       "aria-label": "مخطط قياسات النشاط",
     });
     const series = overviewSeriesData();
-    const hasTraffic = series.some((point) =>
-      ["messages", "joins", "leaves", "members", "latency"].some((key) => Number.isFinite(point[key])),
-    );
+    const availableMetrics = [
+      ["members", "الأعضاء", "legend-members"],
+      ["messages", "الرسائل", "legend-messages"],
+      ["joins", "الانضمام", "legend-joins"],
+      ["leaves", "المغادرة", "legend-leaves"],
+      ["latency", "الاستجابة", "legend-latency"],
+    ].filter(([key]) => series.some((point) => Number.isFinite(point[key])));
+    const hasTraffic = availableMetrics.length > 0;
     return el(
       "section",
       { class: "overview-pro-card overview-traffic-card" },
@@ -4332,20 +4342,30 @@
       ),
       hasTraffic ? canvas : overviewSkeleton("البث اللحظي"),
       el("div", { class: "overview-chart-legend" },
-        el("span", { class: "legend-members", text: "الأعضاء" }),
-        el("span", { class: "legend-messages", text: "الرسائل" }),
-        el("span", { class: "legend-joins", text: "الانضمام" }),
-        el("span", { class: "legend-leaves", text: "المغادرة" }),
+        ...availableMetrics.map(([, label, className]) => el("span", { class: className, text: label })),
       ),
       el("div", { class: "overview-chart-tooltip", role: "status", "aria-live": "polite", hidden: true }),
     );
   }
   function overviewPulsePanel() {
     const points = overviewSeriesData();
-    const pulse = state.online
-      ? Math.min(99, 44 + Math.min(24, points.length * 3) + Math.min(27, state.actions.length * 2))
-      : 12;
+    const latest = points[points.length - 1];
+    const latency = latest?.latency;
+    const totalMembers = Number(state.guild?.members ?? latest?.members);
+    const cachedMembers = Array.isArray(state.meta?.members) ? state.meta.members.length : null;
+    const channelCount = Array.isArray(state.meta?.channels) ? state.meta.channels.length : 0;
+    const eventCount = (state.actions || []).length + (state.incidents || []).length;
+    const memberRatio = Number.isFinite(totalMembers) && totalMembers > 0 && cachedMembers != null
+      ? Math.min(100, Math.round((cachedMembers / totalMembers) * 100))
+      : null;
+    const bars = [
+      ["الاتصال", state.online ? "متصل" : "غير متصل", state.online ? 100 : 0, "cyan"],
+      ["الأعضاء المحملون", cachedMembers == null ? "—" : `${overviewNumber(cachedMembers)}/${overviewNumber(totalMembers)}`, memberRatio, "green"],
+      ["القنوات المعروفة", overviewNumber(channelCount), channelCount > 0 ? 100 : 0, "purple"],
+      ["الأحداث المسجلة", overviewNumber(eventCount), Math.min(100, eventCount * 10), "pink"],
+    ];
     const circumference = 2 * Math.PI * 44;
+    const connectionPercent = state.online ? 100 : 0;
     return el(
       "section",
       { class: "overview-pro-card overview-pulse-card" },
@@ -4362,17 +4382,16 @@
               cx: "55",
               cy: "55",
               r: "44",
-              "stroke-dasharray": `${(circumference * pulse) / 100} ${circumference}`,
+              "stroke-dasharray": `${(circumference * connectionPercent) / 100} ${circumference}`,
             }),
           ),
-          el("strong", { text: String(pulse) }),
-          el("small", { text: "مؤشر حي" }),
+          el("strong", { text: Number.isFinite(latency) ? `${overviewNumber(latency)}ms` : state.online ? "متصل" : "—" }),
+          el("small", { text: "زمن الاستجابة الفعلي" }),
         ),
         el("div", { class: "overview-pulse-bars" },
-          [["اتصال", state.online ? 92 : 18, "cyan"], ["محتوى", Math.min(96, 30 + state.actions.length * 4), "green"], ["استقرار", state.lockdown ? 42 : 84, "purple"], ["شدة الدردشة", Math.min(94, 20 + points.length * 5), "pink"]]
-            .map(([label, value, tone]) => el("div", { class: `pulse-bar-row pulse-${tone}` },
-              el("div", {}, el("span", { text: label }), el("b", { text: `${value}%` })),
-              el("i", {}, el("em", { style: `width:${value}%` })),
+          bars.map(([label, value, width, tone]) => el("div", { class: `pulse-bar-row pulse-${tone}` },
+              el("div", {}, el("span", { text: label }), el("b", { text: value })),
+              el("i", {}, el("em", { style: `width:${width == null ? 0 : width}%` })),
             )),
         ),
       ),
