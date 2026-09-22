@@ -71,6 +71,15 @@ class CommunityTicketTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_custom_guild_emoji_token_survives_normalization(self):
+        token = "<:support_badge:400000000000000001>"
+        categories = normalize_ticket_categories([
+            {"key": "support", "label": "الدعم", "emoji": token},
+        ])
+        self.assertEqual(categories[0]["emoji"], token)
+        view = __import__("cogs.community", fromlist=["TicketSelectView"]).TicketSelectView(categories, 700)
+        self.assertEqual(view.children[0].options[0].emoji, token)
+
     async def test_deploy_panel_and_staff_kpi_helpers_persist_data(self):
         bot = FakeBot()
         cog = Community.__new__(Community)
