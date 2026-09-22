@@ -2177,7 +2177,9 @@ class Community(commands.Cog):
 
     async def add_internal_note_from_interaction(self, itx: discord.Interaction, content: str):
         ticket = await get_ticket_by_channel(itx.channel.id)
-        if not ticket or not self._is_ticket_staff(itx.user, ticket):
+        if not ticket or ticket["status"] == "closed":
+            return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
+        if not await self._ticket_action_allowed(itx.user, ticket, "note"):
             return await self._ticket_denied(itx)
         note = await self.add_internal_note(itx.guild.id, ticket["id"], itx.user.id, content)
         if not note:
