@@ -54,6 +54,11 @@
       kpis: [],
       canned: [],
     },
+    ticketTab: sessionStorage.getItem("ticket-tab") || "overview",
+    ticketPanels: [],
+    ticketAnalytics: { overview: {}, priorities: [], ratings: [], staff: [], activity: [] },
+    ticketBlacklist: [],
+    ticketSettings: null,
     gaming: [],
     clanOps: {
       applications: [],
@@ -2686,12 +2691,16 @@
   async function refreshTickets() {
     const id = state.guild.id;
     try {
-      const [active, archive, kpis, canned, configResponse] = await Promise.all([
+      const [active, archive, kpis, canned, configResponse, panels, analytics, settings, blacklist] = await Promise.all([
         api(`api/guild/${id}/tickets/active`),
         api(`api/guild/${id}/tickets/archive?q=${encodeURIComponent(state.ticketSearch)}`),
         api(`api/guild/${id}/tickets/kpis`),
         api(`api/guild/${id}/tickets/canned`),
         api(`api/guild/${id}/tickets/config`),
+        api(`api/guild/${id}/tickets/panels`),
+        api(`api/guild/${id}/tickets/analytics`),
+        api(`api/guild/${id}/tickets/settings`),
+        api(`api/guild/${id}/tickets/blacklist`),
       ]);
       state.tickets = {
         active: (await readJson(active, { tickets: state.tickets.active })).tickets || [],
@@ -2706,6 +2715,17 @@
           state.ticketCategories = configData.categories;
         }
       }
+      if (panels.ok) state.ticketPanels = (await readJson(panels, { panels: [] })).panels || [];
+      if (analytics.ok) state.ticketAnalytics = {
+        ...state.ticketAnalytics,
+        ...(await readJson(analytics, state.ticketAnalytics)),
+      };
+      if (settings.ok) {
+        const settingsData = await readJson(settings, {});
+        state.ticketSettings = settingsData.config || null;
+        state.ticketConfig = { ...state.ticketConfig, ...(settingsData.config || {}) };
+      }
+      if (blacklist.ok) state.ticketBlacklist = (await readJson(blacklist, { entries: [] })).entries || [];
       renderPage();
     } catch (error) {
       if (error.message !== "unauth") toast("تعذر تحديث مركز التذاكر");
