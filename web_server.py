@@ -3700,6 +3700,31 @@ async def api_guild_tickets_action(req):
     except (TypeError, ValueError):
         return json_error(400, "validation", fields={"ticket_id": "معرف التذكرة غير صالح"})
     action = str(body.get("action", "")).strip().lower()
+    action_permission = {
+        "close": "close",
+        "reassign": "transfer",
+        "priority": "priority",
+        "reopen": "reopen",
+        "note": "note",
+    }.get(action)
+    ticket_for_policy = None
+    if action_permission:
+        get_ticket = getattr(community, "get_ticket", None)
+        if callable(get_ticket):
+            ticket_for_policy = await get_ticket(guild.id, ticket_id)
+        else:
+            active_tickets = await community.get_active_tickets(guild.id)
+            ticket_for_policy = next(
+                (item for item in active_tickets if int(item.get("id", 0)) == ticket_id),
+                None,
+            )
+        if not ticket_for_policy:
+            return json_error(404, "ticket_not_found")
+        allowed = getattr(community, "_ticket_action_allowed", None)
+        if callable(allowed) and not await allowed(
+            guild.get_member(int(session["id"])), ticket_for_policy, action_permission
+        ):
+            return json_error(403, "ticket_action_forbidden")
     if action == "close":
         result = await community.force_close_ticket(
             guild.id,
