@@ -24,3 +24,4 @@
 - [Broadcast and lockdown boundaries](broadcast-lockdown-boundaries.md) — derive protected channels server-side and preserve separate embed fields for history reuse.
 - [Dashboard browser harness](dashboard-browser-harness.md) — run the OAuth-free visual harness with the workspace root on PYTHONPATH.
 - [Dashboard preview safety](dashboard-preview-safety.md) — visual previews use isolated mockup data and never weaken production OAuth or guild permissions.
+- [Overview telemetry boundaries](overview-telemetry-boundaries.md) — the index view must consume optional live metrics without inventing data or adding backend routes.
