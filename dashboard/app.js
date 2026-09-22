@@ -3565,7 +3565,6 @@
         open_limit: Number(form.elements.open_limit.value || 1),
         panel_mode: form.elements.panel_mode.value,
         select_placeholder: form.elements.select_placeholder.value.trim(),
-        permissions,
         close_config: {
           move_to_category: form.elements.closed_category_id.value || null,
           archive_transcript: form.elements.send_transcript_dm.checked,
@@ -3577,6 +3576,7 @@
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ إعدادات التذاكر");
         state.ticketConfig = { ...state.ticketConfig, ...(data.config || {}) };
         state.ticketSettings = data.config || state.ticketSettings;
+        if (data.permissions) state.ticketPermissions = data.permissions;
         pulse();
         toast("تم حفظ إعدادات التذاكر", "success", 2400);
       } catch (error) {
@@ -3605,16 +3605,23 @@
     };
     const saveSections = async () => {
       try {
-        const response = await writeApi(`api/guild/${state.guild.id}/tickets/config`, {
+        const response = await writeApi(`api/guilds/${state.guild.id}/tickets/categories`, {
           categories,
+        });
+        const data = await readJson(response, {});
+        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الأقسام");
+        const savedCategories = data.categories || categories;
+        // Keep the legacy panel options synchronized for the running cog.
+        const legacy = await writeApi(`api/guild/${state.guild.id}/tickets/config`, {
+          categories: savedCategories,
           embed_title: config.embed_title,
           embed_description: config.embed_description,
           embed_color: config.embed_color,
           footer_text: config.footer_text,
         });
-        const data = await readJson(response, {});
-        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الأقسام");
-        state.ticketCategories = data.categories || categories;
+        const legacyData = await readJson(legacy, {});
+        if (!legacy.ok) return toast(legacyData.fields ? Object.values(legacyData.fields)[0] : "تعذر مزامنة الأقسام");
+        state.ticketCategories = legacyData.categories || savedCategories;
         toast("تم حفظ باني الأقسام", "success", 2200);
         renderPage();
       } catch (error) {
@@ -4089,13 +4096,20 @@
       return el("div", { class: "ticket-next-content" }, el("div", { class: "ticket-section-title-row" }, el("div", {}, el("span", { class: "ticket-kicker", text: "CLOSE & ARCHIVE" }), el("h3", { text: "الإعدادات العامة والسلوك" }), el("p", { text: "تحكم في النقل، الأرشفة، التقييم وقنوات السجل." }))), settingsForm);
     };
     const permissionsView = () => {
-      const permissionDefaults = currentPermissions(config.permissions_json || config.permissions || {});
+      const permissionDefaults = currentPermissions(state.ticketPermissions || config.permissions_json || config.permissions || {});
       const permissionRows = [
-        ["open", "فتح التذاكر"],
         ["claim", "استلام التذكرة"],
         ["close", "إغلاق وأرشفة"],
-        ["reassign", "إعادة الإسناد"],
-        ["manage", "تعديل الإعدادات"],
+        ["rename", "إعادة تسمية"],
+        ["priority", "تغيير الأولوية"],
+        ["transfer", "تحويل القسم"],
+        ["add_member", "إضافة عضو"],
+        ["remove_member", "إزالة عضو"],
+        ["private_ticket", "تذكرة خاصة"],
+        ["summon", "استدعاء عضو"],
+        ["tag", "إدارة الوسوم"],
+        ["note", "ملاحظة داخلية"],
+        ["reopen", "إعادة فتح"],
       ];
       const matrix = el("div", { class: "ticket-permission-matrix" });
       const header = el("div", { class: "ticket-permission-row head" });
@@ -4125,8 +4139,13 @@
           matrix.querySelectorAll("[data-permission-key]").forEach((input) => {
             if (input.checked) (permissions[input.dataset.permissionKey] ||= []).push(input.value);
           });
-          writeApi(`api/guild/${state.guild.id}/tickets/settings`, { permissions })
-            .then(() => toast("تم حفظ الصلاحيات", "success", 2200));
+          writeApi(`api/guilds/${state.guild.id}/tickets/permissions`, { permissions })
+            .then(async (response) => {
+              const data = await readJson(response, {});
+              if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الصلاحيات");
+              state.ticketPermissions = data.permissions || permissions;
+              toast("تم حفظ الصلاحيات", "success", 2200);
+            });
         },
       });
       return el("div", { class: "ticket-next-content" },
