@@ -3036,6 +3036,161 @@ async def api_guild_tickets_deploy(req):
     return web.json_response({"ok": True, "panel": result})
 
 
+@routes.get('/api/guild/{guild_id}/tickets/panels')
+async def api_guild_tickets_panels(req):
+    _, guild = await authorize(req)
+    panels = [
+        panel for panel in await get_ticket_panels()
+        if int(panel.get("guild_id", 0)) == int(guild.id)
+    ]
+    return web.json_response({"panels": panels})
+
+
+@routes.delete('/api/guild/{guild_id}/tickets/panels/{message_id}')
+async def api_guild_tickets_panel_delete(req):
+    _, guild = await authorize(req, write=True)
+    try:
+        message_id = int(req.match_info["message_id"])
+    except (TypeError, ValueError):
+        return json_error(400, "validation", fields={"message_id": "معرف اللوحة غير صالح"})
+    panel = next(
+        (
+            item for item in await get_ticket_panels()
+            if int(item.get("guild_id", 0)) == int(guild.id)
+            and int(item.get("message_id", 0)) == message_id
+        ),
+        None,
+    )
+    if not panel:
+        return json_error(404, "ticket_panel_not_found")
+    channel = guild.get_channel(int(panel["channel_id"]))
+    if channel is not None and hasattr(channel, "fetch_message"):
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            logger.info("Ticket panel message %s was already unavailable.", message_id)
+    await delete_ticket_panel(guild.id, int(panel["channel_id"]), message_id)
+    return web.json_response({"deleted": True, "message_id": message_id})
+
+
+@routes.get('/api/guild/{guild_id}/tickets/analytics')
+async def api_guild_tickets_analytics(req):
+    _, guild = await authorize(req)
+    return web.json_response(await get_ticket_dashboard_analytics(guild.id))
+
+
+@routes.get('/api/guild/{guild_id}/tickets/settings')
+async def api_guild_tickets_settings_get(req):
+    _, guild = await authorize(req)
+    return web.json_response({"config": await get_ticket_config(guild.id) or {}})
+
+
+@routes.post('/api/guild/{guild_id}/tickets/settings')
+async def api_guild_tickets_settings_save(req):
+    session, guild = await authorize(req, write=True)
+    try:
+        body = await read_json_body(req)
+    except (json.JSONDecodeError, ValueError):
+        return json_error(400, "invalid_json")
+    if not isinstance(body, dict):
+        return json_error(400, "validation", fields={"_": "صيغة الطلب غير صالحة"})
+
+    def snowflake(name):
+        value = body.get(name)
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool) or not str(value).isdigit():
+            raise ValueError(name)
+        channel = guild.get_channel(int(value))
+        if channel is None:
+            raise LookupError(name)
+        return int(value)
+
+    try:
+        closed_category_id = snowflake("closed_category_id")
+        if closed_category_id is not None and not isinstance(
+            guild.get_channel(closed_category_id), discord.CategoryChannel
+        ):
+            return json_error(400, "validation", fields={"closed_category_id": "الفئة غير موجودة"})
+        log_channel_id = snowflake("log_channel_id")
+        evaluation_channel_id = snowflake("evaluation_channel_id")
+    except ValueError as error:
+        return json_error(400, "validation", fields={str(error): "معرف القناة غير صالح"})
+    except LookupError as error:
+        return json_error(400, "validation", fields={str(error): "القناة غير موجودة"})
+    try:
+        auto_close_minutes = int(body.get("auto_close_minutes") or 0)
+        open_limit = int(body.get("open_limit") or 1)
+    except (TypeError, ValueError):
+        return json_error(400, "validation", fields={"settings": "قيمة الإعداد غير صالحة"})
+    permissions = body.get("permissions")
+    close_config = body.get("close_config")
+    if not isinstance(permissions, dict):
+        permissions = {}
+    if not isinstance(close_config, dict):
+        close_config = {}
+    config = await update_ticket_control_config(
+        guild.id,
+        closed_category_id=closed_category_id,
+        log_channel_id=log_channel_id,
+        evaluation_channel_id=evaluation_channel_id,
+        allow_user_close=bool(body.get("allow_user_close", False)),
+        send_transcript_dm=bool(body.get("send_transcript_dm", True)),
+        auto_close_minutes=auto_close_minutes,
+        open_limit=open_limit,
+        panel_mode=str(body.get("panel_mode") or "dropdown"),
+        select_placeholder=str(body.get("select_placeholder") or ""),
+        permissions=permissions,
+        close_config=close_config,
+    )
+    logger.info("Ticket control settings saved in guild %s by user %s", guild.id, session["id"])
+    return web.json_response({"config": config})
+
+
+@routes.get('/api/guild/{guild_id}/tickets/blacklist')
+async def api_guild_tickets_blacklist_get(req):
+    _, guild = await authorize(req)
+    return web.json_response({"entries": await get_ticket_blacklist(guild.id)})
+
+
+@routes.post('/api/guild/{guild_id}/tickets/blacklist')
+async def api_guild_tickets_blacklist_save(req):
+    session, guild = await authorize(req, write=True)
+    try:
+        body = await read_json_body(req)
+        user_id = int(body.get("user_id"))
+        duration_days = body.get("duration_days")
+        duration_days = int(duration_days) if duration_days not in (None, "") else None
+    except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+        return json_error(400, "validation", fields={"user_id": "معرف العضو غير صالح"})
+    if user_id <= 0:
+        return json_error(400, "validation", fields={"user_id": "معرف العضو غير صالح"})
+    member = guild.get_member(user_id)
+    if member is None:
+        return json_error(400, "validation", fields={"user_id": "العضو غير موجود في السيرفر"})
+    entry = await save_ticket_blacklist(
+        guild.id,
+        user_id,
+        reason=str(body.get("reason") or ""),
+        duration_days=duration_days,
+        created_by=int(session["id"]),
+    )
+    return web.json_response({"entry": entry})
+
+
+@routes.delete('/api/guild/{guild_id}/tickets/blacklist/{user_id}')
+async def api_guild_tickets_blacklist_delete(req):
+    _, guild = await authorize(req, write=True)
+    try:
+        user_id = int(req.match_info["user_id"])
+    except (TypeError, ValueError):
+        return json_error(400, "validation", fields={"user_id": "معرف العضو غير صالح"})
+    if not await delete_ticket_blacklist(guild.id, user_id):
+        return json_error(404, "ticket_blacklist_not_found")
+    return web.json_response({"deleted": True, "user_id": user_id})
+
+
 @routes.get('/api/guild/{guild_id}/tickets/active')
 async def api_guild_tickets_active(req):
     _, guild = await authorize(req)

@@ -33,6 +33,7 @@ from database import (
     get_ticket_dropdown_categories,
     save_ticket_config,
     get_active_ticket_for_user_category,
+    is_ticket_user_blacklisted,
     get_ticket_transcripts,
     get_ticket_transcript,
     get_canned_responses,
@@ -1172,6 +1173,11 @@ class Community(commands.Cog):
         if guild is None:
             return await itx.response.send_message(
                 "🔒 فتح التذاكر متاح داخل السيرفرات فقط.", ephemeral=True
+            )
+        if await is_ticket_user_blacklisted(guild.id, itx.user.id):
+            return await itx.response.send_message(
+                "⛔ لا يمكنك فتح تذكرة حالياً. تواصل مع إدارة السيرفر إذا كنت ترى أن هذا بالخطأ.",
+                ephemeral=True,
             )
         existing = await get_active_ticket_for_user_category(
             guild.id,
