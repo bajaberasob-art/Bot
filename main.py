@@ -366,14 +366,20 @@ class EnterpriseBot(commands.Bot):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._wal_checkpoint_task
             self._wal_checkpoint_task = None
+        for guild_id, user_id in list(self._voice_sessions):
+            with contextlib.suppress(Exception):
+                await self._close_voice_session(guild_id, user_id, time.time())
         if self._analytics_writer_task:
+            try:
+                await asyncio.wait_for(self._analytics_queue.join(), timeout=5)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[ANALYTICS] writer drain timed out; closing with queued events remaining."
+                )
             self._analytics_writer_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._analytics_writer_task
             self._analytics_writer_task = None
-        for guild_id, user_id in list(self._voice_sessions):
-            with contextlib.suppress(Exception):
-                await self._close_voice_session(guild_id, user_id, time.time())
         with contextlib.suppress(Exception):
             await checkpoint_wal()
         if self.dashboard_runner:
@@ -447,48 +453,80 @@ class EnterpriseBot(commands.Bot):
         guild = getattr(message, "guild", None)
         author = getattr(message, "author", None)
         if guild is not None and author is not None and not getattr(author, "bot", False):
-            try:
-                self._analytics_queue.put_nowait({
-                    "guild_id": guild.id,
-                    "channel_id": getattr(getattr(message, "channel", None), "id", None),
-                    "user_id": author.id,
-                    "timestamp": time.time(),
-                })
-            except asyncio.QueueFull:
-                logger.warning("[ANALYTICS] message queue full; dropping one event.")
+            self._queue_analytics_event({
+                "guild_id": guild.id,
+                "channel_id": getattr(getattr(message, "channel", None), "id", None),
+                "user_id": author.id,
+                "timestamp": time.time(),
+            })
         await self.process_commands(message)
+
+    def _queue_analytics_event(self, event: dict) -> bool:
+        """Queue telemetry without making a Discord gateway callback wait on SQLite."""
+        try:
+            self._analytics_queue.put_nowait(event)
+            return True
+        except asyncio.QueueFull:
+            logger.warning("[ANALYTICS] queue full; dropping one telemetry event.")
+            return False
 
     async def _analytics_writer(self):
         """Batch analytics writes so the gateway listener never waits on SQLite."""
         while True:
-            first = await self._analytics_queue.get()
-            batch = [first]
+            batch = []
             try:
-                while len(batch) < 100:
-                    batch.append(await asyncio.wait_for(
-                        self._analytics_queue.get(),
-                        timeout=0.6,
-                    ))
-            except asyncio.TimeoutError:
-                pass
-            try:
-                await record_analytics_events(batch)
-            except Exception:
-                logger.exception("[ANALYTICS] failed to persist message batch.")
+                batch.append(await self._analytics_queue.get())
+                try:
+                    while len(batch) < 100:
+                        batch.append(await asyncio.wait_for(
+                            self._analytics_queue.get(),
+                            timeout=0.6,
+                        ))
+                except asyncio.TimeoutError:
+                    pass
+
+                message_events = [
+                    event for event in batch
+                    if event.get("kind") != "voice_session"
+                ]
+                if message_events:
+                    try:
+                        await record_analytics_events(message_events)
+                    except Exception:
+                        logger.exception("[ANALYTICS] failed to persist message batch.")
+
+                for event in batch:
+                    if event.get("kind") != "voice_session":
+                        continue
+                    try:
+                        await record_analytics_voice_session(
+                            event["guild_id"],
+                            event.get("channel_id"),
+                            event.get("user_id"),
+                            event["started_at"],
+                            event["ended_at"],
+                            event["duration_seconds"],
+                        )
+                    except Exception:
+                        logger.exception("[ANALYTICS] failed to persist voice session.")
+            finally:
+                for _ in batch:
+                    self._analytics_queue.task_done()
 
     async def _close_voice_session(self, guild_id: int, user_id: int, ended_at: float):
         session = self._voice_sessions.pop((int(guild_id), int(user_id)), None)
         if not session:
             return
         channel_id, started_at = session
-        await record_analytics_voice_session(
-            guild_id,
-            channel_id,
-            user_id,
-            started_at,
-            ended_at,
-            max(0, round(ended_at - started_at)),
-        )
+        self._queue_analytics_event({
+            "kind": "voice_session",
+            "guild_id": int(guild_id),
+            "channel_id": int(channel_id) if channel_id else None,
+            "user_id": int(user_id),
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": max(0, round(ended_at - started_at)),
+        })
 
     async def on_voice_state_update(
         self,
@@ -505,22 +543,17 @@ class EnterpriseBot(commands.Bot):
             return
         now = time.time()
         if before_id is not None:
-            try:
-                await self._close_voice_session(member.guild.id, member.id, now)
-            except Exception:
-                logger.exception("[ANALYTICS] failed to close voice session.")
+            await self._close_voice_session(member.guild.id, member.id, now)
         if after_id is not None:
             self._voice_sessions[(member.guild.id, member.id)] = (after_id, now)
-            try:
-                self._analytics_queue.put_nowait({
-                    "guild_id": member.guild.id,
-                    "channel_id": after_id,
-                    "user_id": member.id,
-                    "is_voice": True,
-                    "timestamp": now,
-                })
-            except asyncio.QueueFull:
-                logger.warning("[ANALYTICS] voice queue full; dropping one event.")
+            self._queue_analytics_event({
+                "kind": "voice_presence",
+                "guild_id": member.guild.id,
+                "channel_id": after_id,
+                "user_id": member.id,
+                "is_voice": True,
+                "timestamp": now,
+            })
 
     def record_metrics(self) -> None:
         """Capture live gateway and guild values for the dashboard charts."""
