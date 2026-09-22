@@ -137,6 +137,16 @@ def normalize_ticket_categories(categories_config):
             )
             if str(item).isdigit()
         ]
+        ping_role_ids = [
+            str(item)
+            for item in raw.get("ping_role_ids", support_role_ids)
+            if str(item).isdigit()
+        ]
+        staff_role_ids = [
+            str(item)
+            for item in raw.get("staff_role_ids", support_role_ids)
+            if str(item).isdigit()
+        ]
         raw_emoji = str(raw.get("emoji") or "🎫").strip()
         # Keep custom guild emoji tokens intact. Discord uses the full
         # <:name:id> / <a:name:id> token in SelectOption; truncating it to
@@ -150,6 +160,8 @@ def normalize_ticket_categories(categories_config):
             "category_id": str(raw["category_id"]) if raw.get("category_id") else None,
             "role_id": support_role_ids[0] if support_role_ids else None,
             "support_role_ids": support_role_ids,
+            "ping_role_ids": ping_role_ids,
+            "staff_role_ids": staff_role_ids,
             "senior_role_ids": [str(item) for item in raw.get("senior_role_ids", []) if str(item).isdigit()],
             "welcome_msg": str(raw.get("welcome_msg") or "")[:2000],
             "intake_fields": [
@@ -816,6 +828,10 @@ class Community(commands.Cog):
             channel.id,
             message.id,
             categories,
+            title=str(config.get("embed_title") or "🎫 مركز الدعم والتذاكر"),
+            description=str(config.get("embed_description") or ""),
+            color=int(config.get("embed_color") or 0x5865F2),
+            mode=str(config.get("panel_mode") or "dropdown"),
         )
 
     async def deploy_persistent_dropdown_panel(
