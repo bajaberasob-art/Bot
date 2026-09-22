@@ -136,6 +136,7 @@ LOG_ROUTING_ALIASES = {
 LOG_ROUTING_ALL_KEYS = tuple(dict.fromkeys((*LOG_ROUTING_KEYS, *LEGACY_LOG_ROUTING_KEYS)))
 _guild_locks: Dict[int, asyncio.Lock] = {}
 _db_semaphore: Optional[asyncio.Semaphore] = None
+_UNSET = object()
 
 
 class SettingsConflict(Exception):
@@ -4388,21 +4389,21 @@ async def get_ticket_settings(guild_id: int) -> dict[str, Any]:
 async def save_ticket_settings(
     guild_id: int,
     *,
-    log_channel_id: int | None | object = None,
-    evaluation_channel_id: int | None | object = None,
-    default_open_category_id: int | None | object = None,
-    closed_category_id: int | None | object = None,
-    allow_user_close: bool | object = None,
-    send_transcript_dm: bool | object = None,
+    log_channel_id: int | None | object = _UNSET,
+    evaluation_channel_id: int | None | object = _UNSET,
+    default_open_category_id: int | None | object = _UNSET,
+    closed_category_id: int | None | object = _UNSET,
+    allow_user_close: bool | object = _UNSET,
+    send_transcript_dm: bool | object = _UNSET,
 ) -> dict[str, Any]:
     current = await get_ticket_settings(guild_id)
     values = {
-        "log_channel_id": current.get("log_channel_id") if log_channel_id is None else log_channel_id,
-        "evaluation_channel_id": current.get("evaluation_channel_id") if evaluation_channel_id is None else evaluation_channel_id,
-        "default_open_category_id": current.get("default_open_category_id") if default_open_category_id is None else default_open_category_id,
-        "closed_category_id": current.get("closed_category_id") if closed_category_id is None else closed_category_id,
-        "allow_user_close": current.get("allow_user_close", False) if allow_user_close is None else bool(allow_user_close),
-        "send_transcript_dm": current.get("send_transcript_dm", True) if send_transcript_dm is None else bool(send_transcript_dm),
+        "log_channel_id": current.get("log_channel_id") if log_channel_id is _UNSET else log_channel_id,
+        "evaluation_channel_id": current.get("evaluation_channel_id") if evaluation_channel_id is _UNSET else evaluation_channel_id,
+        "default_open_category_id": current.get("default_open_category_id") if default_open_category_id is _UNSET else default_open_category_id,
+        "closed_category_id": current.get("closed_category_id") if closed_category_id is _UNSET else closed_category_id,
+        "allow_user_close": current.get("allow_user_close", False) if allow_user_close is _UNSET else bool(allow_user_close),
+        "send_transcript_dm": current.get("send_transcript_dm", True) if send_transcript_dm is _UNSET else bool(send_transcript_dm),
     }
     async with connect(aiosqlite.Row) as db:
         await db.execute(
@@ -4979,6 +4980,10 @@ def _ticket_blacklist_row(row) -> dict[str, Any]:
     for key in ("id", "guild_id", "user_id", "created_by"):
         if item.get(key) is not None:
             item[key] = int(item[key])
+    if item.get("expiration") is None:
+        item["expiration"] = item.get("expires_at")
+    if item.get("expires_at") is None:
+        item["expires_at"] = item.get("expiration")
     return item
 
 
@@ -5016,20 +5021,24 @@ async def save_ticket_blacklist(
     *,
     reason: str = "",
     duration_days: int | None = None,
+    expiration: str | None = None,
     created_by: int | None = None,
 ) -> dict[str, Any]:
     expires_at = None
     if duration_days is not None and int(duration_days) > 0:
         expires_at = datetime.now(timezone.utc) + timedelta(days=min(int(duration_days), 3650))
         expires_at = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+    elif expiration:
+        expires_at = str(expiration).strip()[:40]
     async with connect(aiosqlite.Row) as db:
         await db.execute(
             """
             INSERT INTO ticket_blacklist
-                (guild_id, user_id, expires_at, reason, created_by)
-            VALUES (?, ?, ?, ?, ?)
+                (guild_id, user_id, expires_at, expiration, reason, created_by)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id, user_id) DO UPDATE SET
                 expires_at = excluded.expires_at,
+                expiration = excluded.expiration,
                 reason = excluded.reason,
                 created_by = excluded.created_by,
                 created_at = CURRENT_TIMESTAMP
@@ -5037,6 +5046,7 @@ async def save_ticket_blacklist(
             (
                 int(guild_id),
                 int(user_id),
+                expires_at,
                 expires_at,
                 str(reason or "").strip()[:500],
                 int(created_by) if created_by is not None else None,
