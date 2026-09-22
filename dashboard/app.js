@@ -3400,6 +3400,387 @@
        card("مكتبة الردود السريعة", el("div", { class: "canned-drawer" }, cannedForm, cannedList)),
     );
   }
+  function ticketsViewNextGen() {
+    const config = state.ticketConfig || {};
+    const analytics = state.ticketAnalytics || {};
+    const overview = analytics.overview || {};
+    const channels = state.commandStudio?.channels || [];
+    const roles = state.commandStudio?.roles || [];
+    const categories = state.ticketCategories || [];
+    const activeCount = Number(overview.active ?? state.tickets.active.length);
+    const closedCount = Number(overview.closed ?? state.tickets.archive.length);
+    const ratings = analytics.ratings || [];
+    const ratingCount = ratings.reduce((sum, item) => sum + Number(item.count || 0), 0);
+    const ratingAverage = ratingCount
+      ? ratings.reduce((sum, item) => sum + Number(item.rating || 0) * Number(item.count || 0), 0) / ratingCount
+      : null;
+    const priorities = { normal: 0, high: 0, management: 0 };
+    (analytics.priorities || []).forEach((item) => { priorities[item.priority || "normal"] = Number(item.count || 0); });
+    const priorityTotal = Object.values(priorities).reduce((sum, value) => sum + value, 0) || 1;
+    const saveControlSettings = async (form) => {
+      const permissions = {};
+      form.querySelectorAll("[data-permission-key]").forEach((input) => {
+        const key = input.dataset.permissionKey;
+        permissions[key] = permissions[key] || [];
+        if (input.checked) permissions[key].push(input.value);
+      });
+      const body = {
+        closed_category_id: form.elements.closed_category_id.value || null,
+        log_channel_id: form.elements.log_channel_id.value || null,
+        evaluation_channel_id: form.elements.evaluation_channel_id.value || null,
+        allow_user_close: form.elements.allow_user_close.checked,
+        send_transcript_dm: form.elements.send_transcript_dm.checked,
+        auto_close_minutes: Number(form.elements.auto_close_minutes.value || 0),
+        open_limit: Number(form.elements.open_limit.value || 1),
+        panel_mode: form.elements.panel_mode.value,
+        select_placeholder: form.elements.select_placeholder.value.trim(),
+        permissions,
+        close_config: {
+          move_to_category: form.elements.closed_category_id.value || null,
+          archive_transcript: form.elements.send_transcript_dm.checked,
+        },
+      };
+      try {
+        const response = await writeApi(`api/guild/${state.guild.id}/tickets/settings`, body);
+        const data = await readJson(response, {});
+        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ إعدادات التذاكر");
+        state.ticketConfig = { ...state.ticketConfig, ...(data.config || {}) };
+        state.ticketSettings = data.config || state.ticketSettings;
+        pulse();
+        toast("تم حفظ إعدادات التذاكر", "success", 2400);
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      }
+    };
+    const deployPanel = async (form) => {
+      const channelId = form.elements.target_channel_id.value;
+      if (!channelId) return toast("اختر قناة نشر اللوحة");
+      try {
+        const response = await api(`api/guild/${state.guild.id}/tickets/deploy`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": state.session.csrf },
+          body: JSON.stringify({
+            target_channel_id: channelId,
+            categories,
+            embed_title: form.elements.embed_title.value.trim(),
+            embed_description: form.elements.embed_description.value.trim(),
+            embed_color: form.elements.embed_color.value,
+            footer_text: form.elements.footer_text.value.trim(),
+          }),
+        });
+        const data = await readJson(response, {});
+        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر نشر اللوحة");
+        toast("تم نشر اللوحة في Discord", "success", 2600);
+        await refreshTickets();
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال لنشر اللوحة");
+      }
+    };
+    const saveSections = async () => {
+      try {
+        const response = await api(`api/guild/${state.guild.id}/tickets/config`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": state.session.csrf },
+          body: JSON.stringify({
+            categories,
+            embed_title: config.embed_title,
+            embed_description: config.embed_description,
+            embed_color: config.embed_color,
+            footer_text: config.footer_text,
+          }),
+        });
+        const data = await readJson(response, {});
+        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الأقسام");
+        state.ticketCategories = data.categories || categories;
+        toast("تم حفظ باني الأقسام", "success", 2200);
+        renderPage();
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      }
+    };
+    const removePanel = async (panel) => {
+      if (!confirm("حذف هذه اللوحة من Discord؟")) return;
+      try {
+        const response = await api(`api/guild/${state.guild.id}/tickets/panels/${panel.message_id}`, {
+          method: "DELETE",
+          headers: { "X-CSRF-Token": state.session.csrf },
+        });
+        if (!response.ok) return toast("تعذر حذف اللوحة");
+        state.ticketPanels = state.ticketPanels.filter((item) => String(item.message_id) !== String(panel.message_id));
+        toast("تم حذف اللوحة", "success", 2000);
+        renderPage();
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      }
+    };
+    const addBlacklist = async (form) => {
+      try {
+        const response = await writeApi(`api/guild/${state.guild.id}/tickets/blacklist`, {
+          user_id: form.elements.user_id.value.trim(),
+          duration_days: form.elements.duration_days.value || null,
+          reason: form.elements.reason.value.trim(),
+        });
+        const data = await readJson(response, {});
+        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حظر العضو");
+        state.ticketBlacklist = [data.entry, ...state.ticketBlacklist.filter((item) => String(item.user_id) !== String(data.entry.user_id))];
+        toast("تمت إضافة العضو إلى القائمة السوداء", "success", 2400);
+        form.reset();
+        renderPage();
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      }
+    };
+    const removeBlacklist = async (entry) => {
+      try {
+        const response = await api(`api/guild/${state.guild.id}/tickets/blacklist/${entry.user_id}`, {
+          method: "DELETE",
+          headers: { "X-CSRF-Token": state.session.csrf },
+        });
+        if (!response.ok) return toast("تعذر إزالة الحظر");
+        state.ticketBlacklist = state.ticketBlacklist.filter((item) => String(item.user_id) !== String(entry.user_id));
+        renderPage();
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      }
+    };
+    const tab = (key, label, icon) => el("button", {
+      class: `ticket-next-tab ${state.ticketTab === key ? "active" : ""}`,
+      type: "button",
+      "aria-selected": String(state.ticketTab === key),
+      onClick: () => {
+        state.ticketTab = key;
+        sessionStorage.setItem("ticket-tab", key);
+        renderPage();
+      },
+    }, el("span", { class: "ticket-tab-icon", text: icon }), label);
+    const channelOptions = (placeholder, onlyCategories = false) => [
+      el("option", { value: "" }, placeholder),
+      ...channels
+        .filter((item) => onlyCategories ? item.type === "category" : item.type !== "category")
+        .map((item) => el("option", { value: item.id }, `${onlyCategories ? "▦" : "#"} ${item.name}`)),
+    ];
+    const metric = (label, value, detail, tone) => el("article", { class: `ticket-next-metric ${tone || ""}` },
+      el("span", { class: "ticket-metric-label", text: label }),
+      el("strong", { text: String(value) }),
+      el("small", { text: detail }),
+    );
+    const overviewView = () => {
+      const activity = analytics.activity || [];
+      const live = el("div", { class: "ticket-live-feed" });
+      if (!activity.length) live.append(el("div", { class: "ticket-next-empty", text: "لا يوجد نشاط مسجل بعد" }));
+      activity.slice(0, 8).forEach((item) => {
+        const closed = item.status === "closed";
+        live.append(el("article", { class: "ticket-live-item" },
+          el("span", { class: `ticket-live-mark ${closed ? "rose" : "emerald"}`, text: closed ? "✓" : "•" }),
+          el("div", {},
+            el("strong", { text: `${closed ? "أُغلقت" : "تذكرة نشطة"} · #${item.id}` }),
+            el("small", { text: `${item.category_label || "دعم"} · ${item.subject || "بدون عنوان"}` }),
+          ),
+          el("time", { text: item.closed_at || item.opened_at || "الآن" }),
+        ));
+      });
+      const donut = el("div", {
+        class: "ticket-priority-donut",
+        style: `--normal:${(priorities.normal / priorityTotal) * 100}%;--high:${(priorities.high / priorityTotal) * 100}%;--management:${(priorities.management / priorityTotal) * 100}%;`,
+      }, el("strong", { text: String(activeCount) }), el("small", { text: "مفتوحة" }));
+      const satisfactionRows = [5, 4, 3, 2, 1].map((stars) => {
+        const count = Number(ratings.find((item) => Number(item.rating) === stars)?.count || 0);
+        const width = ratingCount ? Math.round((count / ratingCount) * 100) : 0;
+        return el("div", { class: "ticket-rating-row" },
+          el("span", { text: `${stars} ★` }),
+          el("i", {}, el("b", { style: `width:${width}%` })),
+          el("small", { text: String(count) }),
+        );
+      });
+      const leaderboard = el("div", { class: "ticket-leaderboard" });
+      (analytics.staff || []).slice(0, 5).forEach((item, index) => leaderboard.append(
+        el("div", { class: "ticket-leader-row" },
+          el("span", { class: "ticket-rank", text: String(index + 1).padStart(2, "0") }),
+          el("div", {}, el("strong", { text: `عضو #${item.staff_id}` }), el("small", { text: `${item.resolved || 0} تذاكر محلولة` })),
+          el("b", { text: item.avg_rating == null ? "—" : `${Number(item.avg_rating).toFixed(1)} ★` }),
+        ),
+      ));
+      if (!leaderboard.children.length) leaderboard.append(el("div", { class: "ticket-next-empty", text: "ستظهر الترتيبات بعد حل التذاكر" }));
+      return el("div", { class: "ticket-next-content ticket-overview-content" },
+        el("div", { class: "ticket-next-metrics" },
+          metric("التذاكر المفتوحة", activeCount, "مزامنة مباشرة من SQLite", "amber"),
+          metric("التذاكر المحلولة", closedCount, "كل السجلات المغلقة", "emerald"),
+          metric("متوسط أول رد", formatDuration(overview.avg_response), "من وقت فتح التذكرة", "cyan"),
+          metric("رضا الأعضاء", ratingAverage == null ? "—" : `${ratingAverage.toFixed(1)}/5`, `${ratingCount} تقييم محفوظ`, "rose"),
+        ),
+        el("div", { class: "ticket-bento-grid" },
+          el("section", { class: "ticket-next-card ticket-priority-card" },
+            el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "PRIORITIES" }), el("h3", { text: "توزيع الأولويات" })), el("span", { class: "ticket-card-icon", text: "◌" })),
+            el("div", { class: "ticket-donut-wrap" }, donut, el("div", { class: "ticket-priority-legend" },
+              [["normal", "عادية", "#a2a1aa"], ["high", "عالية", "#ffb547"], ["management", "إدارية", "#ff5b81"]].map(([key, label, color]) =>
+                el("span", {}, el("i", { style: `background:${color}` }), label, el("b", { text: `${priorities[key]} · ${Math.round((priorities[key] / priorityTotal) * 100)}%` })),
+              ),
+            )),
+          ),
+          el("section", { class: "ticket-next-card ticket-satisfaction-card" },
+            el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "MEMBER FEEDBACK" }), el("h3", { text: "رضا الأعضاء" })), el("strong", { class: "ticket-rating-score", text: ratingAverage == null ? "—" : `${ratingAverage.toFixed(1)} ★` })),
+            el("div", { class: "ticket-rating-bars" }, satisfactionRows),
+          ),
+          el("section", { class: "ticket-next-card ticket-staff-card" },
+            el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "STAFF LEADERBOARD" }), el("h3", { text: "أفضل الموظفين" })), el("span", { class: "ticket-card-icon", text: "↗" })),
+            leaderboard,
+          ),
+          el("section", { class: "ticket-next-card ticket-activity-card" },
+            el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "LIVE ACTIVITY" }), el("h3", { text: "النشاط المباشر" })), el("span", { class: "ticket-live-pill", text: "● LIVE" })),
+            live,
+          ),
+        ),
+        el("section", { class: "ticket-next-card ticket-queue-card" },
+          el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "ACTIVE QUEUE" }), el("h3", { text: "طابور التذاكر" })), el("button", { class: "ticket-inline-action", type: "button", text: "تحديث", onClick: refreshTickets })),
+          el("div", { class: "ticket-queue-grid" }, [["active", "قيد المعالجة"], ["waiting_staff", "بانتظار الدعم"], ["waiting_user", "بانتظار العضو"]].map(([key, label]) =>
+            el("button", { class: `ticket-queue-chip ${state.ticketStatusFilter === key ? "selected" : ""}`, type: "button", onClick: () => { state.ticketStatusFilter = state.ticketStatusFilter === key ? "all" : key; renderPage(); } },
+              el("strong", { text: String(state.tickets.active.filter((ticket) => (ticket.status || "active") === key).length) }), el("span", { text: label }),
+            ),
+          )),
+          el("div", { class: "ticket-queue-list" }, state.tickets.active
+            .filter((ticket) => state.ticketStatusFilter === "all" || (ticket.status || "active") === state.ticketStatusFilter)
+            .slice(0, 8)
+            .map((ticket) => el("button", { class: "ticket-queue-row", type: "button", onClick: () => openTicketDetail(ticket) },
+              el("span", { class: `ticket-queue-priority ${ticket.priority || "normal"}` }),
+              el("strong", { text: `#${ticket.id} · ${ticket.subject}` }),
+              el("small", { text: ticket.category_label || "دعم" }),
+              el("b", { text: ticket.claimed_by ? `#${ticket.claimed_by}` : "غير مستلمة" }),
+            )),
+          state.tickets.active.length ? null : el("div", { class: "ticket-next-empty", text: "لا توجد تذاكر نشطة حالياً" }),
+        ),
+      );
+    };
+    const panelsView = () => {
+      const cards = state.ticketPanels.map((panel) => el("article", { class: "ticket-panel-tile" },
+        el("div", { class: "ticket-panel-tile-top" }, el("span", { class: "ticket-panel-status", text: "● متصلة" }), el("small", { text: `#${panel.message_id}` })),
+        el("div", { class: "ticket-panel-preview-mini" }, el("span", { class: "ticket-kicker", text: "PR1ME SUPPORT" }), el("strong", { text: config.embed_title || "مركز الدعم والتذاكر" }), el("small", { text: config.select_placeholder || "اختر القسم المناسب لطلبك" })),
+        el("div", { class: "ticket-panel-tile-meta" }, el("span", { text: `#${window.guildChannels?.[panel.channel_id] || panel.channel_id}` }), el("span", { text: `${(panel.categories || []).length} أقسام` })),
+        el("div", { class: "ticket-tile-actions" },
+          el("button", { class: "ticket-inline-action", type: "button", text: "تحرير", onClick: () => { state.ticketCategories = (panel.categories || []).map((item) => ({ ...item })); state.ticketTab = "builder"; renderPage(); } }),
+          el("button", { class: "ticket-inline-action danger", type: "button", text: "حذف", onClick: () => removePanel(panel) }),
+        ),
+      ));
+      if (!cards.length) cards.push(el("div", { class: "ticket-next-empty", text: "لم تنشر أي لوحة بعد. أنشئ أول لوحة من المحرر المرئي." }));
+      return el("div", { class: "ticket-next-content" },
+        el("div", { class: "ticket-section-title-row" }, el("div", {}, el("span", { class: "ticket-kicker", text: "DISCORD PANELS" }), el("h3", { text: "لوحات التذاكر" }), el("p", { text: "أدر الرسائل المنشورة واتصل بالمحرر المرئي دون مغادرة لوحة التحكم." })), el("button", { class: "ticket-add-button", type: "button", text: "+ بانل جديد", onClick: () => { state.ticketCategories = state.ticketCategories.map((item) => ({ ...item })); state.ticketTab = "builder"; renderPage(); } })),
+        el("div", { class: "ticket-panels-grid" }, cards),
+      );
+    };
+    const builderView = (sectionsOnly = false) => {
+      const form = el("form", { class: "ticket-visual-builder" },
+        !sectionsOnly && el("div", { class: "ticket-builder-preview" },
+          el("span", { class: "ticket-kicker", text: "VISUAL BUILDER" }),
+          el("h3", { text: config.embed_title || "مركز الدعم والتذاكر" }),
+          el("p", { text: config.embed_description || "اختر القسم المناسب لفتح تذكرة خاصة مع فريق الدعم." }),
+          el("div", { class: "ticket-builder-options" }, categories.slice(0, 6).map((item) => el("span", {}, item.emoji || "🎫", item.label))),
+        ),
+        !sectionsOnly && el("div", { class: "ticket-builder-form-grid" },
+          el("label", {}, "قناة النشر", el("select", { name: "target_channel_id", class: "studio-input" }, channelOptions("اختر قناة نصية"))),
+          el("label", {}, "عنوان اللوحة", el("input", { name: "embed_title", class: "studio-input", value: config.embed_title || "مركز الدعم والتذاكر", maxlength: "256" })),
+          el("label", {}, "لون Accent", el("input", { name: "embed_color", class: "studio-input ticket-color-input", type: "color", value: `#${Number(config.embed_color || 0xF4B740).toString(16).padStart(6, "0").slice(-6)}` })),
+          el("label", { class: "ticket-builder-wide" }, "الوصف", el("textarea", { name: "embed_description", class: "studio-textarea", rows: "2", maxlength: "4096", text: config.embed_description || "" })),
+          el("label", { class: "ticket-builder-wide" }, "التذييل", el("input", { name: "footer_text", class: "studio-input", value: config.footer_text || "" })),
+        ),
+        el("div", { class: "ticket-builder-section-head" }, el("div", {}, el("span", { class: "ticket-kicker", text: "SECTION BUILDER" }), el("h3", { text: "أقسام البانل" }), el("small", { text: "اضبط emoji السيرفر، الفئة الأب، رتب الدعم ونموذج الفتح لكل قسم." })), el("button", { class: "ticket-inline-action", type: "button", text: "+ إضافة قسم", onClick: () => { if (categories.length >= 25) return toast("الحد الأقصى 25 قسماً"); categories.push({ key: `support_${Date.now()}`, label: "قسم دعم جديد", description: "", emoji: "🎫", support_role_ids: [], senior_role_ids: [], intake_fields: [] }); renderPage(); } })),
+        ticketCategoryEditor(),
+        el("div", { class: "ticket-builder-footer" },
+          el("button", { class: "ticket-add-button", type: "submit", text: sectionsOnly ? "حفظ الأقسام" : "نشر البانل في Discord" }),
+          !sectionsOnly && el("span", { class: "ticket-builder-note", text: "سيبقى المحرك الحالي والصلاحيات والقنوات كما هي." }),
+        ),
+      );
+      form.onsubmit = (event) => { event.preventDefault(); sectionsOnly ? saveSections() : deployPanel(form); };
+      return el("div", { class: "ticket-next-content" },
+        el("div", { class: "ticket-section-title-row" }, el("div", {}, el("span", { class: "ticket-kicker", text: sectionsOnly ? "SECTION BUILDER" : "PANEL EDITOR" }), el("h3", { text: sectionsOnly ? "باني الأقسام" : "المحرر المرئي" })), state.ticketTab === "builder" && el("button", { class: "ticket-inline-action", type: "button", text: "إلغاء", onClick: () => { state.ticketTab = "panels"; renderPage(); } })),
+        form,
+      );
+    };
+    const settingsView = () => {
+      const current = state.ticketSettings || config;
+      const settingsForm = el("form", { class: "ticket-settings-layout" },
+        el("section", { class: "ticket-next-card ticket-settings-card" },
+          el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "GENERAL SETTINGS" }), el("h3", { text: "الإعدادات العامة" })), el("span", { class: "ticket-card-icon", text: "⚙" })),
+          el("div", { class: "ticket-settings-grid" },
+            el("label", {}, "الفئة المغلقة", el("select", { name: "closed_category_id", class: "studio-input" }, channelOptions("بدون نقل تلقائي", true))),
+            el("label", {}, "قناة سجل التذاكر", el("select", { name: "log_channel_id", class: "studio-input" }, channelOptions("بدون قناة سجل"))),
+            el("label", {}, "قناة التقييمات", el("select", { name: "evaluation_channel_id", class: "studio-input" }, channelOptions("بدون قناة تقييم"))),
+            el("label", {}, "مهلة الإغلاق التلقائي (دقائق)", el("input", { name: "auto_close_minutes", class: "studio-input", type: "number", min: "0", max: "10080", value: current.auto_close_minutes || 0 })),
+            el("label", {}, "حد التذاكر للعضو", el("input", { name: "open_limit", class: "studio-input", type: "number", min: "1", max: "20", value: current.open_limit || 1 })),
+            el("label", {}, "نمط لوحة Discord", el("select", { name: "panel_mode", class: "studio-input" }, el("option", { value: "dropdown" }, "Dropdown"), el("option", { value: "buttons" }, "Buttons"))),
+            el("label", { class: "ticket-builder-wide" }, "النص الإرشادي للمنتقي", el("input", { name: "select_placeholder", class: "studio-input", maxlength: "200", value: current.select_placeholder || "اختر القسم المناسب لطلبك" })),
+          ),
+          el("div", { class: "ticket-toggle-list" },
+            el("label", {}, el("input", { name: "allow_user_close", type: "checkbox", checked: Boolean(current.allow_user_close) }), "السماح للعضو بإغلاق تذكرته"),
+            el("label", {}, el("input", { name: "send_transcript_dm", type: "checkbox", checked: current.send_transcript_dm !== false }), "حفظ وإرسال transcript عند الإغلاق"),
+          ),
+        ),
+        el("section", { class: "ticket-next-card ticket-blacklist-card" },
+          el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "ACCESS CONTROL" }), el("h3", { text: "Blacklist" })), el("span", { class: "ticket-card-icon rose", text: "⊘" })),
+          el("p", { class: "ticket-muted-copy", text: "امنع أعضاء محددين من فتح تذاكر جديدة دون التأثير على التذاكر الموجودة." }),
+          el("form", { class: "ticket-blacklist-form" },
+            el("input", { name: "user_id", class: "studio-input", placeholder: "Discord User ID", inputmode: "numeric", required: true }),
+            el("input", { name: "duration_days", class: "studio-input", type: "number", min: "1", placeholder: "أيام (اختياري)" }),
+            el("input", { name: "reason", class: "studio-input", placeholder: "سبب الحظر" }),
+            el("button", { class: "ticket-inline-action danger", type: "submit", text: "حظر العضو" }),
+          ),
+          el("div", { class: "ticket-blacklist-list" }, state.ticketBlacklist.length ? state.ticketBlacklist.map((entry) => el("div", { class: "ticket-blacklist-row" }, el("span", {}, el("strong", { text: `#${entry.user_id}` }), el("small", { text: entry.reason || "بدون سبب" })), el("button", { class: "ticket-inline-action danger", type: "button", text: "إزالة", onClick: () => removeBlacklist(entry) }))) : el("div", { class: "ticket-next-empty", text: "القائمة السوداء فارغة" })),
+        ),
+        el("button", { class: "ticket-add-button ticket-settings-save", type: "submit", text: "حفظ الإعدادات" }),
+      );
+      settingsForm.elements.closed_category_id.value = current.closed_category_id || "";
+      settingsForm.elements.log_channel_id.value = current.log_channel_id || "";
+      settingsForm.elements.evaluation_channel_id.value = current.evaluation_channel_id || "";
+      settingsForm.elements.panel_mode.value = current.panel_mode || "dropdown";
+      settingsForm.onsubmit = (event) => {
+        event.preventDefault();
+        if (event.submitter?.closest(".ticket-blacklist-form")) return;
+        saveControlSettings(settingsForm);
+      };
+      settingsForm.querySelector(".ticket-blacklist-form").onsubmit = (event) => { event.preventDefault(); addBlacklist(event.currentTarget); };
+      return el("div", { class: "ticket-next-content" }, el("div", { class: "ticket-section-title-row" }, el("div", {}, el("span", { class: "ticket-kicker", text: "CLOSE & ARCHIVE" }), el("h3", { text: "الإعدادات العامة والسلوك" }), el("p", { text: "تحكم في النقل، الأرشفة، التقييم وقنوات السجل." }))), settingsForm);
+    };
+    const permissionsView = () => {
+      const permissionDefaults = currentPermissions(config.permissions_json || config.permissions || {});
+      const permissionRows = [
+        ["open", "فتح التذاكر"], ["claim", "استلام التذكرة"], ["close", "إغلاق وأرشفة"], ["reassign", "إعادة الإسناد"], ["manage", "تعديل الإعدادات"],
+      ];
+      const matrix = el("div", { class: "ticket-permission-matrix" },
+        el("div", { class: "ticket-permission-row head" }, el("strong", { text: "السلوك" }), ...roles.slice(0, 8).map((role) => el("span", { text: `@${role.name}` }))),
+        ...permissionRows.map(([key, label]) => el("div", { class: "ticket-permission-row" }, el("strong", { text: label }), ...roles.slice(0, 8).map((role) => el("label", {}, el("input", { type: "checkbox", value: String(role.id), "data-permission-key": key, checked: (permissionDefaults[key] || []).map(String).includes(String(role.id)) }), el("span", { text: "●" }))))),
+      );
+      return el("div", { class: "ticket-next-content" },
+        el("div", { class: "ticket-section-title-row" }, el("div", {}, el("span", { class: "ticket-kicker", text: "PERMISSIONS" }), el("h3", { text: "الصلاحيات وسلوك الإغلاق" }), el("p", { text: "المصفوفة تحفظ الرتب المختارة وتبقى متوافقة مع فحوصات محرك التذاكر." }))),
+        el("section", { class: "ticket-next-card ticket-permissions-card" }, matrix, el("div", { class: "ticket-permissions-actions" }, el("button", { class: "ticket-add-button", type: "button", text: "حفظ مصفوفة الصلاحيات", onClick: () => {
+          const fakeForm = el("form");
+          matrix.querySelectorAll("[data-permission-key]").forEach((input) => fakeForm.append(input.cloneNode(true)));
+          const body = { ...config, permissions: {} };
+          matrix.querySelectorAll("[data-permission-key]").forEach((input) => { if (input.checked) (body.permissions[input.dataset.permissionKey] ||= []).push(input.value); });
+          writeApi(`api/guild/${state.guild.id}/tickets/settings`, { permissions: body.permissions }).then(() => toast("تم حفظ الصلاحيات", "success", 2200));
+        } })),
+      );
+    };
+    function currentPermissions(value) {
+      return value && typeof value === "object" ? value : {};
+    }
+    let body;
+    if (state.ticketTab === "panels") body = panelsView();
+    else if (state.ticketTab === "builder") body = builderView(false);
+    else if (state.ticketTab === "sections") body = builderView(true);
+    else if (state.ticketTab === "settings") body = settingsView();
+    else if (state.ticketTab === "permissions") body = permissionsView();
+    else body = overviewView();
+    const tabs = el("nav", { class: "ticket-next-tabs", "aria-label": "وحدات مركز التذاكر" },
+      tab("overview", "نظرة عامة", "◈"), tab("panels", "البانلات", "▦"), tab("builder", "محرر البانل", "✦"), tab("sections", "باني الأقسام", "☷"), tab("settings", "الإعدادات", "⚙"), tab("permissions", "الصلاحيات", "⌘"),
+    );
+    return el("section", { id: "view-tickets", class: "tickets-view tickets-nextgen" },
+      el("header", { class: "ticket-next-hero" },
+        el("div", {}, el("span", { class: "ticket-kicker amber", text: "PR1ME / TICKET CRM" }), el("h2", { text: "مركز التذاكر" }), el("p", { text: "إدارة الدعم، اللوحات، الأداء، والصلاحيات من مساحة واحدة متصلة بمحرك Discord." })),
+        el("div", { class: "ticket-next-hero-actions" }, el("span", { class: "ticket-live-pill", text: "● LIVE DATA" }), el("button", { class: "ticket-refresh-button", type: "button", text: "↻ تحديث", onClick: refreshTickets })),
+      ),
+      tabs,
+      body,
+    );
+  }
+
   function commandsView() {
     const studio = state.commandStudio || { commands: [], roles: [], channels: [] };
     const prefixInput = el("input", {
@@ -5803,7 +6184,7 @@
     }
     const view = state.activeView;
     if (view === "overview") main.append(enhancedOverviewView());
-    else if (view === "tickets") main.append(ticketsView());
+    else if (view === "tickets") main.append(ticketsViewNextGen());
     else if (view === "commands") main.append(commandsView());
     else if (view === "gaming") main.append(gamingView());
     else if (view === "clan") main.append(clanOpsView());
