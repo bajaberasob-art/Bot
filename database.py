@@ -903,6 +903,26 @@ async def init_db() -> None:
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            async with db.execute("PRAGMA table_info(ticket_config)") as cur:
+                ticket_config_columns = {row[1] for row in await cur.fetchall()}
+            ticket_config_migrations = {
+                "closed_category_id": "INTEGER DEFAULT NULL",
+                "log_channel_id": "INTEGER DEFAULT NULL",
+                "evaluation_channel_id": "INTEGER DEFAULT NULL",
+                "allow_user_close": "INTEGER NOT NULL DEFAULT 0",
+                "send_transcript_dm": "INTEGER NOT NULL DEFAULT 1",
+                "auto_close_minutes": "INTEGER NOT NULL DEFAULT 0",
+                "open_limit": "INTEGER NOT NULL DEFAULT 1",
+                "panel_mode": "TEXT NOT NULL DEFAULT 'dropdown'",
+                "select_placeholder": "TEXT NOT NULL DEFAULT 'اختر القسم المناسب لطلبك'",
+                "permissions_json": "TEXT NOT NULL DEFAULT '{}'",
+                "close_config_json": "TEXT NOT NULL DEFAULT '{}'",
+            }
+            for column, definition in ticket_config_migrations.items():
+                if column not in ticket_config_columns:
+                    await db.execute(
+                        f"ALTER TABLE ticket_config ADD COLUMN {column} {definition}"
+                    )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS ticket_options (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -918,6 +938,22 @@ async def init_db() -> None:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ticket_options_guild "
                 "ON ticket_options(guild_id, id);"
+            )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_blacklist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    expires_at DATETIME DEFAULT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    created_by INTEGER DEFAULT NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (guild_id, user_id)
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ticket_blacklist_lookup "
+                "ON ticket_blacklist(guild_id, user_id, expires_at);"
             )
             # Step 6 clan operations and the dashboard-owned ticket dropdown
             # tables are additive. Keep these separate from legacy ticket and
@@ -4049,7 +4085,8 @@ async def save_ticket_panel(
 async def get_ticket_panels() -> list[dict[str, Any]]:
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
-            "SELECT guild_id, channel_id, message_id, categories FROM ticket_panels"
+            "SELECT guild_id, channel_id, message_id, categories, updated_at "
+            "FROM ticket_panels ORDER BY updated_at DESC"
         ) as cur:
             rows = []
             for row in await cur.fetchall():
@@ -4065,6 +4102,23 @@ async def get_ticket_panels() -> list[dict[str, Any]]:
             return rows
 
 
+async def delete_ticket_panel(
+    guild_id: int,
+    channel_id: int,
+    message_id: int,
+) -> bool:
+    async with connect() as db:
+        cursor = await db.execute(
+            """
+            DELETE FROM ticket_panels
+            WHERE guild_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (int(guild_id), int(channel_id), int(message_id)),
+        )
+        await db.commit()
+    return cursor.rowcount > 0
+
+
 def _ticket_config_row(row) -> dict[str, Any] | None:
     if not row:
         return None
@@ -4077,6 +4131,28 @@ def _ticket_config_row(row) -> dict[str, Any] | None:
     item["embed_title"] = str(item.get("embed_title") or "الدعم الفني")
     item["embed_description"] = str(item.get("embed_description") or "")
     item["footer_text"] = str(item.get("footer_text") or "PR1ME TEAM Support")
+    for key in ("allow_user_close", "send_transcript_dm"):
+        if key in item:
+            item[key] = bool(item[key])
+    for key in ("closed_category_id", "log_channel_id", "evaluation_channel_id"):
+        if item.get(key) is not None:
+            item[key] = int(item[key])
+    for key in ("auto_close_minutes", "open_limit"):
+        if key in item:
+            item[key] = int(item.get(key) or 0)
+    for key in ("permissions_json", "close_config_json"):
+        raw = item.get(key)
+        if isinstance(raw, str):
+            try:
+                item[key] = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                item[key] = {}
+        elif not isinstance(raw, dict):
+            item[key] = {}
+    item["panel_mode"] = str(item.get("panel_mode") or "dropdown")
+    item["select_placeholder"] = str(
+        item.get("select_placeholder") or "اختر القسم المناسب لطلبك"
+    )
     return item
 
 
@@ -4158,6 +4234,73 @@ async def save_ticket_config(
         ) as cur:
             row = await cur.fetchone()
     return _ticket_config_row(row)
+
+
+async def update_ticket_control_config(
+    guild_id: int,
+    *,
+    closed_category_id: int | None = None,
+    log_channel_id: int | None = None,
+    evaluation_channel_id: int | None = None,
+    allow_user_close: bool = False,
+    send_transcript_dm: bool = True,
+    auto_close_minutes: int = 0,
+    open_limit: int = 1,
+    panel_mode: str = "dropdown",
+    select_placeholder: str = "اختر القسم المناسب لطلبك",
+    permissions: dict[str, Any] | None = None,
+    close_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    config = await get_ticket_config(guild_id) or {}
+    await save_ticket_config(
+        guild_id,
+        config.get("channel_id"),
+        config.get("message_id"),
+        embed_title=config.get("embed_title") or "الدعم الفني",
+        embed_description=config.get("embed_description") or "",
+        embed_color=int(config.get("embed_color") or 0x5865F2),
+        footer_text=config.get("footer_text") or "PR1ME TEAM Support",
+    )
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            """
+            UPDATE ticket_config
+            SET closed_category_id = ?,
+                log_channel_id = ?,
+                evaluation_channel_id = ?,
+                allow_user_close = ?,
+                send_transcript_dm = ?,
+                auto_close_minutes = ?,
+                open_limit = ?,
+                panel_mode = ?,
+                select_placeholder = ?,
+                permissions_json = ?,
+                close_config_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE guild_id = ?
+            """,
+            (
+                int(closed_category_id) if closed_category_id is not None else None,
+                int(log_channel_id) if log_channel_id is not None else None,
+                int(evaluation_channel_id) if evaluation_channel_id is not None else None,
+                int(bool(allow_user_close)),
+                int(bool(send_transcript_dm)),
+                max(0, min(10080, int(auto_close_minutes or 0))),
+                max(1, min(20, int(open_limit or 1))),
+                "buttons" if panel_mode == "buttons" else "dropdown",
+                str(select_placeholder or "اختر القسم المناسب لطلبك")[:200],
+                json.dumps(permissions or {}, ensure_ascii=False),
+                json.dumps(close_config or {}, ensure_ascii=False),
+                int(guild_id),
+            ),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM ticket_config WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    return _ticket_config_row(row) or {}
 
 
 async def get_ticket_options(guild_id: int) -> list[dict[str, Any]]:
