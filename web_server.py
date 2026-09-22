@@ -3334,7 +3334,7 @@ async def api_guilds_tickets_panel_publish(req):
 @routes.get('/api/guild/{guild_id}/tickets/settings')
 async def api_guild_tickets_settings_get(req):
     _, guild = await authorize(req)
-    return web.json_response({"config": await get_ticket_config(guild.id) or {}})
+    return web.json_response(await _ticket_settings_response(guild))
 
 
 async def _ticket_settings_response(guild):
@@ -3517,57 +3517,46 @@ async def api_guild_tickets_settings_save(req):
         return json_error(400, "invalid_json")
     if not isinstance(body, dict):
         return json_error(400, "validation", fields={"_": "صيغة الطلب غير صالحة"})
-
-    def snowflake(name):
-        value = body.get(name)
-        if value in (None, ""):
-            return None
-        if isinstance(value, bool) or not str(value).isdigit():
-            raise ValueError(name)
-        channel = guild.get_channel(int(value))
-        if channel is None:
-            raise LookupError(name)
-        return int(value)
-
-    try:
-        closed_category_id = snowflake("closed_category_id")
-        if closed_category_id is not None and not isinstance(
-            guild.get_channel(closed_category_id), discord.CategoryChannel
-        ):
-            return json_error(400, "validation", fields={"closed_category_id": "الفئة غير موجودة"})
-        log_channel_id = snowflake("log_channel_id")
-        evaluation_channel_id = snowflake("evaluation_channel_id")
-    except ValueError as error:
-        return json_error(400, "validation", fields={str(error): "معرف القناة غير صالح"})
-    except LookupError as error:
-        return json_error(400, "validation", fields={str(error): "القناة غير موجودة"})
-    try:
-        auto_close_minutes = int(body.get("auto_close_minutes") or 0)
-        open_limit = int(body.get("open_limit") or 1)
-    except (TypeError, ValueError):
-        return json_error(400, "validation", fields={"settings": "قيمة الإعداد غير صالحة"})
-    permissions = body.get("permissions")
-    close_config = body.get("close_config")
-    if not isinstance(permissions, dict):
-        permissions = {}
-    if not isinstance(close_config, dict):
-        close_config = {}
-    config = await update_ticket_control_config(
-        guild.id,
-        closed_category_id=closed_category_id,
-        log_channel_id=log_channel_id,
-        evaluation_channel_id=evaluation_channel_id,
-        allow_user_close=bool(body.get("allow_user_close", False)),
-        send_transcript_dm=bool(body.get("send_transcript_dm", True)),
-        auto_close_minutes=auto_close_minutes,
-        open_limit=open_limit,
-        panel_mode=str(body.get("panel_mode") or "dropdown"),
-        select_placeholder=str(body.get("select_placeholder") or ""),
-        permissions=permissions,
-        close_config=close_config,
-    )
+    settings_kwargs = {}
+    legacy_kwargs = {}
+    for field in ("log_channel_id", "evaluation_channel_id", "default_open_category_id", "closed_category_id"):
+        if field not in body:
+            continue
+        value, error = _dashboard_snowflake(body.get(field), field)
+        if error:
+            return json_error(400, "validation", fields={field: error})
+        if value is not None:
+            expected = discord.CategoryChannel if field.endswith("category_id") else MESSAGE_CHANNEL_TYPES
+            if not isinstance(guild.get_channel(value), expected):
+                return json_error(400, "validation", fields={field: "القناة أو الفئة غير موجودة"})
+        settings_kwargs[field] = value
+        legacy_kwargs[field] = value
+    for field in ("allow_user_close", "send_transcript_dm"):
+        if field in body:
+            settings_kwargs[field] = bool(body[field])
+            legacy_kwargs[field] = bool(body[field])
+    for field in ("auto_close_minutes", "open_limit"):
+        if field in body:
+            try:
+                legacy_kwargs[field] = int(body[field])
+            except (TypeError, ValueError):
+                return json_error(400, "validation", fields={field: "قيمة الإعداد غير صالحة"})
+    for field in ("panel_mode", "select_placeholder", "close_config"):
+        if field in body:
+            legacy_kwargs[field] = body[field]
+    if "permissions" in body:
+        if not isinstance(body["permissions"], dict):
+            return json_error(400, "validation", fields={"permissions": "مصفوفة الصلاحيات غير صالحة"})
+        permissions = await save_ticket_permissions(guild.id, body["permissions"])
+        legacy_kwargs["permissions"] = permissions
+    if "close_config" in legacy_kwargs and not isinstance(legacy_kwargs["close_config"], dict):
+        return json_error(400, "validation", fields={"close_config": "إعدادات الإغلاق غير صالحة"})
+    if settings_kwargs:
+        await save_ticket_settings(guild.id, **settings_kwargs)
+    if legacy_kwargs:
+        await update_ticket_control_config(guild.id, **legacy_kwargs)
     logger.info("Ticket control settings saved in guild %s by user %s", guild.id, session["id"])
-    return web.json_response({"config": config})
+    return web.json_response(await _ticket_settings_response(guild))
 
 
 @routes.get('/api/guilds/{guild_id}/tickets/blacklist')
