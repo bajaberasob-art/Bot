@@ -3088,7 +3088,134 @@ async def api_guild_tickets_panel_delete(req):
 @routes.get('/api/guild/{guild_id}/tickets/analytics')
 async def api_guild_tickets_analytics(req):
     _, guild = await authorize(req)
-    return web.json_response(await get_ticket_dashboard_analytics(guild.id))
+    return web.json_response(await get_ticket_overview_metrics(guild.id))
+
+
+@routes.get('/api/guilds/{guild_id}/tickets/overview')
+async def api_guilds_tickets_overview(req):
+    _, guild = await authorize(req)
+    return web.json_response(await get_ticket_overview_metrics(guild.id))
+
+
+@routes.get('/api/guilds/{guild_id}/tickets/panels')
+async def api_guilds_tickets_panels(req):
+    _, guild = await authorize(req)
+    panels = [
+        panel for panel in await get_ticket_panels()
+        if int(panel.get("guild_id", 0)) == int(guild.id)
+    ]
+    return web.json_response({"panels": panels})
+
+
+def _ticket_panel_payload(body: dict, existing: dict | None = None) -> tuple[dict | None, dict | None]:
+    existing = existing or {}
+    categories = body.get("categories", body.get("options", existing.get("categories")))
+    categories = normalize_ticket_categories(categories)
+    title = str(body.get("title", body.get("embed_title", existing.get("title") or "مركز الدعم والتذاكر"))).strip()
+    description = str(body.get("description", body.get("embed_description", existing.get("description") or ""))).strip()
+    mode = str(body.get("mode", existing.get("mode") or "dropdown")).strip().lower()
+    raw_color = body.get("color", body.get("embed_color", existing.get("color", 0x5865F2)))
+    try:
+        color = int(str(raw_color).strip().lstrip("#"), 16) if isinstance(raw_color, str) else int(raw_color)
+    except (TypeError, ValueError):
+        return None, {"color": "لون اللوحة غير صالح"}
+    if not title or len(title) > 256:
+        return None, {"title": "عنوان اللوحة يجب أن يكون بين 1 و256 حرفاً"}
+    if len(description) > 4096:
+        return None, {"description": "وصف اللوحة يجب ألا يتجاوز 4096 حرفاً"}
+    if mode not in {"dropdown", "buttons"}:
+        return None, {"mode": "نمط اللوحة غير صالح"}
+    if not 0 <= color <= 0xFFFFFF:
+        return None, {"color": "لون اللوحة يجب أن يكون HEX صالحاً"}
+    return {
+        "categories": categories,
+        "title": title,
+        "description": description,
+        "color": color,
+        "mode": mode,
+    }, None
+
+
+@routes.post('/api/guilds/{guild_id}/tickets/panels')
+async def api_guilds_tickets_panels_save(req):
+    _, guild = await authorize(req, write=True)
+    try:
+        body = await read_json_body(req)
+    except (json.JSONDecodeError, ValueError):
+        return json_error(400, "invalid_json")
+    if not isinstance(body, dict):
+        return json_error(400, "validation", fields={"_": "صيغة الطلب غير صالحة"})
+    try:
+        panel_id = int(body["panel_id"]) if body.get("panel_id") not in (None, "") else None
+    except (TypeError, ValueError):
+        return json_error(400, "validation", fields={"panel_id": "معرف اللوحة غير صالح"})
+    panels = [
+        panel for panel in await get_ticket_panels()
+        if int(panel.get("guild_id", 0)) == int(guild.id)
+    ]
+    existing = next((panel for panel in panels if panel_id and int(panel["id"]) == panel_id), None)
+    payload, error = _ticket_panel_payload(body, existing)
+    if error:
+        return json_error(400, "validation", fields=error)
+    channel_id = body.get("channel_id", body.get("target_channel_id", existing.get("channel_id") if existing else None))
+    if isinstance(channel_id, bool) or channel_id in (None, "") or not str(channel_id).isdigit():
+        return json_error(400, "validation", fields={"channel_id": "معرف القناة غير صالح"})
+    channel = guild.get_channel(int(channel_id))
+    if not isinstance(channel, MESSAGE_CHANNEL_TYPES):
+        return json_error(400, "validation", fields={"channel_id": "القناة غير موجودة"})
+    message_id = int(existing.get("message_id") or 0) if existing else 0
+    panel = await save_ticket_panel(
+        guild.id,
+        channel.id,
+        message_id,
+        payload["categories"],
+        title=payload["title"],
+        description=payload["description"],
+        color=payload["color"],
+        mode=payload["mode"],
+    )
+    await replace_ticket_options(guild.id, payload["categories"])
+    return web.json_response({"panel": panel})
+
+
+@routes.post('/api/guilds/{guild_id}/tickets/panels/{panel_id}/publish')
+async def api_guilds_tickets_panel_publish(req):
+    _, guild = await authorize(req, write=True)
+    try:
+        panel_id = int(req.match_info["panel_id"])
+    except (TypeError, ValueError):
+        return json_error(400, "validation", fields={"panel_id": "معرف اللوحة غير صالح"})
+    panel = next(
+        (
+            item for item in await get_ticket_panels()
+            if int(item.get("guild_id", 0)) == int(guild.id)
+            and int(item.get("id", 0)) == panel_id
+        ),
+        None,
+    )
+    if not panel:
+        return json_error(404, "ticket_panel_not_found")
+    channel = guild.get_channel(int(panel["channel_id"]))
+    community = _community_cog()
+    if community is None:
+        return json_error(503, "community_unavailable")
+    if not isinstance(channel, MESSAGE_CHANNEL_TYPES):
+        return json_error(400, "validation", fields={"channel_id": "القناة غير موجودة"})
+    try:
+        result = await community.deploy_ticket_panel(
+            channel.id,
+            panel.get("categories") or [],
+            {
+                "embed_title": panel.get("title"),
+                "embed_description": panel.get("description"),
+                "embed_color": panel.get("color"),
+                "panel_mode": panel.get("mode"),
+            },
+        )
+    except (ValueError, discord.Forbidden, discord.HTTPException) as error:
+        logger.warning("CRM ticket panel publication failed: %s", error)
+        return json_error(400, "ticket_panel_deploy_failed")
+    return web.json_response({"ok": True, "panel": result})
 
 
 @routes.get('/api/guild/{guild_id}/tickets/settings')

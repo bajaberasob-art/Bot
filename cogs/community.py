@@ -48,6 +48,7 @@ from database import (
     get_ticket_notes,
     save_ticket_panel,
     save_ticket_rating,
+    save_ticket_log,
     save_ticket_transcript,
     complete_reminder,
     create_reminder,
