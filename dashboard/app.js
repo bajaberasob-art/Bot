@@ -81,7 +81,7 @@
     ticketSearch: "",
     ticketStatusFilter: "all",
     ticketConfig: {
-      embed_title: "🎫 مركز الدعم والتذاكر",
+      embed_title: "مركز الدعم والتذاكر",
       embed_description: "اختر التصنيف الأقرب لطلبك لفتح قناة خاصة مع فريق الدعم.",
       embed_color: 0x5865F2,
       footer_text: "Help Desk • اختر تصنيفاً لبدء المحادثة",
@@ -90,7 +90,7 @@
     },
     ticketDropdown: {
       config: {
-        embed_title: "🎫 مركز الدعم والتذاكر",
+        embed_title: "مركز الدعم والتذاكر",
         embed_description: "اختر التصنيف الأقرب لطلبك لفتح قناة خاصة مع فريق الدعم.",
         embed_color: "#5865F2",
         footer_text: "Help Desk • اختر تصنيفاً لبدء المحادثة",
@@ -100,11 +100,11 @@
       categories: [],
     },
     ticketCategories: [
-      { key: "general", label: "الدعم العام", description: "للاستفسارات العامة، الاقتراحات، أو المشاكل التقنية", emoji: "🔧", support_role_ids: [], senior_role_ids: [] },
-      { key: "girls-verification", label: "توثيق البنات", description: "يتم توثيقك وتمييزك عن باقي الأعضاء", emoji: "🌸", support_role_ids: [], senior_role_ids: [] },
-      { key: "rewards", label: "المكافآت والجوائز", description: "لاستلام جوائز المسابقات الخاصة بPR1ME", emoji: "🎁", support_role_ids: [], senior_role_ids: [] },
-      { key: "content-creators", label: "برنامج صناع المحتوى", description: "للحصول على رتبة صانع محتوى ومزايا خاصة", emoji: "📹", support_role_ids: [], senior_role_ids: [] },
-      { key: "clan-application", label: "التقديم للكلان", description: "طلبات الانضمام إلى الكلان", emoji: "🕹️", support_role_ids: [], senior_role_ids: [] },
+      { key: "general", label: "الدعم العام", description: "للاستفسارات العامة، الاقتراحات، أو المشاكل التقنية", emoji: "D", support_role_ids: [], senior_role_ids: [] },
+      { key: "girls-verification", label: "توثيق البنات", description: "يتم توثيقك وتمييزك عن باقي الأعضاء", emoji: "V", support_role_ids: [], senior_role_ids: [] },
+      { key: "rewards", label: "المكافآت والجوائز", description: "لاستلام جوائز المسابقات الخاصة بPR1ME", emoji: "R", support_role_ids: [], senior_role_ids: [] },
+      { key: "content-creators", label: "برنامج صناع المحتوى", description: "للحصول على رتبة صانع محتوى ومزايا خاصة", emoji: "C", support_role_ids: [], senior_role_ids: [] },
+      { key: "clan-application", label: "التقديم للكلان", description: "طلبات الانضمام إلى الكلان", emoji: "P", support_role_ids: [], senior_role_ids: [] },
     ],
     selfRoleBuilder: null,
     onboardingPreviewTimer: null,
@@ -2734,7 +2734,7 @@
         return;
       }
       pulse();
-      toast("🚀 نُشرت لوحة التذاكر للسيرفر", "success", 3000);
+      toast("نُشرت لوحة التذاكر للسيرفر", "success", 3000);
     } catch (error) {
       if (error.message !== "unauth") toast("تعذر الاتصال لنشر لوحة التذاكر");
     }
@@ -2984,8 +2984,8 @@
         placeholder: "وصف مختصر يظهر في القائمة",
       });
       description.oninput = () => { state.ticketCategories[index].description = description.value; };
-      const emoji = el("input", { class: "studio-input ticket-emoji-input", value: category.emoji || "🎫", maxlength: "2", "aria-label": "رمز التصنيف" });
-      emoji.oninput = () => { state.ticketCategories[index].emoji = emoji.value || "🎫"; };
+      const emoji = el("input", { class: "studio-input ticket-emoji-input", value: category.emoji || "T", maxlength: "2", "aria-label": "رمز التصنيف" });
+      emoji.oninput = () => { state.ticketCategories[index].emoji = emoji.value || "T"; };
       const parent = el("select", { class: "studio-input", "aria-label": `فئة قنوات ${category.label}` },
         el("option", { value: "" }, "بدون فئة أب"),
         (state.meta?.categories || []).map((item) => el("option", { value: item.id }, item.name)),
@@ -3095,10 +3095,10 @@
       el("div", { class: "ticket-preview-card" },
         el("div", { class: "ticket-preview-glow" }),
         el("span", { class: "eyebrow", text: "LIVE LAUNCHER PREVIEW" }),
-        el("h3", { text: "🎫 مركز الدعم والتذاكر" }),
+        el("h3", { text: ticketConfig.embed_title || "مركز الدعم والتذاكر" }),
         el("p", { text: "اختر التصنيف المناسب وسيتولى فريق الدعم متابعة طلبك في قناة خاصة." }),
         el("div", { class: "ticket-preview-buttons" },
-          state.ticketCategories.map((category) => el("span", { class: "ticket-preview-button" }, category.emoji, category.label)),
+            state.ticketCategories.map((category) => el("span", { class: "ticket-preview-button" }, category.emoji || "T", category.label)),
         ),
       ),
       el("label", { class: "ticket-form-label" }, "قناة نشر لوحة التذاكر",
@@ -3113,7 +3113,7 @@
             name: "embed_title",
             class: "studio-input",
             maxlength: "256",
-            value: ticketConfig.embed_title || "🎫 مركز الدعم والتذاكر",
+            value: ticketConfig.embed_title || "مركز الدعم والتذاكر",
             oninput: (event) => { state.ticketConfig.embed_title = event.target.value; },
           }),
         ),
@@ -3159,7 +3159,7 @@
               state.ticketCategories.push({
                 key: `support_${Date.now()}_${next}`,
                 label: `قسم دعم ${next}`,
-                emoji: "🎫",
+                emoji: "T",
                 support_role_ids: [],
                 senior_role_ids: [],
                 intake_fields: [],
@@ -3170,7 +3170,7 @@
         ),
       ),
       ticketCategoryEditor(),
-      el("button", { class: "btn primary ticket-deploy", type: "submit", text: "نشر لوحة التذاكر للسيرفر 🚀" }),
+      el("button", { class: "btn primary ticket-deploy", type: "submit", text: "نشر لوحة التذاكر للسيرفر" }),
     );
     launchForm.elements.embed_description.value = ticketConfig.embed_description || "";
     launchForm.elements.embed_description.oninput = (event) => {
@@ -3185,7 +3185,7 @@
     const avgResponse = responseValues.length ? responseValues.reduce((a, b) => a + b, 0) / responseValues.length : null;
     const avgRating = ratingValues.length ? ratingValues.reduce((a, b) => a + b, 0) / ratingValues.length : null;
     const kpiCards = el("div", { class: "ticket-kpi-grid" },
-      [["⚡", "متوسط أول رد", formatDuration(avgResponse)], ["✅", "التذاكر المحلولة", total], ["★", "رضا الأعضاء", avgRating == null ? "—" : `${avgRating.toFixed(1)}/5`]].map(([icon, label, value]) =>
+      [["↯", "متوسط أول رد", formatDuration(avgResponse)], ["✓", "التذاكر المحلولة", total], ["★", "رضا الأعضاء", avgRating == null ? "—" : `${avgRating.toFixed(1)}/5`]].map(([icon, label, value]) =>
         el("article", { class: "ticket-kpi-card" }, el("span", { class: "kpi-icon", text: icon }), el("small", { text: label }), el("strong", { text: String(value) })),
       ),
     );
@@ -3357,9 +3357,20 @@
      )));
     return el("section", { id: "view-tickets", class: "tickets-view" },
       el("div", { class: "studio-hero tickets-hero" },
-        el("div", { class: "eyebrow", text: `${state.guild.name} / HELP DESK` }),
-        el("h2", { text: "منصة التذاكر والأرشيف" }),
-        el("p", { text: "انشر لوحة الدعم، راقب سرعة الفريق، وافتح المحادثات المغلقة داخل لوحة AMOLED نفسها." }),
+        el("div", { class: "ticket-hero-copy" },
+          el("div", { class: "eyebrow", text: `${state.guild.name} / TICKET CONTROL` }),
+          el("h2", { text: "مركز عمليات التذاكر" }),
+          el("p", { text: "طابور الدعم، الأرشيف، وأدوات النشر في مساحة واحدة سريعة لفريق PRIME." }),
+          el("div", { class: "ticket-hero-actions" },
+            el("button", { class: "btn ghost ticket-refresh", type: "button", text: "تحديث البيانات", onClick: refreshTickets }),
+            el("span", { class: "live-dot", text: `${state.tickets.active.length} تذاكر مباشرة` }),
+          ),
+        ),
+        el("div", { class: "ticket-hero-signal" },
+          el("span", { class: "live-dot", text: "LIVE" }),
+          el("strong", { text: `${state.tickets.active.length} مفتوحة` }),
+          el("small", { text: "آخر مزامنة من مركز الدعم" }),
+        ),
       ),
       card("استوديو لوحة الدعم", launchForm),
        ticketDropdownBuilder(),
@@ -5152,7 +5163,7 @@
       const row = el("div", { class: "clan-category-row" });
       const label = el("input", { class: "studio-input", name: "label", maxlength: "80", value: category.label || "", placeholder: "اسم التصنيف" });
       const description = el("input", { class: "studio-input", name: "description", maxlength: "100", value: category.description || "", placeholder: "وصف مختصر" });
-      const emoji = el("input", { class: "studio-input", name: "emoji", maxlength: "2", value: category.emoji || "🎫", placeholder: "🎫" });
+      const emoji = el("input", { class: "studio-input", name: "emoji", maxlength: "2", value: category.emoji || "T", placeholder: "رمز" });
       const role = el("select", { class: "studio-input", name: "role_id" }, roleOptions());
       role.value = category.role_id || "";
       const parent = el("select", { class: "studio-input", name: "category_id" }, [
@@ -5234,7 +5245,7 @@
       el("div", { class: "fields clan-form-grid" },
         el("label", {}, el("span", { text: "قناة النشر" }), el("select", { name: "channel_id", required: true }, channelOptions())),
         el("label", {}, el("span", { text: "معرف الرسالة للتحديث (اختياري)" }), el("input", { name: "message_id", class: "studio-input", inputmode: "numeric", value: config.message_id || "" })),
-        el("label", {}, el("span", { text: "عنوان اللوحة" }), el("input", { name: "embed_title", class: "studio-input", maxlength: "256", required: true, value: config.embed_title || "🎫 مركز الدعم والتذاكر" })),
+        el("label", {}, el("span", { text: "عنوان اللوحة" }), el("input", { name: "embed_title", class: "studio-input", maxlength: "256", required: true, value: config.embed_title || "مركز الدعم والتذاكر" })),
         el("label", {}, el("span", { text: "لون اللوحة" }), el("input", { name: "embed_color", type: "color", class: "studio-input", value: config.embed_color || "#5865F2" })),
         el("label", { class: "form-wide" }, el("span", { text: "وصف اللوحة" }), el("textarea", { name: "embed_description", class: "studio-textarea", maxlength: "4096", rows: "2" })),
         el("label", { class: "form-wide" }, el("span", { text: "التذييل" }), el("input", { name: "footer_text", class: "studio-input", maxlength: "2048", value: config.footer_text || "" })),
@@ -5242,14 +5253,14 @@
       el("div", { class: "clan-category-heading" }, el("div", {}, el("h4", { text: "تصنيفات الـ Dropdown" }), el("small", { text: "حتى 25 تصنيفاً مع رتبة وفئة قنوات اختيارية." })),
         el("button", { class: "btn ghost", type: "button", text: "＋ إضافة تصنيف", onClick: () => {
           if (state.ticketDropdown.categories.length >= 25) return toast("الحد الأقصى 25 تصنيفاً", "warn");
-          state.ticketDropdown.categories.push({ label: "تصنيف جديد", description: "", emoji: "🎫", role_id: null, category_id: null });
+          state.ticketDropdown.categories.push({ label: "تصنيف جديد", description: "", emoji: "T", role_id: null, category_id: null });
           renderPage();
         } }),
       ),
       ticketDropdownCategoriesEditor(),
       el("div", { class: "form-actions" },
         el("button", { class: "btn ghost", type: "submit", text: "حفظ الإعدادات" }),
-        el("button", { class: "btn primary", type: "button", text: "حفظ ونشر اللوحة 🚀", onClick: () => saveTicketDropdownConfig(form, true) }),
+        el("button", { class: "btn primary", type: "button", text: "حفظ ونشر اللوحة", onClick: () => saveTicketDropdownConfig(form, true) }),
       ),
     );
     form.elements.channel_id.value = config.channel_id || "";
@@ -6249,7 +6260,7 @@
     };
     state.ticketDropdown = {
       config: {
-        embed_title: "🎫 مركز الدعم والتذاكر",
+        embed_title: "مركز الدعم والتذاكر",
         embed_description: "",
         embed_color: "#5865F2",
         footer_text: "",
