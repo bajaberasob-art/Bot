@@ -78,7 +78,7 @@ class CommunityTicketTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(categories[0]["emoji"], token)
         view = __import__("cogs.community", fromlist=["TicketSelectView"]).TicketSelectView(categories, 700)
-        self.assertEqual(view.children[0].options[0].emoji, token)
+        self.assertEqual(str(view.children[0].options[0].emoji), token)
 
     async def test_deploy_panel_and_staff_kpi_helpers_persist_data(self):
         bot = FakeBot()
