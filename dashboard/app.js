@@ -116,6 +116,8 @@
     newer: false,
     activeView: sessionStorage.getItem("dashboard-view") || "overview",
     drawerOpen: false,
+    overviewRange: sessionStorage.getItem("overview-range") || "7d",
+    overviewHeatMode: "written",
   };
   // Public lookup maps keep Discord snowflakes out of labels while preserving
   // the string IDs used by every existing API form and handler.
