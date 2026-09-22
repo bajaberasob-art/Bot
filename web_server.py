@@ -3135,10 +3135,19 @@ async def api_guild_tickets_action(req):
         member = guild.get_member(staff_id)
         if member is None:
             return json_error(400, "validation", fields={"staff_id": "الموظف غير موجود في السيرفر"})
-        ticket = await community.get_ticket(guild.id, ticket_id)
+        get_ticket = getattr(community, "get_ticket", None)
+        if callable(get_ticket):
+            ticket = await get_ticket(guild.id, ticket_id)
+        else:
+            active_tickets = await community.get_active_tickets(guild.id)
+            ticket = next(
+                (item for item in active_tickets if int(item.get("id", 0)) == ticket_id),
+                None,
+            )
         if not ticket:
             return json_error(404, "ticket_not_found")
-        if not community._is_ticket_staff(member, ticket):
+        is_ticket_staff = getattr(community, "_is_ticket_staff", None)
+        if callable(is_ticket_staff) and not is_ticket_staff(member, ticket):
             return json_error(
                 403,
                 "validation",
