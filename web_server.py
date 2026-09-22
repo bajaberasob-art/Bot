@@ -28,6 +28,12 @@ from database import (
     get_warning,
     get_recent_warnings,
     get_dashboard_stats,
+    get_analytics_summary,
+    get_channel_traffic,
+    get_dead_channels,
+    get_top_messenger,
+    get_hourly_heatmap,
+    get_golden_hour,
     get_economy_leaderboard,
     get_level_leaderboard,
     get_logging_channels,
@@ -1322,6 +1328,133 @@ async def api_guild_stats(req):
             latency_series=metrics,
         )
     )
+
+
+@routes.get('/api/guilds/{guild_id}/analytics')
+async def api_guild_analytics(req):
+    _, guild = await authorize(req)
+    requested_range = str(req.query.get("range", "7d")).strip().lower()
+    allowed_ranges = {"today", "7d", "30d", "3m", "90d", "year"}
+    timeframe = requested_range if requested_range in allowed_ranges else "7d"
+    message_channels = [
+        channel for channel in getattr(guild, "channels", ())
+        if isinstance(channel, MESSAGE_CHANNEL_TYPES)
+    ]
+    channel_ids = [int(channel.id) for channel in message_channels]
+    summary, traffic, dead, top, heatmap, golden = await asyncio.gather(
+        get_analytics_summary(guild.id, timeframe),
+        get_channel_traffic(guild.id, timeframe),
+        get_dead_channels(guild.id, timeframe, channel_ids),
+        get_top_messenger(guild.id, timeframe),
+        get_hourly_heatmap(guild.id, timeframe),
+        get_golden_hour(guild.id, timeframe),
+    )
+
+    total_members = int(getattr(guild, "member_count", 0) or len(getattr(guild, "members", ())))
+    online_members = sum(
+        1
+        for member in getattr(guild, "members", ())
+        if not getattr(member, "bot", False)
+        and str(getattr(member, "status", "offline")) != "offline"
+    )
+    active_chatters = int(summary.get("active_chatters", 0))
+    active_chatters_pct = round((active_chatters / total_members) * 100) if total_members else 0
+    online_pct = round((online_members / total_members) * 100) if total_members else 0
+    chat_density_value = (
+        summary.get("total_messages", 0) / total_members
+        if total_members else 0
+    )
+    density_score = min(100, round(chat_density_value * 10))
+    health_score_value = round(
+        online_pct * 0.2
+        + active_chatters_pct * 0.4
+        + int(summary.get("retention_pct", 0)) * 0.25
+        + density_score * 0.15
+    )
+    health_status = (
+        "ممتاز" if health_score_value >= 80
+        else "جيد" if health_score_value >= 60
+        else "يحتاج متابعة" if health_score_value >= 35
+        else "منخفض"
+    )
+    channel_lookup = {str(channel.id): channel for channel in message_channels}
+    active_channels = []
+    for row in traffic:
+        channel = channel_lookup.get(str(row["id"]))
+        if channel is None:
+            continue
+        channel_type = (
+            "voice" if isinstance(channel, (discord.VoiceChannel, discord.StageChannel))
+            else "forum" if isinstance(channel, discord.ForumChannel)
+            else "text"
+        )
+        active_channels.append({
+            "id": str(channel.id),
+            "name": channel.name,
+            "count": int(row["count"]),
+            "percentage": row["percentage"],
+            "type": channel_type,
+        })
+    dead_channels = [
+        {
+            "id": str(row["id"]),
+            "name": channel_lookup.get(str(row["id"])).name
+            if channel_lookup.get(str(row["id"])) else "قناة غير معروفة",
+            "count": 0,
+        }
+        for row in dead
+    ]
+    top_payload = None
+    if top:
+        top_member = guild.get_member(int(top["user_id"]))
+        top_payload = {
+            **top,
+            "username": top_member.display_name if top_member else top["user_id"],
+            "tag": str(top_member) if top_member else top["user_id"],
+            "avatar_url": str(top_member.display_avatar.url) if top_member else "",
+            "role_badge": (
+                next(
+                    (role.name for role in reversed(getattr(top_member, "roles", []))
+                     if not role.is_default()),
+                    "عضو",
+                )
+                if top_member else "عضو",
+            ),
+        }
+    online = bot_is_connected(bot_ref)
+    return web.json_response({
+        "range": timeframe,
+        "status_banner": {
+            "healthy": online,
+            "text": "كل شيء تمام — السيرفر يشتغل بشكل طبيعي"
+            if online else "الاتصال مع Discord يحتاج مراجعة",
+        },
+        "summary": {
+            "total_members": total_members,
+            "online_members": online_members,
+            "active_chatters": active_chatters,
+            "active_chatters_pct": active_chatters_pct,
+            "total_messages": int(summary.get("total_messages", 0)),
+            "activity_trend_pct": int(summary.get("activity_trend_pct", 0)),
+            "retention_pct": int(summary.get("retention_pct", 0)),
+            "total_voice_seconds": int(summary.get("total_voice_seconds", 0)),
+        },
+        "health_score": {
+            "score": health_score_value,
+            "status": health_status,
+            "online_pct": online_pct,
+            "active_writers_pct": active_chatters_pct,
+            "retention_pct": int(summary.get("retention_pct", 0)),
+            "chat_density": f"{chat_density_value:.1f} رسالة/عضو",
+        },
+        "top_messenger": top_payload,
+        "channels_traffic": {
+            "active": active_channels,
+            "dead": dead_channels,
+        },
+        "heatmap": heatmap,
+        "golden_hour": golden,
+    })
 
 
 def _security_cog():

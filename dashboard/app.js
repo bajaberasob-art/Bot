@@ -118,6 +118,10 @@
     drawerOpen: false,
     overviewRange: sessionStorage.getItem("overview-range") || "7d",
     overviewHeatMode: "written",
+    analytics: null,
+    analyticsRange: sessionStorage.getItem("analytics-range") || "7d",
+    analyticsHeatMode: "written",
+    analyticsLoading: false,
   };
   // Public lookup maps keep Discord snowflakes out of labels while preserving
   // the string IDs used by every existing API form and handler.
