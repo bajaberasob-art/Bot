@@ -1604,7 +1604,11 @@ class Community(commands.Cog):
         if not self._is_ticket_staff(itx.user, ticket):
             return await self._ticket_denied(itx)
         await itx.response.defer(ephemeral=True)
-        if ticket["status"] != "closed":
+        existing_transcript = await get_ticket_transcript(
+            ticket["guild_id"],
+            ticket["id"],
+        )
+        if not existing_transcript:
             text, content_html = await self._build_transcript(itx.channel, ticket)
             text += "\n\nClose reason: Deleted by staff"
             content_html = content_html.replace(
@@ -1618,6 +1622,7 @@ class Community(commands.Cog):
                 text,
                 content_html,
             )
+        if ticket["status"] != "closed":
             await close_ticket(
                 ticket["guild_id"],
                 ticket["id"],
