@@ -1847,12 +1847,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        permission_action = {
-            "add": "add_member",
-            "remove": "remove_member",
-            "transfer": "transfer",
-        }.get(action)
-        if not await self._ticket_action_allowed(itx.user, ticket, permission_action):
+        if not await self._ticket_action_allowed(itx.user, ticket, "claim"):
             return await self._ticket_denied(itx)
         if ticket.get("claimed_by") and ticket["claimed_by"] != itx.user.id:
             return await itx.response.send_message(
