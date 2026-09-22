@@ -6319,6 +6319,17 @@ body {
     grid-template-columns: 1fr;
     padding: 11px;
   }
+  .ticket-category-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .ticket-emoji-control {
+    flex-wrap: wrap;
+  }
+  .ticket-emoji-popover {
+    inset-inline-start: 0;
+    inset-inline-end: auto;
+  }
   .ticket-category-row .ticket-role-select {
     grid-column: auto;
     min-height: 76px;
