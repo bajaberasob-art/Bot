@@ -3943,6 +3943,91 @@
       ctx.fill();
     });
   }
+  function drawOverviewTrafficChart(canvas) {
+    if (!canvas) return;
+    const series = overviewSeriesData();
+    if (!series.length) return;
+    const ratio = window.devicePixelRatio || 1;
+    const width = Math.max(canvas.clientWidth || 620, 280);
+    const height = 220;
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    const left = 8;
+    const right = width - 8;
+    const top = 12;
+    const bottom = height - 25;
+    const configs = [
+      ["members", "الأعضاء", "#f58cb0"],
+      ["messages", "الرسائل", "#21d7a4"],
+      ["joins", "الانضمام", "#8f86ff"],
+      ["leaves", "المغادرة", "#ff6b89"],
+      ["latency", "الاستجابة", "#62c9ff"],
+    ];
+    const values = configs.flatMap(([key]) => series.map((point) => point[key]).filter(Number.isFinite));
+    const max = Math.max(...values, 1);
+    const xAt = (index) => series.length === 1
+      ? (left + right) / 2
+      : left + (index / (series.length - 1)) * (right - left);
+    const yAt = (value) => bottom - (value / max) * (bottom - top);
+    ctx.strokeStyle = "#ffffff12";
+    ctx.lineWidth = 1;
+    for (let row = 0; row < 4; row += 1) {
+      const y = top + ((bottom - top) * row) / 3;
+      ctx.beginPath();
+      ctx.moveTo(left, y);
+      ctx.lineTo(right, y);
+      ctx.stroke();
+    }
+    const points = [];
+    configs.forEach(([key, label, color]) => {
+      const line = series.map((point, index) => ({
+        index,
+        value: point[key],
+        x: xAt(index),
+        y: yAt(Number.isFinite(point[key]) ? point[key] : 0),
+      })).filter((point) => Number.isFinite(point.value));
+      if (!line.length) return;
+      points.push({ key, label, color, line });
+      ctx.beginPath();
+      line.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke();
+      line.forEach((point) => {
+        ctx.beginPath();
+        ctx.fillStyle = color;
+        ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    });
+    ctx.fillStyle = "#7690a9";
+    ctx.font = "10px system-ui";
+    series.forEach((point, index) => {
+      if (index === 0 || index === series.length - 1 || series.length < 8) {
+        ctx.fillText(point.label, Math.max(left, xAt(index) - 18), height - 6);
+      }
+    });
+    const tooltip = canvas.parentElement?.querySelector(".overview-chart-tooltip");
+    canvas.onpointermove = (event) => {
+      if (!tooltip || !series.length) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.max(0, Math.min(width, event.clientX - rect.left));
+      const index = series.length === 1
+        ? 0
+        : Math.round(((x - left) / Math.max(1, right - left)) * (series.length - 1));
+      const point = series[Math.max(0, Math.min(series.length - 1, index))];
+      tooltip.hidden = false;
+      tooltip.textContent = `${point.label}  ·  ${points.map((item) => `${item.label}: ${overviewNumber(point[item.key])}`).join("  ·  ")}`;
+    };
+    canvas.onpointerleave = () => {
+      if (tooltip) tooltip.hidden = true;
+    };
+  }
   function drawDashboardCharts() {
     const series = state.stats?.series || [];
     drawLine(
@@ -3955,6 +4040,19 @@
       series.map((point) => Number(point.members)).filter(Number.isFinite),
       "#34d399",
     );
+    drawOverviewTrafficChart($("#overview-traffic-chart"));
+    document.querySelectorAll(".overview-live-counter").forEach((counter) => {
+      const target = Number(counter.dataset.counterValue);
+      if (!Number.isFinite(target)) return;
+      const started = performance.now();
+      const tick = (now) => {
+        const progress = Math.min(1, (now - started) / 650);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        counter.textContent = Math.round(target * eased).toLocaleString("en-US");
+        if (progress < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
   }
   function operationsView(view) {
     const counts = state.stats?.counts || {};
@@ -4119,6 +4217,326 @@
           healthList,
         ),
       ),
+    );
+  }
+  function overviewMetricValue(point, keys) {
+    for (const key of keys) {
+      const value = Number(point?.[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
+  }
+  function overviewSeriesData() {
+    const raw = Array.isArray(state.stats?.series) ? state.stats.series : [];
+    const rangeDays = state.overviewRange === "30d" ? 30 : state.overviewRange === "all" ? Infinity : 7;
+    const cutoff = rangeDays === Infinity ? 0 : Date.now() - rangeDays * 86400000;
+    return raw
+      .map((point, index) => {
+        const timestamp = Number(point.ts || point.timestamp || point.created_at || 0);
+        const date = timestamp > 100000000000 ? new Date(timestamp) : new Date(timestamp * 1000);
+        return {
+          raw: point,
+          index,
+          timestamp: date.getTime() || Date.now(),
+          label: date.getTime()
+            ? date.toLocaleDateString("ar", { month: "short", day: "numeric" })
+            : `قياس ${index + 1}`,
+          members: overviewMetricValue(point, ["members", "member_count"]),
+          latency: overviewMetricValue(point, ["latency_ms", "latency"]),
+          messages: overviewMetricValue(point, ["messages", "message_count", "messages_count"]),
+          joins: overviewMetricValue(point, ["joins", "join_count", "joins_count"]),
+          leaves: overviewMetricValue(point, ["leaves", "leave_count", "leaves_count"]),
+          voiceSessions: overviewMetricValue(point, ["voice_sessions", "voice_sessions_count"]),
+          voiceMinutes: overviewMetricValue(point, ["avg_voice_minutes", "voice_minutes"]),
+        };
+      })
+      .filter((point) => point.timestamp >= cutoff)
+      .slice(-120);
+  }
+  function overviewNumber(value, fallback = "—") {
+    return Number.isFinite(Number(value)) ? Number(value).toLocaleString("en-US") : fallback;
+  }
+  function overviewTime(value) {
+    return value
+      ? new Date(value).toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit" })
+      : "الآن";
+  }
+  function overviewCounterCard(label, value, hint, tone, icon, view, status = "") {
+    const numeric = Number(value);
+    return el(
+      "button",
+      {
+        class: `overview-pro-kpi kpi-${tone} ${status ? `kpi-${status}` : ""}`,
+        type: "button",
+        onClick: () => navigateView(view),
+      },
+      el("span", { class: "overview-pro-kpi-icon", text: icon, "aria-hidden": "true" }),
+      el("span", { class: "overview-pro-kpi-copy" },
+        el("small", { text: label }),
+        el("strong", {
+          class: "overview-live-counter",
+          text: Number.isFinite(numeric) ? "0" : String(value),
+          "data-counter-value": Number.isFinite(numeric) ? String(numeric) : "",
+        }),
+        el("em", { text: hint }),
+      ),
+      status ? el("span", { class: "overview-kpi-status", text: status === "good" ? "طبيعي" : "يحتاج مراجعة" }) : null,
+    );
+  }
+  function overviewSkeleton(label) {
+    return el(
+      "div",
+      { class: "overview-skeleton-state", role: "status" },
+      el("span", { class: "overview-skeleton-orb", "aria-hidden": "true" }),
+      el("strong", { text: label }),
+      el("small", { text: "بانتظار أول قياس من الخدمة…" }),
+      el("div", { class: "overview-skeleton-lines", "aria-hidden": "true" },
+        el("i"), el("i"), el("i"),
+      ),
+    );
+  }
+  function overviewTrafficChart() {
+    const range = el("select", { class: "overview-range-select", "aria-label": "الفترة الزمنية" });
+    [
+      ["7d", "آخر 7 أيام"],
+      ["30d", "هذا الشهر"],
+      ["all", "كل القياسات"],
+    ].forEach(([value, text]) => range.append(el("option", { value, text })));
+    range.value = state.overviewRange;
+    range.onchange = () => {
+      state.overviewRange = range.value;
+      sessionStorage.setItem("overview-range", range.value);
+      renderPage();
+    };
+    const canvas = el("canvas", {
+      id: "overview-traffic-chart",
+      class: "overview-traffic-chart",
+      height: "220",
+      role: "img",
+      "aria-label": "مخطط قياسات النشاط",
+    });
+    const series = overviewSeriesData();
+    const hasTraffic = series.some((point) =>
+      ["messages", "joins", "leaves", "members", "latency"].some((key) => Number.isFinite(point[key])),
+    );
+    return el(
+      "section",
+      { class: "overview-pro-card overview-traffic-card" },
+      el("div", { class: "overview-pro-card-head" },
+        el("div", {},
+          el("span", { class: "overview-kicker", text: "GROWTH / TRAFFIC" }),
+          el("h2", { text: "النمو وحركة السيرفر" }),
+          el("p", { text: hasTraffic ? "قياسات حية من نفس مصدر الإحصائيات الحالي." : "ستظهر القياسات هنا عند وصول أول نبضة." }),
+        ),
+        range,
+      ),
+      hasTraffic ? canvas : overviewSkeleton("البث اللحظي"),
+      el("div", { class: "overview-chart-legend" },
+        el("span", { class: "legend-members", text: "الأعضاء" }),
+        el("span", { class: "legend-messages", text: "الرسائل" }),
+        el("span", { class: "legend-joins", text: "الانضمام" }),
+        el("span", { class: "legend-leaves", text: "المغادرة" }),
+      ),
+      el("div", { class: "overview-chart-tooltip", role: "status", "aria-live": "polite", hidden: true }),
+    );
+  }
+  function overviewPulsePanel() {
+    const points = overviewSeriesData();
+    const pulse = state.online
+      ? Math.min(99, 44 + Math.min(24, points.length * 3) + Math.min(27, state.actions.length * 2))
+      : 12;
+    const circumference = 2 * Math.PI * 44;
+    return el(
+      "section",
+      { class: "overview-pro-card overview-pulse-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "ACTIVITY PULSE" }), el("h2", { text: "نبض النشاط" })),
+        el("span", { class: `overview-live-chip ${state.online ? "" : "offline"}` }, state.online ? "LIVE" : "OFFLINE"),
+      ),
+      el("div", { class: "overview-pulse-layout" },
+        el("div", { class: "overview-gauge" },
+          el("svg", { viewBox: "0 0 110 110", "aria-hidden": "true" },
+            el("circle", { class: "gauge-track", cx: "55", cy: "55", r: "44" }),
+            el("circle", {
+              class: "gauge-value",
+              cx: "55",
+              cy: "55",
+              r: "44",
+              "stroke-dasharray": `${(circumference * pulse) / 100} ${circumference}`,
+            }),
+          ),
+          el("strong", { text: String(pulse) }),
+          el("small", { text: "مؤشر حي" }),
+        ),
+        el("div", { class: "overview-pulse-bars" },
+          [["اتصال", state.online ? 92 : 18, "cyan"], ["محتوى", Math.min(96, 30 + state.actions.length * 4), "green"], ["استقرار", state.lockdown ? 42 : 84, "purple"], ["شدة الدردشة", Math.min(94, 20 + points.length * 5), "pink"]]
+            .map(([label, value, tone]) => el("div", { class: `pulse-bar-row pulse-${tone}` },
+              el("div", {}, el("span", { text: label }), el("b", { text: `${value}%` })),
+              el("i", {}, el("em", { style: `width:${value}%` })),
+            )),
+        ),
+      ),
+    );
+  }
+  function overviewActivityStream() {
+    const recent = [...(state.actions || []), ...(state.incidents || [])]
+      .sort((a, b) => new Date(b.timestamp || b.created_at || 0) - new Date(a.timestamp || a.created_at || 0))
+      .slice(0, 5);
+    return el(
+      "section",
+      { class: "overview-pro-card overview-stream-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "LIVE STREAM" }), el("h2", { text: "آخر الأحداث" })),
+        el("button", { class: "overview-inline-action", type: "button", text: "السجلات", onClick: () => navigateView("analytics") }),
+      ),
+      recent.length
+        ? el("div", { class: "overview-stream-list" }, ...recent.map((item) => el("div", { class: "overview-stream-row" },
+            el("span", { class: "overview-stream-dot" }),
+            el("div", {}, el("strong", { text: item.action || item.action_type || item.type || "حدث جديد" }), el("small", { text: item.reason || item.target_name || "تمت المعالجة من محرك النظام" })),
+            el("time", { text: overviewTime(item.timestamp || item.created_at) }),
+          )))
+        : overviewSkeleton("البث اللحظي"),
+    );
+  }
+  function overviewMembersPanel() {
+    const members = Array.isArray(state.meta?.members) ? state.meta.members.filter(Boolean).slice(0, 3) : [];
+    const featured = members[0];
+    return el(
+      "section",
+      { class: "overview-pro-card overview-members-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "MEMBER INSIGHTS" }), el("h2", { text: "الأعضاء والنشاط" })),
+        el("button", { class: "overview-inline-action", type: "button", text: "المجتمع", onClick: () => navigateView("community") }),
+      ),
+      featured
+        ? el("div", { class: "overview-featured-member" },
+            avatar(featured.avatar, featured.name),
+            el("div", {}, el("strong", { text: featured.name }), el("small", { text: "عضو نشط في السيرفر" })),
+            el("span", { class: "member-score", text: "نجم اليوم" }),
+          )
+        : overviewSkeleton("تتبع المنضمين الجدد"),
+      el("div", { class: "overview-member-insight-grid" },
+        el("div", {}, el("span", { text: "الصاعدون هذا الأسبوع" }), el("strong", { text: members.length ? `${members.length} أعضاء` : "لا توجد بيانات" })),
+        el("div", {}, el("span", { text: "خطر المغادرة" }), el("strong", { class: "safe", text: state.online ? "لا توجد إشارات" : "غير متاح" })),
+      ),
+    );
+  }
+  function overviewHeatmapPanel() {
+    const dayLabels = ["أحد", "اثن", "ثلث", "أربع", "خمس", "جمع", "سبت"];
+    const events = [...(state.actions || []), ...(state.incidents || [])];
+    const cells = [];
+    for (let day = 0; day < 7; day += 1) {
+      for (let slot = 0; slot < 12; slot += 1) {
+        const count = events.filter((item) => {
+          const date = new Date(item.timestamp || item.created_at || 0);
+          return date.getDay() === day && Math.floor(date.getHours() / 2) === slot;
+        }).length;
+        const level = Math.min(4, count);
+        cells.push(el("button", {
+          class: `heat-cell heat-${level}`,
+          type: "button",
+          title: `${dayLabels[day]} · ${slot * 2}:00 · ${count} أحداث`,
+          "aria-label": `${dayLabels[day]}، ${slot * 2}:00، ${count} أحداث`,
+        }));
+      }
+    }
+    const written = state.overviewHeatMode === "written";
+    return el(
+      "section",
+      { class: "overview-pro-card overview-heatmap-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "INTERACTION HEATMAP" }), el("h2", { text: "النشاط الكتابي والصوتي" })),
+        el("div", { class: "overview-segmented" },
+          el("button", { class: written ? "active" : "", type: "button", "aria-pressed": String(written), text: "كتابي", onClick: () => { state.overviewHeatMode = "written"; renderPage(); } }),
+          el("button", { class: !written ? "active" : "", type: "button", "aria-pressed": String(!written), text: "صوتي", onClick: () => { state.overviewHeatMode = "voice"; renderPage(); } }),
+        ),
+      ),
+      written ? el("div", { class: "overview-heatmap" }, dayLabels.map((label) => el("div", { class: "heat-row" }, el("span", { text: label }), ...cells.slice(dayLabels.indexOf(label) * 12, dayLabels.indexOf(label) * 12 + 12)))) : overviewSkeleton("بيانات الصوت"),
+      el("div", { class: "overview-heatmap-footer" },
+        el("span", { text: events.length ? `آخر ${events.length} أحداث مرصودة` : "لا توجد أحداث كافية بعد" }),
+        el("span", { class: "heat-legend", text: "منخفض  ▪ ▪ ▪  مرتفع" }),
+      ),
+    );
+  }
+  function overviewChannelsPanel() {
+    const channels = Array.isArray(state.meta?.channels) ? state.meta.channels.slice(0, 8) : [];
+    return el(
+      "section",
+      { class: "overview-pro-card overview-channels-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "CHANNEL MATRIX" }), el("h2", { text: "القنوات والنظام" })),
+        el("button", { class: "overview-inline-action", type: "button", text: "الإعدادات", onClick: () => navigateView("settings") }),
+      ),
+      channels.length
+        ? el("div", { class: "overview-channel-list" }, ...channels.map((channel, index) => el("div", { class: "overview-channel-row" },
+            el("span", { class: "channel-rank", text: String(index + 1).padStart(2, "0") }),
+            el("div", {}, el("strong", { text: `# ${channel.name || "قناة"}` }), el("small", { text: channel.type || "Text Channel" })),
+            el("span", { class: "channel-health", text: "نشط" }),
+          )))
+        : overviewSkeleton("قنوات السيرفر"),
+      el("div", { class: "overview-system-matrix" },
+        [
+          ["التذاكر", state.tickets.active.length > 0, "tickets"],
+          ["المستويات", state.economy.levels.length > 0, "economy"],
+          ["الإدارة", state.online, "settings"],
+        ].map(([label, active, view]) => el("div", { class: `system-status-card ${active ? "is-active" : "is-disabled"}` },
+          el("span", { text: active ? "●" : "—" }),
+          el("div", {}, el("strong", { text: label }), el("small", { text: active ? "مفعل" : "غير مفعل" })),
+          el("button", { type: "button", text: active ? "فتح" : "إعداد", onClick: () => navigateView(view) }),
+        )),
+      ),
+    );
+  }
+  function enhancedOverviewView() {
+    const counts = state.stats?.counts || {};
+    const members = Number(state.guild?.members ?? counts.members ?? 0);
+    const activeMembers = Number(counts.active_members ?? counts.online_members ?? 0);
+    const incidents = state.incidents.length;
+    const series = overviewSeriesData();
+    const latest = series[series.length - 1];
+    return el(
+      "section",
+      { class: "overview-view overview-pro-view" },
+      el("div", { class: "overview-brand-lockup" },
+        el("strong", { text: "LONA" }),
+        el("span", { text: "◌" }),
+        el("small", { text: "PR1ME TEAM CONTROL" }),
+      ),
+      el("section", { class: "overview-command-center" },
+        el("div", { class: "command-center-grid" },
+          el("div", {},
+            el("span", { class: "overview-kicker", text: "COMMAND CENTER / LIVE" }),
+            el("h1", { text: "مركز القيادة" }),
+            el("p", { text: "كل ما يهمك عن مجتمعك، في شاشة واحدة واضحة وسريعة." }),
+            el("div", { class: "overview-live-meta" },
+              el("span", { class: `overview-live-chip ${state.online ? "" : "offline"}` }, state.online ? "● LIVE" : "○ OFFLINE"),
+              el("span", { text: `آخر تحديث ${overviewTime(Date.now())}` }),
+              el("span", { text: latest ? latest.label : "بانتظار القياسات" }),
+            ),
+          ),
+          el("div", { class: "command-center-orb", "aria-hidden": "true" }, el("span", { text: state.online ? "L" : "!" })),
+        ),
+        el("div", { class: "overview-command-actions" },
+          el("button", { type: "button", text: "تحديث الآن", onClick: () => refreshDashboardStats(state.guild.id, true) }),
+          el("button", { type: "button", text: "تصدير PDF", onClick: () => toast("التصدير سيستخدم بيانات القياسات الحالية", "success", 1800) }),
+        ),
+      ),
+      el("div", { class: "overview-pro-kpis" },
+        overviewCounterCard("أعضاء السيرفر", members, "الإجمالي", "pink", "♟", "community"),
+        overviewCounterCard("الأعضاء الفعليون", activeMembers || "—", "متصلون الآن", "cyan", "◉", "community"),
+        overviewCounterCard("الأمان", incidents, incidents ? "حوادث مفتوحة" : "كل شيء تمام", incidents ? "red" : "green", incidents ? "!" : "✓", "security", incidents ? "alert" : "good"),
+        overviewCounterCard("النشاط", state.actions.length, "آخر الأحداث", "purple", "✦", "analytics"),
+      ),
+      el("div", { class: "overview-pro-grid overview-grid-primary" },
+        overviewPulsePanel(),
+        overviewTrafficChart(),
+      ),
+      el("div", { class: "overview-pro-grid overview-grid-secondary" },
+        overviewActivityStream(),
+        overviewMembersPanel(),
+      ),
+      overviewHeatmapPanel(),
+      overviewChannelsPanel(),
     );
   }
   function settingsView() {
@@ -5108,7 +5526,7 @@
       main.append(n);
     }
     const view = state.activeView;
-    if (view === "overview") main.append(overviewView());
+    if (view === "overview") main.append(enhancedOverviewView());
     else if (view === "tickets") main.append(ticketsView());
     else if (view === "commands") main.append(commandsView());
     else if (view === "gaming") main.append(gamingView());
