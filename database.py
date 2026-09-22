@@ -4353,6 +4353,184 @@ async def replace_ticket_options(
     return await get_ticket_options(guild_id)
 
 
+def _ticket_blacklist_row(row) -> dict[str, Any]:
+    item = dict(row)
+    for key in ("id", "guild_id", "user_id", "created_by"):
+        if item.get(key) is not None:
+            item[key] = int(item[key])
+    return item
+
+
+async def get_ticket_blacklist(guild_id: int) -> list[dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT * FROM ticket_blacklist
+            WHERE guild_id = ?
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            ORDER BY created_at DESC
+            """,
+            (int(guild_id),),
+        ) as cur:
+            return [_ticket_blacklist_row(row) for row in await cur.fetchall()]
+
+
+async def is_ticket_user_blacklisted(guild_id: int, user_id: int) -> bool:
+    async with connect() as db:
+        async with db.execute(
+            """
+            SELECT 1 FROM ticket_blacklist
+            WHERE guild_id = ? AND user_id = ?
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            LIMIT 1
+            """,
+            (int(guild_id), int(user_id)),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def save_ticket_blacklist(
+    guild_id: int,
+    user_id: int,
+    *,
+    reason: str = "",
+    duration_days: int | None = None,
+    created_by: int | None = None,
+) -> dict[str, Any]:
+    expires_at = None
+    if duration_days is not None and int(duration_days) > 0:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=min(int(duration_days), 3650))
+        expires_at = expires_at.strftime("%Y-%m-%d %H:%M:%S")
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            """
+            INSERT INTO ticket_blacklist
+                (guild_id, user_id, expires_at, reason, created_by)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                expires_at = excluded.expires_at,
+                reason = excluded.reason,
+                created_by = excluded.created_by,
+                created_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(guild_id),
+                int(user_id),
+                expires_at,
+                str(reason or "").strip()[:500],
+                int(created_by) if created_by is not None else None,
+            ),
+        )
+        await db.commit()
+        async with db.execute(
+            """
+            SELECT * FROM ticket_blacklist
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (int(guild_id), int(user_id)),
+        ) as cur:
+            row = await cur.fetchone()
+    return _ticket_blacklist_row(row)
+
+
+async def delete_ticket_blacklist(guild_id: int, user_id: int) -> bool:
+    async with connect() as db:
+        cursor = await db.execute(
+            "DELETE FROM ticket_blacklist WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        )
+        await db.commit()
+    return cursor.rowcount > 0
+
+
+async def get_ticket_dashboard_analytics(guild_id: int) -> dict[str, Any]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status != 'closed' THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed,
+                AVG(CASE WHEN first_response_at IS NOT NULL
+                    THEN (julianday(first_response_at) - julianday(opened_at)) * 86400 END) AS avg_response
+            FROM tickets WHERE guild_id = ?
+            """,
+            (int(guild_id),),
+        ) as cur:
+            overview = dict(await cur.fetchone())
+        async with db.execute(
+            """
+            SELECT COALESCE(priority, 'normal') AS priority, COUNT(*) AS count
+            FROM tickets
+            WHERE guild_id = ? AND status != 'closed'
+            GROUP BY COALESCE(priority, 'normal')
+            """,
+            (int(guild_id),),
+        ) as cur:
+            priorities = [dict(row) for row in await cur.fetchall()]
+        async with db.execute(
+            """
+            SELECT rating, COUNT(*) AS count
+            FROM ticket_ratings
+            WHERE guild_id = ?
+            GROUP BY rating ORDER BY rating
+            """,
+            (int(guild_id),),
+        ) as cur:
+            ratings = [dict(row) for row in await cur.fetchall()]
+        async with db.execute(
+            """
+            SELECT
+                COALESCE(t.closed_by, t.claimed_by) AS staff_id,
+                COUNT(*) AS resolved,
+                AVG(r.rating) AS avg_rating
+            FROM tickets t
+            LEFT JOIN ticket_ratings r ON r.ticket_id = t.id
+            WHERE t.guild_id = ?
+              AND t.status = 'closed'
+              AND COALESCE(t.closed_by, t.claimed_by) IS NOT NULL
+            GROUP BY COALESCE(t.closed_by, t.claimed_by)
+            ORDER BY resolved DESC, avg_rating DESC
+            LIMIT 8
+            """,
+            (int(guild_id),),
+        ) as cur:
+            staff = [dict(row) for row in await cur.fetchall()]
+        async with db.execute(
+            """
+            SELECT
+                t.id, t.subject, t.category_label, t.status, t.priority,
+                t.user_id, t.claimed_by, t.opened_at, t.closed_at,
+                r.rating
+            FROM tickets t
+            LEFT JOIN ticket_ratings r ON r.ticket_id = t.id
+            WHERE t.guild_id = ?
+            ORDER BY COALESCE(t.closed_at, t.opened_at) DESC, t.id DESC
+            LIMIT 12
+            """,
+            (int(guild_id),),
+        ) as cur:
+            activity = [dict(row) for row in await cur.fetchall()]
+    overview["total"] = int(overview.get("total") or 0)
+    overview["active"] = int(overview.get("active") or 0)
+    overview["closed"] = int(overview.get("closed") or 0)
+    overview["avg_response"] = float(overview["avg_response"]) if overview.get("avg_response") is not None else None
+    for item in priorities + ratings + staff:
+        for key in ("count", "resolved", "staff_id", "rating"):
+            if item.get(key) is not None and key != "rating":
+                item[key] = int(item[key])
+    for item in ratings + staff + activity:
+        if item.get("rating") is not None:
+            item["rating"] = float(item["rating"])
+    return {
+        "overview": overview,
+        "priorities": priorities,
+        "ratings": ratings,
+        "staff": staff,
+        "activity": activity,
+    }
+
+
 async def get_active_ticket_for_user_category(
     guild_id: int,
     user_id: int,
