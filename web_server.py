@@ -57,6 +57,7 @@ from database import (
     update_ticket_control_config,
     get_ticket_dashboard_analytics,
     get_ticket_overview_metrics,
+    get_ticket_ratings,
     get_ticket_categories,
     save_ticket_log,
     get_ticket_blacklist,
@@ -3105,6 +3106,12 @@ async def api_guilds_tickets_panels(req):
         if int(panel.get("guild_id", 0)) == int(guild.id)
     ]
     return web.json_response({"panels": panels})
+
+
+@routes.get('/api/guilds/{guild_id}/tickets/ratings')
+async def api_guilds_tickets_ratings(req):
+    _, guild = await authorize(req)
+    return web.json_response({"ratings": await get_ticket_ratings(guild.id)})
 
 
 def _ticket_panel_payload(body: dict, existing: dict | None = None) -> tuple[dict | None, dict | None]:

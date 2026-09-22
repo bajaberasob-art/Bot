@@ -4840,6 +4840,27 @@ async def get_ticket_overview_metrics(guild_id: int) -> dict[str, Any]:
     }
 
 
+async def get_ticket_ratings(guild_id: int) -> list[dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT r.*, t.subject, t.category_label, t.closed_at
+            FROM ticket_ratings r
+            LEFT JOIN tickets t ON t.id = r.ticket_id
+            WHERE r.guild_id = ?
+            ORDER BY r.created_at DESC, r.id DESC
+            LIMIT 100
+            """,
+            (int(guild_id),),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+    for item in rows:
+        for key in ("id", "ticket_id", "guild_id", "staff_id", "user_id", "stars"):
+            if item.get(key) is not None:
+                item[key] = int(item[key])
+    return rows
+
+
 async def get_active_ticket_for_user_category(
     guild_id: int,
     user_id: int,
