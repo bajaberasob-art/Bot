@@ -56,6 +56,7 @@
     },
     ticketTab: sessionStorage.getItem("ticket-tab") || "overview",
     ticketPanels: [],
+    ticketRatings: [],
     ticketAnalytics: { overview: {}, priorities: [], ratings: [], staff: [], activity: [] },
     ticketBlacklist: [],
     ticketSettings: null,
@@ -2691,7 +2692,7 @@
   async function refreshTickets() {
     const id = state.guild.id;
     try {
-      const [active, archive, kpis, canned, configResponse, panels, analytics, settings, blacklist] = await Promise.all([
+      const [active, archive, kpis, canned, configResponse, panels, analytics, settings, blacklist, ratingsResponse] = await Promise.all([
         api(`api/guild/${id}/tickets/active`),
         api(`api/guild/${id}/tickets/archive?q=${encodeURIComponent(state.ticketSearch)}`),
         api(`api/guild/${id}/tickets/kpis`),
@@ -2701,6 +2702,7 @@
         api(`api/guild/${id}/tickets/analytics`),
         api(`api/guild/${id}/tickets/settings`),
         api(`api/guild/${id}/tickets/blacklist`),
+        api(`api/guilds/${id}/tickets/ratings`),
       ]);
       state.tickets = {
         active: (await readJson(active, { tickets: state.tickets.active })).tickets || [],
@@ -2726,6 +2728,7 @@
         state.ticketConfig = { ...state.ticketConfig, ...(settingsData.config || {}) };
       }
       if (blacklist.ok) state.ticketBlacklist = (await readJson(blacklist, { entries: [] })).entries || [];
+      if (ratingsResponse.ok) state.ticketRatings = (await readJson(ratingsResponse, { ratings: [] })).ratings || [];
       renderPage();
     } catch (error) {
       if (error.message !== "unauth") toast("تعذر تحديث مركز التذاكر");
