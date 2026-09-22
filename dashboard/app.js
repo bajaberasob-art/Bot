@@ -4513,9 +4513,9 @@
     );
   }
   function analyticsNumber(value, fallback = "—") {
-    return Number.isFinite(Number(value))
-      ? Number(value).toLocaleString("en-US")
-      : fallback;
+    if (value === null || value === undefined || value === "") return fallback;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric.toLocaleString("en-US") : fallback;
   }
   function analyticsDuration(seconds) {
     const total = Math.max(0, Number(seconds) || 0);
@@ -4585,7 +4585,9 @@
   }
   function overviewAnalyticsHealthPanel() {
     const health = state.analytics?.health_score || {};
-    const score = Number(health.score);
+    const score = health.score === null || health.score === undefined
+      ? NaN
+      : Number(health.score);
     const circumference = 2 * Math.PI * 48;
     const value = Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 0;
     const metrics = [

@@ -1341,10 +1341,15 @@ async def api_guild_analytics(req):
         if isinstance(channel, MESSAGE_CHANNEL_TYPES)
     ]
     channel_ids = [int(channel.id) for channel in message_channels]
+    written_channel_ids = [
+        int(channel.id)
+        for channel in message_channels
+        if isinstance(channel, (discord.TextChannel, discord.ForumChannel))
+    ]
     summary, traffic, dead, top, heatmap, golden = await asyncio.gather(
         get_analytics_summary(guild.id, timeframe),
         get_channel_traffic(guild.id, timeframe),
-        get_dead_channels(guild.id, timeframe, channel_ids),
+        get_dead_channels(guild.id, timeframe, written_channel_ids),
         get_top_messenger(guild.id, timeframe),
         get_hourly_heatmap(guild.id, timeframe),
         get_golden_hour(guild.id, timeframe),
@@ -1365,14 +1370,23 @@ async def api_guild_analytics(req):
         if total_members else 0
     )
     density_score = min(100, round(chat_density_value * 10))
-    health_score_value = round(
-        online_pct * 0.2
-        + active_chatters_pct * 0.4
-        + int(summary.get("retention_pct", 0)) * 0.25
-        + density_score * 0.15
+    has_historical_activity = bool(
+        int(summary.get("total_messages", 0) or 0)
+        or int(summary.get("active_chatters", 0) or 0)
+        or int(summary.get("total_voice_seconds", 0) or 0)
+    )
+    health_score_value = (
+        round(
+            online_pct * 0.2
+            + active_chatters_pct * 0.4
+            + int(summary.get("retention_pct", 0)) * 0.25
+            + density_score * 0.15
+        )
+        if has_historical_activity else None
     )
     health_status = (
-        "ممتاز" if health_score_value >= 80
+        "بانتظار البيانات" if health_score_value is None
+        else "ممتاز" if health_score_value >= 80
         else "جيد" if health_score_value >= 60
         else "يحتاج متابعة" if health_score_value >= 35
         else "منخفض"
