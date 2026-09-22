@@ -4448,8 +4448,132 @@ async def replace_ticket_options(
                     str(option.get("welcome_msg") or "")[:2000],
                 ),
             )
+        await db.execute(
+            "DELETE FROM ticket_categories WHERE guild_id = ?",
+            (int(guild_id),),
+        )
+        for index, option in enumerate(options[:25]):
+            name = str(
+                option.get("name")
+                or option.get("label")
+                or f"قسم دعم {index + 1}"
+            ).strip()[:100]
+            ping_role_ids = option.get("ping_role_ids")
+            if not isinstance(ping_role_ids, list):
+                ping_role_ids = option.get("support_role_ids")
+            if not isinstance(ping_role_ids, list):
+                ping_role_ids = (
+                    [option.get("role_id")]
+                    if option.get("role_id") not in (None, "")
+                    else []
+                )
+            staff_role_ids = option.get("staff_role_ids")
+            if not isinstance(staff_role_ids, list):
+                staff_role_ids = option.get("support_role_ids", [])
+            senior_role_ids = option.get("senior_role_ids", [])
+            await db.execute(
+                """
+                INSERT INTO ticket_categories
+                    (guild_id, name, ping_role_ids, staff_role_ids, description,
+                     emoji, category_id, welcome_msg)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, name) DO UPDATE SET
+                    ping_role_ids = excluded.ping_role_ids,
+                    staff_role_ids = excluded.staff_role_ids,
+                    description = excluded.description,
+                    emoji = excluded.emoji,
+                    category_id = excluded.category_id,
+                    welcome_msg = excluded.welcome_msg
+                """,
+                (
+                    int(guild_id),
+                    name or f"قسم دعم {index + 1}",
+                    json.dumps([str(item) for item in ping_role_ids if str(item).isdigit()]),
+                    json.dumps([str(item) for item in staff_role_ids if str(item).isdigit()]),
+                    str(option.get("description") or "")[:100],
+                    str(option.get("emoji") or "🎫")[:100],
+                    int(option["category_id"])
+                    if option.get("category_id") not in (None, "")
+                    else None,
+                    str(option.get("welcome_msg") or "")[:2000],
+                ),
+            )
         await db.commit()
     return await get_ticket_options(guild_id)
+
+
+def _ticket_category_row(row) -> dict[str, Any]:
+    item = dict(row)
+    for key in ("id", "guild_id", "category_id"):
+        if item.get(key) is not None:
+            item[key] = int(item[key])
+    for key in ("ping_role_ids", "staff_role_ids"):
+        item[key] = _ticket_json_ids(item.get(key))
+    return item
+
+
+async def get_ticket_categories(guild_id: int) -> list[dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT id, guild_id, name, ping_role_ids, staff_role_ids,
+                   description, emoji, category_id, welcome_msg
+            FROM ticket_categories
+            WHERE guild_id = ?
+            ORDER BY id
+            """,
+            (int(guild_id),),
+        ) as cur:
+            rows = [_ticket_category_row(row) for row in await cur.fetchall()]
+    if rows:
+        return rows
+    # A read-only compatibility fallback for installations upgraded before
+    # ticket_categories existed; the next panel save will backfill the table.
+    return [
+        {
+            "id": option["id"],
+            "guild_id": option["guild_id"],
+            "name": option["label"],
+            "ping_role_ids": [str(option["role_id"])] if option.get("role_id") else [],
+            "staff_role_ids": [str(option["role_id"])] if option.get("role_id") else [],
+            "description": option.get("description", ""),
+            "emoji": option.get("emoji", "🎫"),
+            "category_id": option.get("category_id"),
+            "welcome_msg": option.get("welcome_msg", ""),
+        }
+        for option in await get_ticket_options(guild_id)
+    ]
+
+
+async def save_ticket_log(
+    ticket_id: int,
+    guild_id: int,
+    action: str,
+    *,
+    staff_id: int | None = None,
+    target_user_id: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    async with connect(aiosqlite.Row) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO ticket_logs
+                (ticket_id, guild_id, action, staff_id, target_user_id, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            RETURNING *
+            """,
+            (
+                int(ticket_id),
+                int(guild_id),
+                str(action)[:80],
+                int(staff_id) if staff_id is not None else None,
+                int(target_user_id) if target_user_id is not None else None,
+                json.dumps(metadata or {}, ensure_ascii=False)[:4000],
+            ),
+        )
+        row = await cursor.fetchone()
+        await db.commit()
+    return dict(row) if row else {}
 
 
 def _ticket_blacklist_row(row) -> dict[str, Any]:
@@ -4627,6 +4751,92 @@ async def get_ticket_dashboard_analytics(guild_id: int) -> dict[str, Any]:
         "ratings": ratings,
         "staff": staff,
         "activity": activity,
+    }
+
+
+async def get_ticket_overview_metrics(guild_id: int) -> dict[str, Any]:
+    """Return the CRM overview contract without changing the legacy analytics shape."""
+    analytics = await get_ticket_dashboard_analytics(guild_id)
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT COUNT(*) AS count FROM ticket_panels WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            panels = int((await cur.fetchone())["count"] or 0)
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM ticket_blacklist
+            WHERE guild_id = ?
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            """,
+            (int(guild_id),),
+        ) as cur:
+            blacklist = int((await cur.fetchone())["count"] or 0)
+        async with db.execute(
+            """
+            SELECT AVG(stars) AS average
+            FROM ticket_ratings
+            WHERE guild_id = ?
+            """,
+            (int(guild_id),),
+        ) as cur:
+            average_row = await cur.fetchone()
+        async with db.execute(
+            """
+            SELECT id, ticket_id, action, staff_id, target_user_id,
+                   metadata, created_at
+            FROM ticket_logs
+            WHERE guild_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 10
+            """,
+            (int(guild_id),),
+        ) as cur:
+            activity_logs = []
+            for row in await cur.fetchall():
+                item = dict(row)
+                try:
+                    item["metadata"] = json.loads(item.get("metadata") or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    item["metadata"] = {}
+                activity_logs.append(item)
+        async with db.execute(
+            """
+            SELECT stars AS rating, COUNT(*) AS count
+            FROM ticket_ratings
+            WHERE guild_id = ?
+            GROUP BY stars
+            """,
+            (int(guild_id),),
+        ) as cur:
+            rating_rows = {int(row["rating"]): int(row["count"]) for row in await cur.fetchall()}
+    rating_distribution = [
+        {"rating": stars, "count": rating_rows.get(stars, 0)}
+        for stars in range(1, 6)
+    ]
+    overview = {
+        **analytics.get("overview", {}),
+        "panels": panels,
+        "blacklist": blacklist,
+        "average_rating": (
+            round(float(average_row["average"]), 2)
+            if average_row and average_row["average"] is not None
+            else None
+        ),
+    }
+    return {
+        "overview": overview,
+        "panels": panels,
+        "active_tickets": int(overview.get("active") or 0),
+        "total_tickets": int(overview.get("total") or 0),
+        "average_rating": overview["average_rating"],
+        "priority_distribution": analytics.get("priorities", []),
+        "rating_distribution": rating_distribution,
+        "staff_leaderboard": analytics.get("staff", []),
+        "last_activity_logs": activity_logs,
+        # Keep the existing dashboard consumer compatible during rollout.
+        **analytics,
     }
 
 
