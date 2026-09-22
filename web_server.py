@@ -160,11 +160,15 @@ def local_login_enabled(req=None) -> bool:
 
 def local_development_session() -> dict:
     """Return a non-expiring local operator identity; never used by OAuth."""
+    guilds = [
+        dashboard_guild_payload(guild)
+        for guild in (getattr(bot_ref, "guilds", ()) or ())
+    ]
     return {
         "id": "0",
         "username": "Local Developer",
         "avatar": "https://cdn.discordapp.com/embed/avatars/1.png",
-        "guilds": [],
+        "guilds": guilds,
         "expires_at": float("inf"),
         "csrf": "local-development-csrf",
         "_local_dev": True,

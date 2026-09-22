@@ -176,7 +176,7 @@ class OAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(int(cookie["max-age"]), dashboard.LOCAL_LOGIN_MAX_AGE)
         self.assertFalse(cookie["secure"])
 
-        with patch.dict("os.environ", {}, clear=False):
+        with patch.dict("os.environ", {"DASHBOARD_LOCAL_LOGIN": ""}, clear=False):
             with self.assertRaises(dashboard.web.HTTPNotFound):
                 await dashboard.local_login(request("/__local_login"))
 
