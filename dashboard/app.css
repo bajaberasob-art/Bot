@@ -2445,6 +2445,172 @@ body {
   }
 }
 
+/* PR1ME polish pass: interaction, depth, and responsive focus states. */
+.overview-pro-view::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 2px;
+  right: 12%;
+  width: 34%;
+  height: 180px;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(245, 140, 176, .1), transparent 72%);
+  filter: blur(18px);
+}
+
+.overview-brand-lockup {
+  position: relative;
+  min-height: 22px;
+  padding-inline-start: 12px;
+}
+
+.overview-brand-lockup::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5be0b2;
+  box-shadow: 0 0 0 4px rgba(91, 224, 178, .08), 0 0 12px #5be0b2;
+}
+
+.overview-brand-lockup strong {
+  text-shadow: 0 0 24px rgba(245, 140, 176, .22);
+}
+
+.overview-command-center,
+.overview-pro-card,
+.overview-pro-kpi {
+  transition: border-color .22s ease, box-shadow .22s ease, transform .22s ease;
+}
+
+.overview-command-center:hover {
+  border-color: rgba(245, 140, 176, .34);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .06), 0 20px 48px rgba(245, 140, 176, .08);
+}
+
+.overview-pro-card:hover {
+  border-color: rgba(255, 255, 255, .13);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .06), 0 19px 42px rgba(0, 0, 0, .34);
+}
+
+.overview-pro-kpi {
+  overflow: hidden;
+}
+
+.overview-pro-kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  opacity: .72;
+  background: currentColor;
+  box-shadow: 0 0 16px currentColor;
+}
+
+.overview-pro-kpi:hover,
+.overview-pro-kpi:focus-visible {
+  transform: translateY(-3px);
+  border-color: currentColor;
+  box-shadow: inset 0 1px rgba(255, 255, 255, .07), 0 12px 28px color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.overview-pro-kpi:active,
+.overview-command-actions button:active,
+.overview-inline-action:active {
+  transform: translateY(0);
+}
+
+.overview-command-actions button:focus-visible,
+.overview-inline-action:focus-visible,
+.overview-range-select:focus-visible,
+.overview-segmented button:focus-visible,
+.overview-channel-row:focus-visible,
+.system-status-card button:focus-visible,
+.heat-cell:focus-visible {
+  outline: 2px solid #8ee8ff;
+  outline-offset: 2px;
+}
+
+.overview-live-chip:not(.offline) {
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, .055), 0 0 15px rgba(16, 185, 129, .12);
+}
+
+.overview-chart-tooltip[hidden] {
+  display: block;
+  min-height: 0;
+  margin-top: 0;
+  padding-block: 0;
+  border-color: transparent;
+  color: transparent;
+  background: transparent;
+}
+
+.overview-stream-row,
+.overview-featured-member,
+.overview-channel-row,
+.system-status-card {
+  transition: border-color .18s ease, background .18s ease, transform .18s ease;
+}
+
+.overview-stream-row:hover {
+  border-color: rgba(245, 140, 176, .2);
+  background: linear-gradient(90deg, rgba(245, 140, 176, .05), transparent);
+}
+
+.overview-featured-member:hover,
+.overview-channel-row:hover,
+.system-status-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(245, 140, 176, .28);
+  background: rgba(245, 140, 176, .06);
+}
+
+.overview-stream-dot {
+  animation: prime-live-dot 2.4s ease-in-out infinite;
+}
+
+.heat-cell:focus-visible {
+  transform: scale(1.18);
+}
+
+@keyframes prime-live-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 140, 176, .18), 0 0 10px #f58cb0; }
+  50% { box-shadow: 0 0 0 5px rgba(245, 140, 176, .02), 0 0 16px #f58cb0; }
+}
+
+@media (max-width: 720px) {
+  .overview-command-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .overview-command-actions button {
+    min-height: 34px;
+  }
+
+  .overview-pro-card:hover {
+    transform: none;
+  }
+
+  .overview-live-meta {
+    gap: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overview-pro-view *,
+  .overview-pro-view *::before,
+  .overview-pro-view *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .001ms !important;
+  }
+}
+
 /* late fixes: room for the floating dock, warning toast, blocked options */
 .app {
   padding-bottom: calc(130px + env(safe-area-inset-bottom));
