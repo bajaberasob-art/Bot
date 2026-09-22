@@ -4418,8 +4418,10 @@
     );
   }
   function overviewMembersPanel() {
-    const members = Array.isArray(state.meta?.members) ? state.meta.members.filter(Boolean).slice(0, 3) : [];
+    const allMembers = Array.isArray(state.meta?.members) ? state.meta.members.filter(Boolean) : [];
+    const members = allMembers.slice(0, 3);
     const featured = members[0];
+    const totalMembers = Number(state.guild?.members);
     return el(
       "section",
       { class: "overview-pro-card overview-members-card" },
@@ -4430,13 +4432,13 @@
       featured
         ? el("div", { class: "overview-featured-member" },
             avatar(featured.avatar, featured.name),
-            el("div", {}, el("strong", { text: featured.name }), el("small", { text: "عضو نشط في السيرفر" })),
-            el("span", { class: "member-score", text: "نجم اليوم" }),
+             el("div", {}, el("strong", { text: featured.name }), el("small", { text: "عضو حقيقي من قائمة السيرفر" })),
+             el("span", { class: "member-score", text: "متاح الآن" }),
           )
         : overviewSkeleton("تتبع المنضمين الجدد"),
       el("div", { class: "overview-member-insight-grid" },
-        el("div", {}, el("span", { text: "الصاعدون هذا الأسبوع" }), el("strong", { text: members.length ? `${members.length} أعضاء` : "لا توجد بيانات" })),
-        el("div", {}, el("span", { text: "خطر المغادرة" }), el("strong", { class: "safe", text: state.online ? "لا توجد إشارات" : "غير متاح" })),
+        el("div", {}, el("span", { text: "الأعضاء المحملون فعلياً" }), el("strong", { text: allMembers.length ? overviewNumber(allMembers.length) : "لا توجد بيانات" })),
+        el("div", {}, el("span", { text: "إجمالي Discord" }), el("strong", { class: "safe", text: Number.isFinite(totalMembers) ? overviewNumber(totalMembers) : "غير متاح" })),
       ),
     );
   }
@@ -4490,7 +4492,7 @@
         ? el("div", { class: "overview-channel-list" }, ...channels.map((channel, index) => el("div", { class: "overview-channel-row" },
             el("span", { class: "channel-rank", text: String(index + 1).padStart(2, "0") }),
             el("div", {}, el("strong", { text: `# ${channel.name || "قناة"}` }), el("small", { text: channel.type || "Text Channel" })),
-            el("span", { class: "channel-health", text: "نشط" }),
+            el("span", { class: "channel-health", text: channel.type === "voice" ? "صوتي" : "متاح" }),
           )))
         : overviewSkeleton("قنوات السيرفر"),
       el("div", { class: "overview-system-matrix" },
@@ -4509,15 +4511,15 @@
   function enhancedOverviewView() {
     const counts = state.stats?.counts || {};
     const members = Number(state.guild?.members ?? counts.members ?? 0);
-    const activeMembers = Number(counts.active_members ?? counts.online_members ?? 0);
     const incidents = state.incidents.length;
     const series = overviewSeriesData();
     const latest = series[series.length - 1];
+    const updatedAt = state.stats?.updated_at || latest?.timestamp;
     return el(
       "section",
       { class: "overview-view overview-pro-view" },
       el("div", { class: "overview-brand-lockup" },
-        el("strong", { text: "LONA" }),
+        el("strong", { text: "PR1ME" }),
         el("span", { text: "◌" }),
         el("small", { text: "PR1ME TEAM CONTROL" }),
       ),
@@ -4529,11 +4531,11 @@
             el("p", { text: "كل ما يهمك عن مجتمعك، في شاشة واحدة واضحة وسريعة." }),
             el("div", { class: "overview-live-meta" },
               el("span", { class: `overview-live-chip ${state.online ? "" : "offline"}` }, state.online ? "● LIVE" : "○ OFFLINE"),
-              el("span", { text: `آخر تحديث ${overviewTime(Date.now())}` }),
+              el("span", { text: `آخر تحديث ${overviewTime(updatedAt)}` }),
               el("span", { text: latest ? latest.label : "بانتظار القياسات" }),
             ),
           ),
-          el("div", { class: "command-center-orb", "aria-hidden": "true" }, el("span", { text: state.online ? "L" : "!" })),
+          el("div", { class: "command-center-orb", "aria-hidden": "true" }, el("span", { text: state.online ? "P" : "!" })),
         ),
         el("div", { class: "overview-command-actions" },
           el("button", { type: "button", text: "تحديث الآن", onClick: () => refreshDashboardStats(state.guild.id, true) }),
@@ -4541,10 +4543,10 @@
         ),
       ),
       el("div", { class: "overview-pro-kpis" },
-        overviewCounterCard("أعضاء السيرفر", members, "الإجمالي", "pink", "♟", "community"),
-        overviewCounterCard("الأعضاء الفعليون", activeMembers || "—", "متصلون الآن", "cyan", "◉", "community"),
-        overviewCounterCard("الأمان", incidents, incidents ? "حوادث مفتوحة" : "كل شيء تمام", incidents ? "red" : "green", incidents ? "!" : "✓", "security", incidents ? "alert" : "good"),
-        overviewCounterCard("النشاط", state.actions.length, "آخر الأحداث", "purple", "✦", "analytics"),
+        overviewCounterCard("أعضاء السيرفر", members, "من Discord", "pink", "♟", "community"),
+        overviewCounterCard("حسابات الاقتصاد", counts.economy_accounts ?? "—", "من قاعدة البيانات", "cyan", "◉", "economy"),
+        overviewCounterCard("التذاكر المفتوحة", counts.tickets_active ?? "—", "من السيرفر", "red", "!", "tickets"),
+        overviewCounterCard("الأوامر المفعلة", counts.commands_enabled ?? "—", "من سجل الأوامر", "purple", "✦", "commands"),
       ),
       el("div", { class: "overview-pro-grid overview-grid-primary" },
         overviewPulsePanel(),
