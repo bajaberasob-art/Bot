@@ -8564,3 +8564,48 @@ textarea:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Final mobile drawer pass: keep the section menu a side panel, not a second page. */
+@media (max-width: 720px) {
+  .workspace-nav {
+    top: 76px;
+    right: 12px;
+    bottom: calc(96px + env(safe-area-inset-bottom));
+    left: auto;
+    width: min(342px, calc(100vw - 34px));
+    max-height: calc(100dvh - 172px);
+    padding: 16px 12px 12px;
+    border-radius: 24px;
+    transform: translateX(calc(100% + 28px));
+  }
+
+  .workspace-nav.drawer-open {
+    transform: translateX(0);
+  }
+
+  .workspace-nav-head {
+    flex: none;
+    padding: 4px 8px 13px;
+  }
+
+  .workspace-nav-head strong {
+    font-size: 18px;
+  }
+
+  .workspace-nav .nav-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 13px 1px;
+  }
+
+  .workspace-nav .nav-item {
+    min-height: 62px;
+  }
+
+  .workspace-nav-foot {
+    flex: none;
+    padding-top: 10px;
+  }
+}
