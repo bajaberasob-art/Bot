@@ -891,6 +891,65 @@ async def init_db() -> None:
                     PRIMARY KEY (guild_id, channel_id, message_id)
                 );
             """)
+            async with db.execute("PRAGMA table_info(ticket_panels)") as cur:
+                ticket_panel_columns = {row[1] for row in await cur.fetchall()}
+            ticket_panel_migrations = {
+                "title": "TEXT NOT NULL DEFAULT 'مركز الدعم والتذاكر'",
+                "description": "TEXT NOT NULL DEFAULT ''",
+                "color": "INTEGER NOT NULL DEFAULT 5793266",
+                "mode": "TEXT NOT NULL DEFAULT 'dropdown'",
+                "version": "INTEGER NOT NULL DEFAULT 1",
+            }
+            for column, definition in ticket_panel_migrations.items():
+                if column not in ticket_panel_columns:
+                    await db.execute(
+                        f"ALTER TABLE ticket_panels ADD COLUMN {column} {definition}"
+                    )
+            # CRM-facing ticket tables are additive. The legacy ticket_* tables
+            # remain the source of truth for existing commands and panels.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    ping_role_ids TEXT NOT NULL DEFAULT '[]',
+                    staff_role_ids TEXT NOT NULL DEFAULT '[]',
+                    description TEXT NOT NULL DEFAULT '',
+                    emoji TEXT NOT NULL DEFAULT '🎫',
+                    category_id INTEGER DEFAULT NULL,
+                    welcome_msg TEXT NOT NULL DEFAULT '',
+                    UNIQUE (guild_id, name)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    log_channel_id INTEGER DEFAULT NULL,
+                    evaluation_channel_id INTEGER DEFAULT NULL,
+                    allow_user_close INTEGER NOT NULL DEFAULT 0,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    staff_id INTEGER DEFAULT NULL,
+                    target_user_id INTEGER DEFAULT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ticket_logs_guild_time "
+                "ON ticket_logs(guild_id, created_at DESC, id DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ticket_categories_guild "
+                "ON ticket_categories(guild_id, id);"
+            )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS ticket_config (
                     guild_id INTEGER PRIMARY KEY,
@@ -4059,41 +4118,79 @@ async def save_ticket_panel(
     channel_id: int,
     message_id: int,
     categories: list[dict[str, Any]],
+    *,
+    title: str = "مركز الدعم والتذاكر",
+    description: str = "",
+    color: int = 0x5865F2,
+    mode: str = "dropdown",
 ) -> dict[str, Any]:
     encoded = json.dumps(categories, ensure_ascii=False)
     async with connect(aiosqlite.Row) as db:
         await db.execute(
             """
             INSERT INTO ticket_panels
-                (guild_id, channel_id, message_id, categories, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (guild_id, channel_id, message_id, categories, title,
+                 description, color, mode, version, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
             ON CONFLICT(guild_id, channel_id, message_id) DO UPDATE SET
                 categories = excluded.categories,
+                title = excluded.title,
+                description = excluded.description,
+                color = excluded.color,
+                mode = excluded.mode,
+                version = ticket_panels.version + 1,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (int(guild_id), int(channel_id), int(message_id), encoded),
+            (
+                int(guild_id),
+                int(channel_id),
+                int(message_id),
+                encoded,
+                str(title or "مركز الدعم والتذاكر")[:256],
+                str(description or "")[:4096],
+                max(0, min(0xFFFFFF, int(color))),
+                "buttons" if mode == "buttons" else "dropdown",
+            ),
         )
         await db.commit()
-    return {
-        "guild_id": str(guild_id),
-        "channel_id": str(channel_id),
-        "message_id": str(message_id),
-        "categories": categories,
-    }
+        async with db.execute(
+            """
+            SELECT rowid AS id, guild_id, channel_id, message_id, categories,
+                   title, description, color, mode, version, updated_at
+            FROM ticket_panels
+            WHERE guild_id = ? AND channel_id = ? AND message_id = ?
+            """,
+            (int(guild_id), int(channel_id), int(message_id)),
+        ) as cur:
+            row = await cur.fetchone()
+    result = dict(row) if row else {}
+    try:
+        result["categories"] = json.loads(result.get("categories") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        result["categories"] = categories
+    for key in ("guild_id", "channel_id", "message_id", "id", "version"):
+        if result.get(key) is not None:
+            result[key] = int(result[key])
+    result["color"] = int(result.get("color") or 0x5865F2)
+    return result
 
 
 async def get_ticket_panels() -> list[dict[str, Any]]:
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
-            "SELECT guild_id, channel_id, message_id, categories, updated_at "
+            "SELECT rowid AS id, guild_id, channel_id, message_id, categories, "
+            "title, description, color, mode, version, updated_at "
             "FROM ticket_panels ORDER BY updated_at DESC"
         ) as cur:
             rows = []
             for row in await cur.fetchall():
                 item = dict(row)
+                item["id"] = int(item["id"])
                 item["guild_id"] = int(item["guild_id"])
                 item["channel_id"] = int(item["channel_id"])
                 item["message_id"] = int(item["message_id"])
+                item["color"] = int(item.get("color") or 0x5865F2)
+                item["version"] = int(item.get("version") or 1)
                 try:
                     item["categories"] = json.loads(item["categories"])
                 except (TypeError, ValueError, json.JSONDecodeError):
