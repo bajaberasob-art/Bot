@@ -3131,6 +3131,15 @@ async def api_guild_tickets_action(req):
         member = guild.get_member(staff_id)
         if member is None:
             return json_error(400, "validation", fields={"staff_id": "الموظف غير موجود في السيرفر"})
+        ticket = await community.get_ticket(guild.id, ticket_id)
+        if not ticket:
+            return json_error(404, "ticket_not_found")
+        if not community._is_ticket_staff(member, ticket):
+            return json_error(
+                403,
+                "validation",
+                fields={"staff_id": "العضو المحدد ليس ضمن فريق دعم هذه التذكرة"},
+            )
         result = await community.reassign_ticket(guild.id, ticket_id, staff_id)
     elif action == "status":
         status = str(body.get("status", "")).strip().lower()

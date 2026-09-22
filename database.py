@@ -1065,6 +1065,10 @@ async def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_tickets_user_category "
                 "ON tickets(guild_id, user_id, category_key, status);"
             )
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_one_open_per_category "
+                "ON tickets(guild_id, user_id, category_key) WHERE status != 'closed';"
+            )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS ticket_notes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4314,15 +4318,37 @@ async def get_active_tickets(guild_id: int) -> list[dict[str, Any]]:
             return [_ticket_row(dict(row)) for row in await cur.fetchall()]
 
 
-async def claim_ticket(guild_id: int, ticket_id: int, staff_id: int) -> dict[str, Any] | None:
+async def claim_ticket(
+    guild_id: int,
+    ticket_id: int,
+    staff_id: int,
+    *,
+    expected_claimed_by: int | None = None,
+) -> dict[str, Any] | None:
     async with connect(aiosqlite.Row) as db:
-        cursor = await db.execute(
-            """
-            UPDATE tickets SET claimed_by = ?, status = 'active', waiting_since = NULL
-            WHERE guild_id = ? AND id = ? AND status != 'closed'
-            """,
-            (int(staff_id), int(guild_id), int(ticket_id)),
-        )
+        if expected_claimed_by is None:
+            cursor = await db.execute(
+                """
+                UPDATE tickets SET claimed_by = ?, status = 'active', waiting_since = NULL
+                WHERE guild_id = ? AND id = ? AND status != 'closed'
+                  AND claimed_by IS NULL
+                """,
+                (int(staff_id), int(guild_id), int(ticket_id)),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                UPDATE tickets SET claimed_by = ?, status = 'active', waiting_since = NULL
+                WHERE guild_id = ? AND id = ? AND status != 'closed'
+                  AND (claimed_by IS NULL OR claimed_by = ?)
+                """,
+                (
+                    int(staff_id),
+                    int(guild_id),
+                    int(ticket_id),
+                    int(expected_claimed_by),
+                ),
+            )
         if cursor.rowcount <= 0:
             await db.rollback()
             return None

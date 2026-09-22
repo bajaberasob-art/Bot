@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import re
+import sqlite3
 import time
 
 import discord
@@ -1230,18 +1231,28 @@ class Community(commands.Cog):
             overwrites=overwrites,
             topic=f"Ticket • {category['label']} • Normal • {subject[:80]}",
         )
-        ticket = await create_ticket(
-            guild.id,
-            channel.id,
-            itx.user.id,
-            category["key"],
-            category["label"],
-            subject,
-            details,
-            category.get("support_role_ids"),
-            category.get("senior_role_ids"),
-            intake_data=intake_data,
-        )
+        try:
+            ticket = await create_ticket(
+                guild.id,
+                channel.id,
+                itx.user.id,
+                category["key"],
+                category["label"],
+                subject,
+                details,
+                category.get("support_role_ids"),
+                category.get("senior_role_ids"),
+                intake_data=intake_data,
+            )
+        except sqlite3.IntegrityError:
+            try:
+                await channel.delete(reason="Duplicate active ticket prevented")
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning("Could not remove duplicate ticket channel %s", channel.id)
+            return await itx.response.send_message(
+                f"📌 لديك تذكرة مفتوحة في قسم «{category['label']}» بالفعل.",
+                ephemeral=True,
+            )
         embed = self._ticket_embed(ticket)
         if category.get("welcome_msg"):
             embed.add_field(
@@ -1326,7 +1337,17 @@ class Community(commands.Cog):
             return await itx.response.send_message(
                 "👤 التذكرة مستلمة من عضو آخر في فريق الدعم.", ephemeral=True
             )
-        ticket = await claim_ticket(itx.guild.id, ticket["id"], itx.user.id)
+        ticket = await claim_ticket(
+            itx.guild.id,
+            ticket["id"],
+            itx.user.id,
+            expected_claimed_by=ticket.get("claimed_by"),
+        )
+        if not ticket:
+            return await itx.response.send_message(
+                "تعذر استلام التذكرة؛ سبقك موظف آخر.",
+                ephemeral=True,
+            )
         overwrites = itx.channel.overwrites
         for role_id in ticket.get("support_role_ids", []):
             role = itx.guild.get_role(int(role_id))
@@ -1438,7 +1459,17 @@ class Community(commands.Cog):
                 if ticket.get("claimed_by")
                 else None
             )
-            ticket = await claim_ticket(itx.guild.id, ticket["id"], member.id)
+            ticket = await claim_ticket(
+                itx.guild.id,
+                ticket["id"],
+                member.id,
+                expected_claimed_by=ticket.get("claimed_by"),
+            )
+            if not ticket:
+                return await itx.response.send_message(
+                    "تعذر تحويل التذكرة؛ تغير المستلم قبل حفظ العملية.",
+                    ephemeral=True,
+                )
             if old_staff and old_staff.id != member.id:
                 old_overwrite = itx.channel.overwrites_for(old_staff)
                 old_overwrite.send_messages = None
@@ -1574,11 +1605,24 @@ class Community(commands.Cog):
             return await self._ticket_denied(itx)
         await itx.response.defer(ephemeral=True)
         if ticket["status"] != "closed":
+            text, content_html = await self._build_transcript(itx.channel, ticket)
+            text += "\n\nClose reason: Deleted by staff"
+            content_html = content_html.replace(
+                "</body></html>",
+                "<hr><p><strong>سبب الإغلاق:</strong> حذف بواسطة فريق الدعم</p></body></html>",
+            )
+            await save_ticket_transcript(
+                ticket["id"],
+                ticket["guild_id"],
+                ticket["channel_id"],
+                text,
+                content_html,
+            )
             await close_ticket(
                 ticket["guild_id"],
                 ticket["id"],
                 itx.user.id,
-                "Deleted by staff",
+                "Deleted by staff after transcript capture",
             )
         try:
             await itx.channel.delete(reason=f"Ticket #{ticket['id']} deleted by staff")
