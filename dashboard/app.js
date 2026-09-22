@@ -3601,6 +3601,19 @@
         ),
       ));
       if (!leaderboard.children.length) leaderboard.append(el("div", { class: "ticket-next-empty", text: "ستظهر الترتيبات بعد حل التذاكر" }));
+      const queueRows = state.tickets.active
+        .filter((ticket) => state.ticketStatusFilter === "all" || (ticket.status || "active") === state.ticketStatusFilter)
+        .slice(0, 8)
+        .map((ticket) => el("button", {
+          class: "ticket-queue-row",
+          type: "button",
+          onClick: () => openTicketDetail(ticket),
+        },
+          el("span", { class: `ticket-queue-priority ${ticket.priority || "normal"}` }),
+          el("strong", { text: `#${ticket.id} · ${ticket.subject}` }),
+          el("small", { text: ticket.category_label || "دعم" }),
+          el("b", { text: ticket.claimed_by ? `#${ticket.claimed_by}` : "غير مستلمة" }),
+        ));
       return el("div", { class: "ticket-next-content ticket-overview-content" },
         el("div", { class: "ticket-next-metrics" },
           metric("التذاكر المفتوحة", activeCount, "مزامنة مباشرة من SQLite", "amber"),
@@ -3637,16 +3650,10 @@
               el("strong", { text: String(state.tickets.active.filter((ticket) => (ticket.status || "active") === key).length) }), el("span", { text: label }),
             ),
           )),
-          el("div", { class: "ticket-queue-list" }, state.tickets.active
-            .filter((ticket) => state.ticketStatusFilter === "all" || (ticket.status || "active") === state.ticketStatusFilter)
-            .slice(0, 8)
-            .map((ticket) => el("button", { class: "ticket-queue-row", type: "button", onClick: () => openTicketDetail(ticket) },
-              el("span", { class: `ticket-queue-priority ${ticket.priority || "normal"}` }),
-              el("strong", { text: `#${ticket.id} · ${ticket.subject}` }),
-              el("small", { text: ticket.category_label || "دعم" }),
-              el("b", { text: ticket.claimed_by ? `#${ticket.claimed_by}` : "غير مستلمة" }),
-            )),
-          state.tickets.active.length ? null : el("div", { class: "ticket-next-empty", text: "لا توجد تذاكر نشطة حالياً" }),
+          el("div", { class: "ticket-queue-list" },
+            queueRows,
+            state.tickets.active.length ? null : el("div", { class: "ticket-next-empty", text: "لا توجد تذاكر نشطة حالياً" }),
+          ),
         ),
       );
     };
