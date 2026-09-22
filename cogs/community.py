@@ -1420,7 +1420,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذا الأمر يعمل داخل تذكرة مفتوحة فقط.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "priority"):
             return await self._ticket_denied(itx)
         query = str(response).strip().casefold()
         choices = await get_canned_responses(itx.guild.id)
@@ -1483,7 +1483,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "transfer"):
             return await self._ticket_denied(itx)
         if priority not in TICKET_PRIORITIES:
             return await itx.response.send_message("الأولوية غير صالحة.", ephemeral=True)
@@ -1517,7 +1517,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "claim"):
             return await self._ticket_denied(itx)
         parent = None
         if category.get("category_id"):
@@ -1847,7 +1847,12 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        permission_action = {
+            "add": "add_member",
+            "remove": "remove_member",
+            "transfer": "transfer",
+        }.get(action)
+        if not await self._ticket_action_allowed(itx.user, ticket, permission_action):
             return await self._ticket_denied(itx)
         if ticket.get("claimed_by") and ticket["claimed_by"] != itx.user.id:
             return await itx.response.send_message(
@@ -1911,7 +1916,12 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        permission_action = {
+            "add": "add_member",
+            "remove": "remove_member",
+            "transfer": "transfer",
+        }.get(action)
+        if not await self._ticket_action_allowed(itx.user, ticket, permission_action):
             return await self._ticket_denied(itx)
         await itx.response.send_modal(TicketMemberActionModal(action))
 
@@ -1924,7 +1934,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "claim"):
             return await self._ticket_denied(itx)
         member = await self._resolve_ticket_member(itx.guild, raw_member)
         if member is None:
@@ -2065,7 +2075,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "priority"):
             return await self._ticket_denied(itx)
         if ticket.get("claimed_by") != itx.user.id:
             return await itx.response.send_message(
@@ -2100,7 +2110,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "note"):
             return await self._ticket_denied(itx)
         current = ticket.get("priority", "normal")
         priority = TICKET_PRIORITIES[
@@ -2145,7 +2155,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "note"):
             return await self._ticket_denied(itx)
         ticket = await set_ticket_status(itx.guild.id, ticket["id"], status, staff_id=itx.user.id)
         labels = {"active": "قيد المعالجة", "waiting_user": "بانتظار العميل", "waiting_staff": "بانتظار فريق الدعم"}
@@ -2156,7 +2166,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "close"):
             return await self._ticket_denied(itx)
         await itx.response.send_modal(InternalNoteModal())
 
@@ -2173,7 +2183,7 @@ class Community(commands.Cog):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
             return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "close"):
             return await self._ticket_denied(itx)
         await itx.response.send_modal(CloseTicketModal())
 
@@ -2183,7 +2193,7 @@ class Community(commands.Cog):
             return await itx.response.send_message(
                 "هذه القناة ليست تذكرة مسجلة.", ephemeral=True
             )
-        if not self._is_ticket_staff(itx.user, ticket):
+        if not await self._ticket_action_allowed(itx.user, ticket, "close"):
             return await self._ticket_denied(itx)
         await itx.response.defer(ephemeral=True)
         existing_transcript = await get_ticket_transcript(
