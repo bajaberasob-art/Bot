@@ -3204,7 +3204,6 @@ def _ticket_category_payload_for_guild(guild, raw: dict):
         cleaned["staff_role_ids"] = value
     ids = {}
     for key, field_name, expected_type in (
-        ("panel_id", "معرف اللوحة", None),
         ("open_category_id", "فئة القنوات المفتوحة", discord.CategoryChannel),
         ("closed_category_id", "فئة القنوات المغلقة", discord.CategoryChannel),
         ("category_id", "الفئة الأب", discord.CategoryChannel),
@@ -3219,6 +3218,13 @@ def _ticket_category_payload_for_guild(guild, raw: dict):
         if expected_type and not isinstance(channel, expected_type):
             return None, {key: f"{field_name} غير موجودة"}
         ids[key] = value
+    if raw.get("panel_id") not in (None, ""):
+        try:
+            ids["panel_id"] = int(raw["panel_id"])
+        except (TypeError, ValueError):
+            return None, {"panel_id": "معرف اللوحة غير صالح"}
+    else:
+        ids["panel_id"] = None
     try:
         max_open = max(1, min(20, int(raw.get("max_open_per_user", 1))))
         auto_close = max(0, min(8760, int(raw.get("auto_close_hours", 0))))
@@ -3473,6 +3479,18 @@ async def api_guilds_tickets_categories_save(req):
         raw_categories = [body]
     if not isinstance(raw_categories, list) or not 1 <= len(raw_categories) <= 25:
         return json_error(400, "validation", fields={"categories": "أضف من 1 إلى 25 تصنيفاً"})
+    if isinstance(body, dict) and body.get("replace"):
+        keep_ids = {
+            int(raw["id"]) for raw in raw_categories
+            if isinstance(raw, dict) and raw.get("id") not in (None, "")
+            and str(raw.get("id")).isdigit()
+        }
+        for existing in await get_ticket_categories(guild.id):
+            existing_id = int(existing.get("id", 0))
+            if existing_id and existing_id not in keep_ids:
+                result = await delete_ticket_category(guild.id, existing_id)
+                if result.get("in_use"):
+                    return json_error(409, "ticket_category_in_use", details=result)
     saved = []
     for raw in raw_categories:
         payload, error = _ticket_category_payload_for_guild(guild, raw)

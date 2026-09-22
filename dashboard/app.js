@@ -3607,6 +3607,7 @@
       try {
         const response = await writeApi(`api/guilds/${state.guild.id}/tickets/categories`, {
           categories,
+          replace: true,
         });
         const data = await readJson(response, {});
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الأقسام");
