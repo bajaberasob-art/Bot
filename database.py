@@ -4341,7 +4341,7 @@ async def replace_ticket_options(
                     int(guild_id),
                     str(option.get("label") or "قسم دعم")[:100],
                     str(option.get("description") or "")[:100],
-                    str(option.get("emoji") or "🎫")[:2],
+                    str(option.get("emoji") or "🎫").strip()[:100],
                     int(option["role_id"])
                     if option.get("role_id") not in (None, "")
                     else None,

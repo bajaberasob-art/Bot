@@ -2994,6 +2994,109 @@
   }
   function ticketCategoryEditor() {
     const wrap = el("div", { class: "ticket-category-list" });
+    const defaultTicketEmojis = [
+      ["🎫", "تذكرة"], ["🛠️", "دعم تقني"], ["❓", "استفسار"], ["🎁", "جوائز"],
+      ["📹", "صناع محتوى"], ["🎮", "ألعاب"], ["📝", "تقديم"], ["🔒", "خاص"],
+      ["⚠️", "بلاغ"], ["💎", "مميز"], ["📣", "اقتراح"], ["🛒", "شراء"],
+      ["✅", "مكتمل"], ["🚨", "عاجل"], ["⭐", "نجمة"], ["🤝", "مساعدة"],
+    ];
+    const emojiCatalog = () => {
+      const guildEmojis = [
+        ...(Array.isArray(state.meta?.emojis) ? state.meta.emojis : []),
+        ...(Array.isArray(state.meta?.guild_emojis) ? state.meta.guild_emojis : []),
+      ];
+      const seen = new Set(defaultTicketEmojis.map(([value]) => value));
+      return [
+        ...defaultTicketEmojis.map(([value, name]) => ({ value, name, custom: false })),
+        ...guildEmojis
+          .map((emoji) => ({
+            value: emoji.token || `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`,
+            name: emoji.name || "server emoji",
+            url: emoji.url || emoji.image || emoji.icon_url,
+            custom: true,
+          }))
+          .filter((emoji) => emoji.value && !seen.has(emoji.value) && (seen.add(emoji.value), true)),
+      ];
+    };
+    const emojiPicker = (category) => {
+      const root = el("div", { class: "ticket-emoji-picker" });
+      const input = el("input", {
+        class: "studio-input ticket-emoji-input",
+        value: category.emoji || "🎫",
+        maxlength: "100",
+        placeholder: "🎫 أو إيموجي السيرفر",
+        "aria-label": "إيموجي القسم",
+      });
+      const preview = el("span", { class: "ticket-emoji-preview", "aria-hidden": "true" });
+      const search = el("input", {
+        class: "studio-input ticket-emoji-search",
+        type: "search",
+        placeholder: "ابحث في الإيموجيات…",
+        "aria-label": "البحث عن إيموجي",
+      });
+      const grid = el("div", { class: "ticket-emoji-grid" });
+      const popover = el("div", { class: "ticket-emoji-popover", hidden: true }, search, grid);
+      const renderPreview = (value) => {
+        const custom = emojiCatalog().find((item) => item.value === value && item.custom);
+        preview.replaceChildren(
+          custom?.url
+            ? el("img", { src: custom.url, alt: custom.name || "" })
+            : document.createTextNode(value || "🎫"),
+        );
+      };
+      const setEmoji = (value) => {
+        category.emoji = String(value || "🎫").trim() || "🎫";
+        input.value = category.emoji;
+        renderPreview(category.emoji);
+        renderGrid(search.value);
+      };
+      const renderGrid = (query = "") => {
+        const normalized = query.trim().toLocaleLowerCase();
+        const items = emojiCatalog().filter((item) =>
+          !normalized || `${item.name} ${item.value}`.toLocaleLowerCase().includes(normalized),
+        );
+        grid.replaceChildren(
+          ...items.map((item) => el("button", {
+            class: `ticket-emoji-chip${item.value === category.emoji ? " active" : ""}`,
+            type: "button",
+            title: item.name,
+            onClick: () => {
+              setEmoji(item.value);
+              popover.hidden = true;
+              toggle.setAttribute("aria-expanded", "false");
+            },
+          }, item.url
+            ? el("img", { src: item.url, alt: item.name })
+            : el("span", { class: "ticket-emoji-glyph", text: item.value }))),
+        );
+        if (!grid.children.length) grid.append(el("small", { class: "ticket-emoji-empty", text: "لا توجد نتائج" }));
+      };
+      const toggle = el("button", {
+        class: "ticket-emoji-toggle",
+        type: "button",
+        "aria-expanded": "false",
+        title: "اختيار إيموجي القسم",
+        text: "اختيار إيموجي",
+        onClick: () => {
+          const open = popover.hidden;
+          popover.hidden = !open;
+          toggle.setAttribute("aria-expanded", String(open));
+          if (open) {
+            renderGrid(search.value);
+            search.focus();
+          }
+        },
+      });
+      input.addEventListener("input", () => {
+        category.emoji = input.value.trim() || "🎫";
+        renderPreview(category.emoji);
+      });
+      search.addEventListener("input", () => renderGrid(search.value));
+      renderPreview(input.value);
+      renderGrid();
+      root.append(el("div", { class: "ticket-emoji-control" }, preview, input, toggle), popover);
+      return root;
+    };
     state.ticketCategories.forEach((category, index) => {
       const label = el("input", { class: "studio-input", value: category.label, maxlength: "80" });
       label.oninput = () => { state.ticketCategories[index].label = label.value; };
@@ -3004,8 +3107,7 @@
         placeholder: "وصف مختصر يظهر في القائمة",
       });
       description.oninput = () => { state.ticketCategories[index].description = description.value; };
-      const emoji = el("input", { class: "studio-input ticket-emoji-input", value: category.emoji || "T", maxlength: "2", "aria-label": "رمز التصنيف" });
-      emoji.oninput = () => { state.ticketCategories[index].emoji = emoji.value || "T"; };
+      const emoji = emojiPicker(category);
       const parent = el("select", { class: "studio-input", "aria-label": `فئة قنوات ${category.label}` },
         el("option", { value: "" }, "بدون فئة أب"),
         (state.meta?.categories || []).map((item) => el("option", { value: item.id }, item.name)),
@@ -3076,7 +3178,6 @@
       wrap.append(el("div", { class: "ticket-category-row" },
         el("div", { class: "ticket-category-head" },
           el("span", { class: "ticket-category-index", text: String(index + 1).padStart(2, "0") }),
-          el("span", { class: "ticket-category-emoji", text: category.emoji }),
           emoji,
           el("button", {
             class: "icon-action danger ticket-remove-category",

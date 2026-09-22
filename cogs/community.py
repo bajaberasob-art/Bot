@@ -136,11 +136,16 @@ def normalize_ticket_categories(categories_config):
             )
             if str(item).isdigit()
         ]
+        raw_emoji = str(raw.get("emoji") or "🎫").strip()
+        # Keep custom guild emoji tokens intact. Discord uses the full
+        # <:name:id> / <a:name:id> token in SelectOption; truncating it to
+        # two characters turns a valid picker choice into an unusable label.
+        emoji = raw_emoji[:100] or "🎫"
         normalized.append({
             "key": key,
             "label": label[:80],
             "description": str(raw.get("description") or "")[:100],
-            "emoji": str(raw.get("emoji") or "🎫")[:2],
+            "emoji": emoji,
             "category_id": str(raw["category_id"]) if raw.get("category_id") else None,
             "role_id": support_role_ids[0] if support_role_ids else None,
             "support_role_ids": support_role_ids,
