@@ -295,6 +295,359 @@ class TicketMemberActionModal(discord.ui.Modal):
         await cog.handle_ticket_member_action(itx, self.action, str(self.member_id))
 
 
+async def send_ticket_action_embed(
+    channel,
+    title,
+    description,
+    color,
+    staff,
+    target_user=None,
+    extra_field=None,
+):
+    """Send one consistent, auditable CRM action message in a ticket channel."""
+    embed = discord.Embed(
+        title=str(title)[:256],
+        description=str(description)[:4096],
+        color=int(color),
+        timestamp=discord.utils.utcnow(),
+    )
+    guild = getattr(channel, "guild", None)
+    guild_me = getattr(guild, "me", None)
+    display_name = getattr(guild_me, "display_name", None) or getattr(guild, "name", "PR1ME")
+    avatar = getattr(getattr(guild_me, "display_avatar", None), "url", None)
+    if avatar:
+        embed.set_author(name=display_name, icon_url=str(avatar))
+    else:
+        embed.set_author(name=display_name)
+    staff_mention = getattr(staff, "mention", f"<@{getattr(staff, 'id', 0)}>")
+    embed.add_field(name="المشرف المسؤول", value=staff_mention, inline=True)
+    if target_user:
+        embed.add_field(
+            name="العضو المعني",
+            value=getattr(target_user, "mention", f"<@{getattr(target_user, 'id', 0)}>"),
+            inline=True,
+        )
+    if extra_field:
+        embed.add_field(
+            name=str(extra_field[0])[:256],
+            value=str(extra_field[1])[:1024],
+            inline=True,
+        )
+    embed.set_footer(text=f"PR1ME Ticket Engine • #{getattr(channel, 'name', 'ticket')}")
+    await channel.send(embed=embed)
+
+
+class TicketCloseConfirmView(discord.ui.View):
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=60)
+        self.owner_id = int(owner_id)
+
+    async def interaction_check(self, itx: discord.Interaction) -> bool:
+        if int(itx.user.id) != self.owner_id:
+            await itx.response.send_message("هذا التأكيد مخصص لمن بدأ عملية الإغلاق.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(
+        label="تأكيد الإغلاق",
+        style=discord.ButtonStyle.danger,
+        emoji="🔒",
+        custom_id="tkt_close_confirm",
+    )
+    async def confirm(self, itx: discord.Interaction, btn: discord.ui.Button):
+        cog = itx.client.get_cog("Community")
+        if cog is None:
+            return await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
+        await cog.close_ticket_from_interaction(
+            itx,
+            "أُغلقت بواسطة فريق الدعم",
+            delay_seconds=5,
+        )
+
+    @discord.ui.button(
+        label="إلغاء الإغلاق",
+        style=discord.ButtonStyle.secondary,
+        emoji="↩️",
+        custom_id="tkt_close_cancel",
+    )
+    async def cancel(self, itx: discord.Interaction, btn: discord.ui.Button):
+        for child in self.children:
+            child.disabled = True
+        await itx.response.edit_message(content="تم إلغاء الإغلاق.", view=self)
+
+
+class TicketMemberSelectView(discord.ui.View):
+    def __init__(self, action: str):
+        super().__init__(timeout=60)
+        self.action = action
+        selector = discord.ui.UserSelect(
+            placeholder="اختر العضو من السيرفر",
+            min_values=1,
+            max_values=1,
+            custom_id=f"tkt_user_select:{action}",
+        )
+
+        async def callback(itx: discord.Interaction):
+            selected = selector.values[0] if selector.values else None
+            if selected is None:
+                return await itx.response.send_message("اختر عضواً أولاً.", ephemeral=True)
+            cog = itx.client.get_cog("Community")
+            if cog is None:
+                return await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
+            await cog.handle_ticket_member_action(itx, action, str(selected.id))
+
+        selector.callback = callback
+        self.add_item(selector)
+
+
+class TicketPrioritySelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        selector = discord.ui.Select(
+            placeholder="اختر الأولوية الجديدة",
+            min_values=1,
+            max_values=1,
+            custom_id="tkt_priority_select",
+            options=[
+                discord.SelectOption(label="عادية", value="normal", emoji="🟢"),
+                discord.SelectOption(label="مرتفعة", value="high", emoji="🟠"),
+                discord.SelectOption(label="عاجلة", value="management", emoji="🔴"),
+            ],
+        )
+
+        async def callback(itx: discord.Interaction):
+            cog = itx.client.get_cog("Community")
+            if cog is None:
+                return await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
+            await cog.set_ticket_priority_from_interaction(
+                itx,
+                (selector.values or ["normal"])[0],
+            )
+
+        selector.callback = callback
+        self.add_item(selector)
+
+
+class TicketTransferCategoryView(discord.ui.View):
+    def __init__(self, categories):
+        super().__init__(timeout=60)
+        normalized = normalize_ticket_categories(categories)
+        selector = discord.ui.Select(
+            placeholder="اختر قسم التذكرة الجديد",
+            min_values=1,
+            max_values=1,
+            custom_id="tkt_transfer_category",
+            options=[
+                discord.SelectOption(
+                    label=item["label"][:100],
+                    value=item["key"][:100],
+                    emoji=item.get("emoji") or "🎫",
+                )
+                for item in normalized[:25]
+            ],
+        )
+
+        async def callback(itx: discord.Interaction):
+            cog = itx.client.get_cog("Community")
+            if cog is None:
+                return await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
+            selected_key = (selector.values or [""])[0]
+            category = next((item for item in normalized if item["key"] == selected_key), None)
+            if category is None:
+                return await itx.response.send_message("القسم المحدد غير موجود.", ephemeral=True)
+            await cog.transfer_ticket_category_from_interaction(itx, category)
+
+        selector.callback = callback
+        self.add_item(selector)
+
+
+class TicketOptionsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    async def _staff_ticket(self, itx):
+        cog = itx.client.get_cog("Community")
+        if cog is None:
+            await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
+            return None, None
+        ticket = await get_ticket_by_channel(itx.channel.id)
+        if not ticket or ticket["status"] == "closed":
+            await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
+            return None, None
+        if not cog._is_ticket_staff(itx.user, ticket):
+            await cog._ticket_denied(itx)
+            return None, None
+        return cog, ticket
+
+    @discord.ui.button(label="إضافة عضو", style=discord.ButtonStyle.secondary, emoji="➕", custom_id="tkt_opt_add")
+    async def add_member(self, itx, btn):
+        cog, _ = await self._staff_ticket(itx)
+        if cog:
+            await itx.response.send_message(
+                "اختر العضو الذي سيحصل على صلاحية رؤية التذكرة.",
+                view=TicketMemberSelectView("add"),
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="طرد عضو", style=discord.ButtonStyle.secondary, emoji="➖", custom_id="tkt_opt_remove")
+    async def remove_member(self, itx, btn):
+        cog, _ = await self._staff_ticket(itx)
+        if cog:
+            await itx.response.send_message(
+                "اختر العضو الذي ستتم إزالة صلاحيته.",
+                view=TicketMemberSelectView("remove"),
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="تغيير الأولوية", style=discord.ButtonStyle.primary, emoji="🚨", custom_id="tkt_opt_priority")
+    async def priority(self, itx, btn):
+        cog, _ = await self._staff_ticket(itx)
+        if cog:
+            await itx.response.send_message("اختر الأولوية:", view=TicketPrioritySelectView(), ephemeral=True)
+
+    @discord.ui.button(label="تحويل القسم", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="tkt_opt_transfer")
+    async def transfer(self, itx, btn):
+        cog, _ = await self._staff_ticket(itx)
+        if cog:
+            await itx.response.send_message(
+                "اختر القسم الذي ستُنقل إليه التذكرة:",
+                view=TicketTransferCategoryView(await get_ticket_options(itx.guild.id)),
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="ملاحظة داخلية", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="tkt_opt_note")
+    @mark_modal_callback
+    async def note(self, itx, btn):
+        cog, _ = await self._staff_ticket(itx)
+        if cog:
+            await itx.response.send_modal(InternalNoteModal())
+
+
+class StreamlinedTicketControlsView(discord.ui.View):
+    """The three-button controller used for all newly created tickets."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _ticket(self, itx):
+        cog = itx.client.get_cog("Community")
+        if cog is None:
+            await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
+            return None
+        ticket = await get_ticket_by_channel(itx.channel.id)
+        if not ticket:
+            await itx.response.send_message("هذه القناة ليست تذكرة مسجلة.", ephemeral=True)
+            return None
+        if not cog._is_ticket_staff(itx.user, ticket):
+            await cog._ticket_denied(itx)
+            return None
+        return cog
+
+    @discord.ui.button(label="استلام التذكرة", style=discord.ButtonStyle.success, emoji="✋", custom_id="tkt_ctrl_claim")
+    async def claim(self, itx, btn):
+        cog = await self._ticket(itx)
+        if cog:
+            await cog.claim_ticket_from_interaction(itx)
+
+    @discord.ui.button(label="إغلاق التذكرة", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="tkt_ctrl_close")
+    async def close(self, itx, btn):
+        cog = await self._ticket(itx)
+        if cog:
+            await itx.response.send_message(
+                "⚠️ سيتم إغلاق التذكرة وأرشفتها خلال 5 ثوانٍ...\nيمكنك الإلغاء الآن.",
+                view=TicketCloseConfirmView(itx.user.id),
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="خيارات الإدارة", style=discord.ButtonStyle.secondary, emoji="⚙️", custom_id="tkt_ctrl_options")
+    async def options(self, itx, btn):
+        cog = await self._ticket(itx)
+        if cog:
+            await itx.response.send_message(
+                "اختر إجراء الإدارة المطلوب:",
+                view=TicketOptionsView(),
+                ephemeral=True,
+            )
+
+
+class TicketRatingModal(discord.ui.Modal, title="تقييم مستوى الخدمة"):
+    feedback = discord.ui.TextInput(
+        label="ملاحظاتك على الخدمة وسبب التقييم",
+        placeholder="اكتب ملاحظاتك (اختياري)",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=False,
+    )
+
+    def __init__(self, ticket_id, guild_id, user_id, stars, source_message=None):
+        super().__init__(title="تقييم مستوى الخدمة")
+        self.ticket_id = int(ticket_id)
+        self.guild_id = int(guild_id)
+        self.user_id = int(user_id)
+        self.stars = int(stars)
+        self.source_message = source_message
+
+    async def on_submit(self, itx: discord.Interaction):
+        await itx.response.defer()
+        rating = await save_ticket_rating(
+            self.ticket_id,
+            self.guild_id,
+            self.user_id,
+            self.stars,
+            str(self.feedback),
+        )
+        if not rating:
+            return await itx.followup.send("تعذر حفظ التقييم؛ قد تكون التذكرة غير مغلقة.", ephemeral=True)
+        if self.source_message is not None:
+            try:
+                await self.source_message.edit(view=None)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        cog = itx.client.get_cog("Community")
+        if cog:
+            await cog.publish_ticket_evaluation(self.ticket_id, self.guild_id, self.stars, str(self.feedback))
+        await itx.followup.send(f"تم تسجيل تقييمك: {'⭐' * self.stars}", ephemeral=True)
+
+
+class PersistentDMRatingView(discord.ui.View):
+    """Restart-safe DM rating view with stable button IDs."""
+
+    def __init__(self, ticket_id=None, guild_id=None, user_id=None):
+        super().__init__(timeout=None)
+        self.ticket_id = int(ticket_id) if ticket_id is not None else None
+        self.guild_id = int(guild_id) if guild_id is not None else None
+        self.user_id = int(user_id) if user_id is not None else None
+        for stars in range(1, 6):
+            button = discord.ui.Button(
+                label=f"{stars} نجوم",
+                emoji="⭐",
+                style=discord.ButtonStyle.success if stars >= 4 else discord.ButtonStyle.secondary,
+                custom_id=f"tkt_star:{stars}",
+            )
+
+            async def callback(itx, value=stars):
+                ticket_id = self.ticket_id
+                guild_id = self.guild_id
+                if ticket_id is None or guild_id is None:
+                    footer = ""
+                    if itx.message and itx.message.embeds:
+                        footer = str(itx.message.embeds[0].footer.text or "")
+                    match = re.search(r"ticket:(\d+):(\d+)", footer)
+                    if match:
+                        ticket_id, guild_id = int(match.group(1)), int(match.group(2))
+                if ticket_id is None or guild_id is None:
+                    return await itx.response.send_message("تعذر ربط التقييم بالتذكرة.", ephemeral=True)
+                ticket = await get_ticket(guild_id, ticket_id)
+                if not ticket or int(ticket["user_id"]) != int(itx.user.id):
+                    return await itx.response.send_message("هذا التقييم مخصص لصاحب التذكرة.", ephemeral=True)
+                await itx.response.send_modal(
+                    TicketRatingModal(ticket_id, guild_id, itx.user.id, value, itx.message)
+                )
+
+            button.callback = callback
+            self.add_item(button)
+
+
 class TicketSelectView(discord.ui.View):
     """Persistent dropdown panel whose options are restored from SQLite."""
 
