@@ -10547,6 +10547,28 @@ textarea:focus {
 .ticket-panel-preview-mini { display: grid; gap: 7px; min-height: 125px; margin: 12px; padding: 16px; border: 1px solid #3d3425; border-radius: 9px; background: radial-gradient(circle at 80% 0, #f4b7401a, transparent 45%), #11100d; }
 .ticket-panel-preview-mini strong { color: #f9f1dd; font-size: .82rem; }
 .ticket-panel-preview-mini small { color: #8e897d; font-size: .6rem; }
+.ticket-panel-category-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.ticket-panel-category-list span,
+.ticket-builder-options span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ticket-panel-category-list span {
+  padding: 5px 7px;
+  border: 1px solid #4a3b25;
+  border-radius: 7px;
+  background: #1b160e;
+  color: #d9bb72;
+  font-size: .58rem;
+}
+.ticket-panel-category-list .ticket-emoji-image,
+.ticket-builder-options .ticket-emoji-image {
+  width: 17px;
+  height: 17px;
+  object-fit: contain;
+}
+.ticket-builder-options .ticket-emoji-glyph { font-size: .95rem; }
 .ticket-panel-tile-meta { padding: 0 14px 12px; }
 .ticket-tile-actions { padding: 10px 14px 13px; border-top: 1px solid #1c1c23; background: #0a0a0e; }
 .ticket-visual-builder { display: grid; gap: 14px; }

@@ -3771,7 +3771,14 @@
     const panelsView = () => {
       const cards = state.ticketPanels.map((panel) => el("article", { class: "ticket-panel-tile" },
         el("div", { class: "ticket-panel-tile-top" }, el("span", { class: "ticket-panel-status", text: "● متصلة" }), el("small", { text: `#${panel.message_id}` })),
-        el("div", { class: "ticket-panel-preview-mini" }, el("span", { class: "ticket-kicker", text: "PR1ME SUPPORT" }), el("strong", { text: config.embed_title || "مركز الدعم والتذاكر" }), el("small", { text: config.select_placeholder || "اختر القسم المناسب لطلبك" })),
+        el("div", { class: "ticket-panel-preview-mini" },
+          el("span", { class: "ticket-kicker", text: "PR1ME SUPPORT" }),
+          el("strong", { text: config.embed_title || "مركز الدعم والتذاكر" }),
+          el("small", { text: config.select_placeholder || "اختر القسم المناسب لطلبك" }),
+          el("div", { class: "ticket-panel-category-list" }, (panel.categories || []).slice(0, 4).map((item) =>
+            el("span", {}, ticketEmojiNode(item.emoji || "🎫"), item.label || "قسم دعم"),
+          )),
+        ),
         el("div", { class: "ticket-panel-tile-meta" }, el("span", { text: `#${window.guildChannels?.[panel.channel_id] || panel.channel_id}` }), el("span", { text: `${(panel.categories || []).length} أقسام` })),
         el("div", { class: "ticket-tile-actions" },
           el("button", { class: "ticket-inline-action", type: "button", text: "تحرير", onClick: () => { state.ticketCategories = (panel.categories || []).map((item) => ({ ...item })); state.ticketTab = "builder"; renderPage(); } }),
