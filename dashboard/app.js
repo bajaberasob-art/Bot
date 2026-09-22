@@ -4512,6 +4512,219 @@
       ),
     );
   }
+  function analyticsNumber(value, fallback = "—") {
+    return Number.isFinite(Number(value))
+      ? Number(value).toLocaleString("en-US")
+      : fallback;
+  }
+  function analyticsDuration(seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    return hours ? `${hours}س ${minutes}د` : `${minutes}د`;
+  }
+  function overviewAnalyticsToolbar() {
+    const ranges = [
+      ["today", "اليوم"],
+      ["7d", "7 أيام"],
+      ["30d", "شهر"],
+      ["3m", "3 أشهر"],
+      ["year", "سنة"],
+    ];
+    return el(
+      "section",
+      { class: "analytics-toolbar" },
+      el("div", { class: "analytics-toolbar-copy" },
+        el("span", { class: "overview-kicker", text: "PR1ME ANALYTICS / COMMAND CENTER" }),
+        el("strong", { text: "قراءة أعمق لسلوك السيرفر" }),
+        el("small", { text: "كل قيمة هنا مأخوذة من Discord أو SQLite، بدون بيانات تجريبية." }),
+      ),
+      el("div", { class: "analytics-toolbar-actions" },
+        el("span", {
+          class: `analytics-live-badge ${state.analytics?.status_banner?.healthy === false ? "offline" : ""}`,
+          text: state.analyticsLoading
+            ? "SYNCING"
+            : `LIVE • ${overviewTime(Date.now())}`,
+        }),
+        el("div", { class: "analytics-range-tabs", role: "tablist", "aria-label": "الفترة الزمنية" },
+          ...ranges.map(([value, label]) => el("button", {
+            class: state.analyticsRange === value ? "active" : "",
+            type: "button",
+            role: "tab",
+            "aria-selected": String(state.analyticsRange === value),
+            text: label,
+            onClick: () => {
+              if (state.analyticsRange === value) return;
+              state.analyticsRange = value;
+              sessionStorage.setItem("analytics-range", value);
+              fetchGuildAnalytics(state.guild.id, value, true);
+            },
+          })),
+        ),
+      ),
+    );
+  }
+  function overviewAnalyticsSummaryStrip() {
+    const summary = state.analytics?.summary || {};
+    const trend = Number(summary.activity_trend_pct);
+    const trendText = Number.isFinite(trend) ? `${trend > 0 ? "+" : ""}${trend}%` : "—";
+    return el(
+      "div",
+      { class: "analytics-summary-strip" },
+      [
+        ["إجمالي الرسائل", analyticsNumber(summary.total_messages), "رسالة في الفترة", "pink"],
+        ["الكتّاب النشطون", analyticsNumber(summary.active_chatters), `${analyticsNumber(summary.active_chatters_pct)}% من الأعضاء`, "cyan"],
+        ["اتجاه النشاط", trendText, "مقارنة بالفترة السابقة", trend >= 0 ? "green" : "red"],
+        ["وقت الصوت", analyticsDuration(summary.total_voice_seconds), "جلسات مسجلة", "purple"],
+      ].map(([label, value, hint, tone]) => el("div", { class: `analytics-summary-item tone-${tone}` },
+        el("span", { text: label }),
+        el("strong", { text: value }),
+        el("small", { text: hint }),
+      )),
+    );
+  }
+  function overviewAnalyticsHealthPanel() {
+    const health = state.analytics?.health_score || {};
+    const score = Number(health.score);
+    const circumference = 2 * Math.PI * 48;
+    const value = Number.isFinite(score) ? Math.max(0, Math.min(100, score)) : 0;
+    const metrics = [
+      ["متصلون الآن", `${analyticsNumber(health.online_pct)}%`, "cyan"],
+      ["كتّاب نشطون", `${analyticsNumber(health.active_writers_pct)}%`, "green"],
+      ["الاحتفاظ", `${analyticsNumber(health.retention_pct)}%`, "purple"],
+      ["الكثافة", health.chat_density || "—", "pink"],
+    ];
+    return el(
+      "section",
+      { class: "overview-pro-card analytics-health-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "SERVER HEALTH / SCORE" }), el("h2", { text: "نبض صحة السيرفر" })),
+        el("span", { class: `overview-live-chip ${state.analytics?.status_banner?.healthy === false ? "offline" : ""}` }, health.status || "بانتظار البيانات"),
+      ),
+      state.analytics
+        ? el("div", { class: "analytics-health-layout" },
+            el("div", { class: "analytics-score-ring" },
+              el("svg", { viewBox: "0 0 120 120", "aria-hidden": "true" },
+                el("circle", { class: "score-ring-track", cx: "60", cy: "60", r: "48" }),
+                el("circle", { class: "score-ring-value", cx: "60", cy: "60", r: "48", "stroke-dasharray": `${(circumference * value) / 100} ${circumference}` }),
+              ),
+              el("strong", { text: Number.isFinite(score) ? String(Math.round(score)) : "—" }),
+              el("small", { text: "من 100" }),
+            ),
+            el("div", { class: "analytics-health-metrics" },
+              ...metrics.map(([label, metric, tone]) => el("div", { class: `analytics-health-metric metric-${tone}` },
+                el("span", { text: label }),
+                el("strong", { text: metric }),
+                el("i", {}, el("em", { style: `width:${tone === "pink" ? Math.min(100, Number(health.active_writers_pct) || 0) : Number(health[ tone === "cyan" ? "online_pct" : tone === "green" ? "active_writers_pct" : "retention_pct" ]) || 0}%` })),
+              )),
+            ),
+          )
+        : overviewSkeleton("جاري تحميل صحة السيرفر"),
+      state.analytics?.status_banner
+        ? el("div", { class: `analytics-status-banner ${state.analytics.status_banner.healthy ? "healthy" : "unhealthy"}` },
+            el("span", { text: state.analytics.status_banner.healthy ? "●" : "!" }),
+            el("span", { text: state.analytics.status_banner.text }),
+          )
+        : null,
+    );
+  }
+  function overviewTopMessengerPanel() {
+    const top = state.analytics?.top_messenger;
+    return el(
+      "section",
+      { class: "overview-pro-card analytics-top-messenger-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "PERIOD STAR" }), el("h2", { text: "نجم الفترة" })),
+        el("span", { class: "overview-inline-label", text: state.analyticsRange === "today" ? "اليوم" : state.analyticsRange }),
+      ),
+      top
+        ? el("div", { class: "analytics-top-messenger" },
+            avatar(top.avatar_url, top.username),
+            el("div", {}, el("strong", { text: top.username }), el("small", { text: top.tag || "عضو في السيرفر" })),
+            el("div", { class: "analytics-top-count" },
+              el("strong", { text: analyticsNumber(top.message_count) }),
+              el("small", { text: "رسالة" }),
+            ),
+            el("span", { class: "analytics-role-badge", text: top.role_badge || "عضو" }),
+          )
+        : overviewSkeleton("ستظهر نجمة الفترة بعد تسجيل الرسائل"),
+    );
+  }
+  function overviewAnalyticsHeatmap() {
+    const data = state.analytics?.heatmap?.[state.analyticsHeatMode];
+    const dayLabels = ["أحد", "اثن", "ثلث", "أربع", "خمس", "جمع", "سبت"];
+    const golden = state.analytics?.golden_hour;
+    const hasData = Array.isArray(data) && data.some((row) => row.some((value) => Number(value) > 0));
+    const cells = hasData
+      ? el("div", { class: "analytics-heatmap-grid" },
+          el("div", { class: "analytics-heatmap-hours", "aria-hidden": "true" },
+            el("span"),
+            ...Array.from({ length: 24 }, (_, hour) => el("span", { text: hour % 6 === 0 ? `${hour}` : "" })),
+          ),
+          ...data.map((row, day) => el("div", { class: "analytics-heatmap-row" },
+            el("span", { text: dayLabels[day] }),
+            ...row.map((value, hour) => el("button", {
+              class: "analytics-heat-cell",
+              type: "button",
+              style: `--heat-value:${Math.max(0, Math.min(100, Number(value) || 0))}%`,
+              title: `${dayLabels[day]} ${hour}:00 — ${Number(value) || 0}%`,
+              "aria-label": `${dayLabels[day]}، الساعة ${hour}، شدة النشاط ${Number(value) || 0}%`,
+            })),
+          )),
+        )
+      : overviewSkeleton(state.analytics ? "لا توجد حركة مسجلة في الفترة" : "جاري تحميل heatmap");
+    return el(
+      "section",
+      { class: "overview-pro-card analytics-heatmap-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "ACTIVITY MATRIX / 7 × 24" }), el("h2", { text: "مصفوفة النشاط" })),
+        el("div", { class: "overview-segmented" },
+          el("button", { class: state.analyticsHeatMode === "written" ? "active" : "", type: "button", text: "كتابي", "aria-pressed": String(state.analyticsHeatMode === "written"), onClick: () => { state.analyticsHeatMode = "written"; renderPage(); } }),
+          el("button", { class: state.analyticsHeatMode === "voice" ? "active" : "", type: "button", text: "صوتي", "aria-pressed": String(state.analyticsHeatMode === "voice"), onClick: () => { state.analyticsHeatMode = "voice"; renderPage(); } }),
+        ),
+      ),
+      cells,
+      el("div", { class: "analytics-golden-hour" },
+        el("span", { class: "analytics-golden-icon", text: "✦", "aria-hidden": "true" }),
+        el("div", {},
+          el("span", { class: "overview-kicker", text: "GOLDEN HOUR" }),
+          el("strong", { text: golden?.day && golden.day !== "—" ? `${golden.day} · ${golden.window}` : "الساعة الذهبية بانتظار البيانات" }),
+          el("small", { text: golden?.multiplier ? `${golden.multiplier}x المعدل — ${golden.tip}` : golden?.tip || "ستظهر التوصية بعد تسجيل نشاط كافٍ." }),
+        ),
+      ),
+    );
+  }
+  function overviewAnalyticsChannels() {
+    const traffic = state.analytics?.channels_traffic || {};
+    const active = Array.isArray(traffic.active) ? traffic.active : [];
+    const dead = Array.isArray(traffic.dead) ? traffic.dead : [];
+    return el(
+      "section",
+      { class: "overview-pro-card analytics-channel-card" },
+      el("div", { class: "overview-pro-card-head compact" },
+        el("div", {}, el("span", { class: "overview-kicker", text: "TRAFFIC MONITOR" }), el("h2", { text: "حركة القنوات" })),
+        el("span", { class: "overview-inline-label", text: `${analyticsNumber(active.length)} نشطة` }),
+      ),
+      active.length
+        ? el("div", { class: "analytics-channel-list" }, ...active.map((channel, index) => el("div", { class: "analytics-channel-item" },
+            el("span", { class: `analytics-rank rank-${index + 1}`, text: String(index + 1).padStart(2, "0") }),
+            el("div", { class: "analytics-channel-copy" },
+              el("div", {}, el("strong", { text: `#${channel.name}` }), el("small", { text: `${analyticsNumber(channel.count)} رسالة · ${analyticsNumber(channel.percentage)}%` })),
+              el("i", {}, el("em", { style: `width:${Math.min(100, Number(channel.percentage) || 0)}%` })),
+            ),
+          )))
+        : overviewSkeleton("ستظهر حركة القنوات بعد تسجيل الرسائل"),
+      el("details", { class: "analytics-dead-channels" },
+        el("summary", {}, el("span", { text: "قنوات خاملة / ميتة" }), el("b", { text: analyticsNumber(dead.length) })),
+        dead.length
+          ? el("div", { class: "analytics-dead-list" }, ...dead.slice(0, 12).map((channel) => el("div", {},
+              el("span", { text: `#${channel.name}` }),
+              el("small", { text: "0 رسالة في الفترة" }),
+            )))
+          : el("p", { text: "لا توجد قنوات خاملة ضمن القنوات المعروفة." }),
+      ),
+    );
+  }
   function enhancedOverviewView() {
     const counts = state.stats?.counts || {};
     const members = Number(state.guild?.members ?? counts.members ?? 0);
@@ -5925,6 +6138,10 @@
     const results = await Promise.allSettled([
       optionalJson(`api/guild/${id}/stats`, { counts: {}, series: [] }),
       optionalJson(`api/guild/${id}/actions`, { actions: [] }),
+      optionalJson(
+        `api/guilds/${id}/analytics?range=${encodeURIComponent(state.analyticsRange || "7d")}`,
+        {},
+      ),
     ]);
     try {
       const authFailure = results.find(
@@ -5934,9 +6151,33 @@
       if (state.guild?.id !== id) return;
       if (results[0].status === "fulfilled") state.stats = results[0].value;
       if (results[1].status === "fulfilled") state.actions = results[1].value.actions || [];
+      if (results[2].status === "fulfilled" && results[2].value?.summary) {
+        state.analytics = results[2].value;
+      }
       if (redraw && state.activeView !== "settings") renderPage();
     } catch (error) {
       if (error.message !== "unauth") updatePing("wait");
+    }
+  }
+  async function fetchGuildAnalytics(id, range = state.analyticsRange, redraw = false) {
+    if (state.guild?.id !== id) return null;
+    const safeRange = ["today", "7d", "30d", "3m", "90d", "year"].includes(range)
+      ? range
+      : "7d";
+    state.analyticsLoading = true;
+    if (redraw && state.activeView === "overview") renderPage();
+    try {
+      const payload = await optionalJson(
+        `api/guilds/${id}/analytics?range=${encodeURIComponent(safeRange)}`,
+        {},
+      );
+      if (state.guild?.id !== id) return null;
+      state.analyticsRange = safeRange;
+      if (payload?.summary) state.analytics = payload;
+      return payload;
+    } finally {
+      state.analyticsLoading = false;
+      if (redraw && state.activeView === "overview") renderPage();
     }
   }
   function startIncidentRefresh(id) {
@@ -5975,6 +6216,8 @@
     sessionStorage.setItem("dashboard-guild", id);
     state.meta = state.baseline = state.draft = null;
     state.stats = null;
+    state.analytics = null;
+    state.analyticsLoading = false;
     state.actions = [];
     state.drawerOpen = false;
     state.onboarding = null;
@@ -6185,6 +6428,7 @@
           ? ticketDropdown.categories
           : state.ticketCategories.map((item) => ({ ...item })),
       };
+      await fetchGuildAnalytics(id, state.analyticsRange, false);
       renderPage();
       openSSE(id);
       startIncidentRefresh(id);
