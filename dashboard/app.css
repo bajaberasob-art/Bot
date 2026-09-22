@@ -5969,8 +5969,119 @@ body {
   background: #063a35;
 }
 .ticket-category-head .ticket-emoji-input {
-  width: 60px;
+  width: 76px;
   min-height: 32px;
+}
+.ticket-emoji-picker {
+  position: relative;
+  min-width: 0;
+}
+.ticket-emoji-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ticket-emoji-control .ticket-emoji-input {
+  width: 104px;
+  min-height: 32px;
+}
+.ticket-emoji-preview {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  overflow: hidden;
+  border: 1px solid #16847b;
+  border-radius: 9px;
+  background: #063a35;
+  color: #d6fff9;
+  font-size: 1.12rem;
+}
+.ticket-emoji-preview img {
+  width: 23px;
+  height: 23px;
+  object-fit: contain;
+}
+.ticket-emoji-toggle {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid #285d5a;
+  border-radius: 8px;
+  background: #0b2323;
+  color: #9de8df;
+  cursor: pointer;
+  font: inherit;
+  font-size: .6rem;
+  white-space: nowrap;
+}
+.ticket-emoji-toggle:hover,
+.ticket-emoji-toggle[aria-expanded="true"] {
+  border-color: #53d9cd;
+  background: #123937;
+  box-shadow: 0 0 16px #2dd4bf24;
+}
+.ticket-emoji-popover {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 7px);
+  inset-inline-end: 0;
+  display: grid;
+  width: min(312px, calc(100vw - 36px));
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid #365f5c;
+  border-radius: 12px;
+  background: #0b1112;
+  box-shadow: 0 18px 38px #000c, inset 0 1px #ffffff0b;
+}
+.ticket-emoji-popover[hidden] { display: none; }
+.ticket-emoji-search {
+  min-height: 32px;
+  font-size: .65rem;
+}
+.ticket-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 5px;
+  max-height: 190px;
+  overflow-y: auto;
+  padding-inline-end: 2px;
+}
+.ticket-emoji-chip {
+  display: grid;
+  min-width: 0;
+  min-height: 39px;
+  place-items: center;
+  padding: 4px;
+  border: 1px solid #183938;
+  border-radius: 8px;
+  background: #0d1b1b;
+  color: #d9fffb;
+  cursor: pointer;
+  font: inherit;
+  font-size: 1.12rem;
+}
+.ticket-emoji-chip img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+.ticket-emoji-chip:hover,
+.ticket-emoji-chip.active {
+  border-color: #4fd8cb;
+  background: #16403c;
+  box-shadow: 0 0 12px #2dd4bf2e;
+}
+.ticket-emoji-glyph {
+  line-height: 1;
+}
+.ticket-emoji-empty {
+  grid-column: 1 / -1;
+  padding: 12px 4px;
+  color: #78918f;
+  font-size: .62rem;
+  text-align: center;
 }
 .ticket-remove-category {
   margin-inline-start: auto;
