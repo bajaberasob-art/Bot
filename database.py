@@ -4242,12 +4242,12 @@ async def update_ticket_control_config(
     closed_category_id: int | None = None,
     log_channel_id: int | None = None,
     evaluation_channel_id: int | None = None,
-    allow_user_close: bool = False,
-    send_transcript_dm: bool = True,
-    auto_close_minutes: int = 0,
-    open_limit: int = 1,
-    panel_mode: str = "dropdown",
-    select_placeholder: str = "اختر القسم المناسب لطلبك",
+    allow_user_close: bool | None = None,
+    send_transcript_dm: bool | None = None,
+    auto_close_minutes: int | None = None,
+    open_limit: int | None = None,
+    panel_mode: str | None = None,
+    select_placeholder: str | None = None,
     permissions: dict[str, Any] | None = None,
     close_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -4262,6 +4262,8 @@ async def update_ticket_control_config(
         footer_text=config.get("footer_text") or "PR1ME TEAM Support",
     )
     async with connect(aiosqlite.Row) as db:
+        current_permissions = config.get("permissions_json") or config.get("permissions") or {}
+        current_close_config = config.get("close_config_json") or config.get("close_config") or {}
         await db.execute(
             """
             UPDATE ticket_config
@@ -4283,14 +4285,14 @@ async def update_ticket_control_config(
                 int(closed_category_id) if closed_category_id is not None else None,
                 int(log_channel_id) if log_channel_id is not None else None,
                 int(evaluation_channel_id) if evaluation_channel_id is not None else None,
-                int(bool(allow_user_close)),
-                int(bool(send_transcript_dm)),
-                max(0, min(10080, int(auto_close_minutes or 0))),
-                max(1, min(20, int(open_limit or 1))),
-                "buttons" if panel_mode == "buttons" else "dropdown",
-                str(select_placeholder or "اختر القسم المناسب لطلبك")[:200],
-                json.dumps(permissions or {}, ensure_ascii=False),
-                json.dumps(close_config or {}, ensure_ascii=False),
+                int(bool(config.get("allow_user_close", False) if allow_user_close is None else allow_user_close)),
+                int(bool(config.get("send_transcript_dm", True) if send_transcript_dm is None else send_transcript_dm)),
+                max(0, min(10080, int(config.get("auto_close_minutes", 0) if auto_close_minutes is None else auto_close_minutes))),
+                max(1, min(20, int(config.get("open_limit", 1) if open_limit is None else open_limit))),
+                "buttons" if (config.get("panel_mode", "dropdown") if panel_mode is None else panel_mode) == "buttons" else "dropdown",
+                str(config.get("select_placeholder") or "اختر القسم المناسب لطلبك" if select_placeholder is None else select_placeholder)[:200],
+                json.dumps(current_permissions if permissions is None else permissions, ensure_ascii=False),
+                json.dumps(current_close_config if close_config is None else close_config, ensure_ascii=False),
                 int(guild_id),
             ),
         )
