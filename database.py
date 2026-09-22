@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -1267,6 +1267,46 @@ async def init_db() -> None:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_scrim_registrations_scrim "
                 "ON scrim_registrations(scrim_id, slot_number);"
+            )
+            # Analytics storage is isolated from all legacy bot tables. The
+            # dashboard can build indexed summaries without touching command,
+            # moderation, economy, or ticket records.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS analytics_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER,
+                    channel_id INTEGER,
+                    user_id INTEGER,
+                    is_voice BOOLEAN DEFAULT 0,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analytics_guild_time "
+                "ON analytics_messages (guild_id, timestamp);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analytics_user "
+                "ON analytics_messages (user_id);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analytics_channel "
+                "ON analytics_messages (channel_id);"
+            )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS analytics_voice_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER,
+                    user_id INTEGER,
+                    started_at TIMESTAMP NOT NULL,
+                    ended_at TIMESTAMP,
+                    duration_seconds INTEGER DEFAULT 0
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_analytics_voice_guild_time "
+                "ON analytics_voice_sessions (guild_id, started_at);"
             )
             await _ensure_canonical_views(db)
 
@@ -4863,6 +4903,328 @@ async def get_dashboard_stats(
     while len(_stats_cache) > 256:
         _stats_cache.popitem(last=False)
     return snapshot
+
+
+ANALYTICS_RANGE_DAYS = {
+    "today": 1,
+    "7d": 7,
+    "30d": 30,
+    "3m": 90,
+    "90d": 90,
+    "year": 365,
+}
+
+
+def _analytics_window(timeframe: str) -> tuple[str, datetime, datetime, datetime]:
+    key = str(timeframe or "7d").strip().lower()
+    if key not in ANALYTICS_RANGE_DAYS:
+        key = "7d"
+    end = datetime.now(timezone.utc)
+    if key == "today":
+        start = end.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        start = end - timedelta(days=ANALYTICS_RANGE_DAYS[key])
+    previous_start = start - (end - start)
+    return key, start, end, previous_start
+
+
+def _analytics_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def record_analytics_events(events: list[dict[str, Any]]) -> int:
+    """Persist a small batch without blocking Discord's event listener."""
+    if not events:
+        return 0
+    rows = []
+    for event in events:
+        try:
+            guild_id = int(event["guild_id"])
+            channel_id = int(event["channel_id"]) if event.get("channel_id") else None
+            user_id = int(event["user_id"]) if event.get("user_id") else None
+        except (KeyError, TypeError, ValueError):
+            continue
+        timestamp = event.get("timestamp")
+        if isinstance(timestamp, (int, float)):
+            timestamp = _analytics_iso(datetime.fromtimestamp(timestamp, timezone.utc))
+        rows.append((
+            guild_id,
+            channel_id,
+            user_id,
+            1 if event.get("is_voice") else 0,
+            timestamp or _utc_now(),
+        ))
+    if not rows:
+        return 0
+    async with connect() as db:
+        await db.executemany(
+            """
+            INSERT INTO analytics_messages
+                (guild_id, channel_id, user_id, is_voice, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        await db.commit()
+    return len(rows)
+
+
+async def record_analytics_message(
+    guild_id: int,
+    channel_id: int | None,
+    user_id: int | None,
+    *,
+    timestamp: float | str | None = None,
+) -> int:
+    return await record_analytics_events([{
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "user_id": user_id,
+        "timestamp": timestamp,
+    }])
+
+
+async def record_analytics_voice_session(
+    guild_id: int,
+    channel_id: int | None,
+    user_id: int | None,
+    started_at: float | str,
+    ended_at: float | str,
+    duration_seconds: int,
+) -> None:
+    def normalize(value: float | str) -> str:
+        if isinstance(value, (int, float)):
+            return _analytics_iso(datetime.fromtimestamp(value, timezone.utc))
+        return str(value)
+
+    started = normalize(started_at)
+    ended = normalize(ended_at)
+    async with connect() as db:
+        await db.execute(
+            """
+            INSERT INTO analytics_voice_sessions
+                (guild_id, channel_id, user_id, started_at, ended_at, duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(guild_id),
+                int(channel_id) if channel_id else None,
+                int(user_id) if user_id else None,
+                started,
+                ended,
+                max(0, int(duration_seconds)),
+            ),
+        )
+        await db.commit()
+
+
+async def get_analytics_summary(guild_id: int, timeframe: str = "7d") -> dict[str, Any]:
+    _, start, end, previous_start = _analytics_window(timeframe)
+    current_start, current_end = _analytics_iso(start), _analytics_iso(end)
+    previous_start_text = _analytics_iso(previous_start)
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS total_messages,
+                   COUNT(DISTINCT user_id) AS active_chatters
+            FROM analytics_messages
+            WHERE guild_id = ? AND is_voice = 0
+              AND timestamp >= ? AND timestamp < ?
+            """,
+            (int(guild_id), current_start, current_end),
+        ) as cur:
+            current = dict(await cur.fetchone() or {})
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS total_messages,
+                   COUNT(DISTINCT user_id) AS active_chatters
+            FROM analytics_messages
+            WHERE guild_id = ? AND is_voice = 0
+              AND timestamp >= ? AND timestamp < ?
+            """,
+            (int(guild_id), previous_start_text, current_start),
+        ) as cur:
+            previous = dict(await cur.fetchone() or {})
+        async with db.execute(
+            """
+            SELECT DISTINCT user_id
+            FROM analytics_messages
+            WHERE guild_id = ? AND is_voice = 0
+              AND timestamp >= ? AND timestamp < ?
+            """,
+            (int(guild_id), current_start, current_end),
+        ) as cur:
+            current_users = {
+                int(row["user_id"]) for row in await cur.fetchall()
+                if row["user_id"] is not None
+            }
+        async with db.execute(
+            """
+            SELECT DISTINCT user_id
+            FROM analytics_messages
+            WHERE guild_id = ? AND is_voice = 0
+              AND timestamp >= ? AND timestamp < ?
+            """,
+            (int(guild_id), previous_start_text, current_start),
+        ) as cur:
+            previous_users = {
+                int(row["user_id"]) for row in await cur.fetchall()
+                if row["user_id"] is not None
+            }
+        async with db.execute(
+            """
+            SELECT COALESCE(SUM(duration_seconds), 0) AS total_voice_seconds
+            FROM analytics_voice_sessions
+            WHERE guild_id = ? AND started_at >= ? AND started_at < ?
+            """,
+            (int(guild_id), current_start, current_end),
+        ) as cur:
+            voice = dict(await cur.fetchone() or {})
+
+    total_messages = int(current.get("total_messages", 0) or 0)
+    previous_messages = int(previous.get("total_messages", 0) or 0)
+    active_chatters = int(current.get("active_chatters", 0) or 0)
+    previous_count = len(previous_users)
+    retained = len(current_users & previous_users)
+    return {
+        "total_messages": total_messages,
+        "active_chatters": active_chatters,
+        "activity_trend_pct": round(
+            ((total_messages - previous_messages) / previous_messages) * 100
+        ) if previous_messages else 0,
+        "retention_pct": round((retained / previous_count) * 100) if previous_count else 0,
+        "total_voice_seconds": int(voice.get("total_voice_seconds", 0) or 0),
+    }
+
+
+async def get_channel_traffic(guild_id: int, timeframe: str = "7d") -> list[dict[str, Any]]:
+    _, start, end, _ = _analytics_window(timeframe)
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT channel_id, COUNT(*) AS count
+            FROM analytics_messages
+            WHERE guild_id = ? AND is_voice = 0
+              AND channel_id IS NOT NULL
+              AND timestamp >= ? AND timestamp < ?
+            GROUP BY channel_id
+            ORDER BY count DESC
+            """,
+            (int(guild_id), _analytics_iso(start), _analytics_iso(end)),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+    total = sum(int(row["count"] or 0) for row in rows)
+    return [
+        {
+            "id": str(row["channel_id"]),
+            "count": int(row["count"] or 0),
+            "percentage": round((int(row["count"] or 0) / total) * 100, 1) if total else 0,
+        }
+        for row in rows
+    ]
+
+
+async def get_dead_channels(
+    guild_id: int,
+    timeframe: str = "7d",
+    channel_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    if not channel_ids:
+        return []
+    traffic = await get_channel_traffic(guild_id, timeframe)
+    counts = {str(row["id"]): int(row["count"]) for row in traffic}
+    return [
+        {"id": str(channel_id), "count": counts.get(str(channel_id), 0)}
+        for channel_id in channel_ids
+        if counts.get(str(channel_id), 0) == 0
+    ]
+
+
+async def get_top_messenger(guild_id: int, timeframe: str = "7d") -> dict[str, Any] | None:
+    _, start, end, _ = _analytics_window(timeframe)
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT user_id, COUNT(*) AS message_count
+            FROM analytics_messages
+            WHERE guild_id = ? AND is_voice = 0 AND user_id IS NOT NULL
+              AND timestamp >= ? AND timestamp < ?
+            GROUP BY user_id
+            ORDER BY message_count DESC, user_id ASC
+            LIMIT 1
+            """,
+            (int(guild_id), _analytics_iso(start), _analytics_iso(end)),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    return {
+        "user_id": str(row["user_id"]),
+        "message_count": int(row["message_count"] or 0),
+    }
+
+
+async def get_hourly_heatmap(guild_id: int, timeframe: str = "7d") -> dict[str, list[list[int]]]:
+    _, start, end, _ = _analytics_window(timeframe)
+    heatmap = {
+        "written": [[0 for _ in range(24)] for _ in range(7)],
+        "voice": [[0 for _ in range(24)] for _ in range(7)],
+    }
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT CAST(strftime('%w', timestamp) AS INTEGER) AS day,
+                   CAST(strftime('%H', timestamp) AS INTEGER) AS hour,
+                   is_voice, COUNT(*) AS amount
+            FROM analytics_messages
+            WHERE guild_id = ? AND timestamp >= ? AND timestamp < ?
+            GROUP BY day, hour, is_voice
+            """,
+            (int(guild_id), _analytics_iso(start), _analytics_iso(end)),
+        ) as cur:
+            rows = await cur.fetchall()
+    for row in rows:
+        day, hour = int(row["day"]), int(row["hour"])
+        if 0 <= day < 7 and 0 <= hour < 24:
+            heatmap["voice" if int(row["is_voice"] or 0) else "written"][day][hour] = int(row["amount"] or 0)
+    for mode, matrix in heatmap.items():
+        maximum = max((value for row in matrix for value in row), default=0)
+        heatmap[mode] = [
+            [round((value / maximum) * 100) if maximum else 0 for value in row]
+            for row in matrix
+        ]
+    return heatmap
+
+
+async def get_golden_hour(guild_id: int, timeframe: str = "7d") -> dict[str, Any]:
+    heatmap = await get_hourly_heatmap(guild_id, timeframe)
+    combined = [
+        [heatmap["written"][day][hour] + heatmap["voice"][day][hour] for hour in range(24)]
+        for day in range(7)
+    ]
+    best_day, best_start, best_value = 0, 0, 0
+    windows = []
+    for day, row in enumerate(combined):
+        for start_hour in range(22):
+            value = sum(row[start_hour:start_hour + 3])
+            windows.append(value)
+            if value > best_value:
+                best_day, best_start, best_value = day, start_hour, value
+    average = (sum(windows) / len(windows)) if windows else 0
+    multiplier = round(best_value / average, 1) if average else 0
+    day_names = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"]
+
+    def hour_text(hour: int) -> str:
+        suffix = "ص" if hour < 12 else "م"
+        display = hour % 12 or 12
+        return f"{display}{suffix}"
+
+    return {
+        "day": day_names[best_day] if best_value else "—",
+        "window": f"من {hour_text(best_start)} إلى {hour_text((best_start + 3) % 24)}" if best_value else "لا توجد بيانات كافية",
+        "multiplier": multiplier,
+        "tip": "أفضل وقت تنشر فيه إعلاناً أو تفتح فعالية أو سكريم تنافسي!" if best_value else "ستظهر التوصية بعد تسجيل نشاط كافٍ.",
+    }
 
 
 async def get_warning(warning_id: int) -> Optional[Dict[str, Any]]:
