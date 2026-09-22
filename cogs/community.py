@@ -2103,6 +2103,21 @@ class Community(commands.Cog):
                 " ".join(mentions) + " 🚨 تم تصعيد هذه التذكرة.",
                 allowed_mentions=discord.AllowedMentions(roles=True, everyone=False),
             )
+        await save_ticket_log(
+            ticket["id"],
+            ticket["guild_id"],
+            "priority_changed",
+            staff_id=itx.user.id,
+            metadata={"priority": priority},
+        )
+        await send_ticket_action_embed(
+            itx.channel,
+            "🚨 تغيرت أولوية التذكرة",
+            f"تم تحديث أولوية التذكرة **#{ticket['id']}**.",
+            0xEF4444 if priority == "management" else 0xF59E0B,
+            itx.user,
+            extra_field=("الأولوية", priority),
+        )
         await itx.response.send_message(
             f"🚨 تم تحديث الأولوية إلى: **{priority}**.", ephemeral=True
         )
@@ -2260,11 +2275,16 @@ class Community(commands.Cog):
                             filename=f"ticket-{ticket['id']}.txt",
                         ),
                     ],
-                    embed=discord.Embed(
+                    embed=(lambda rating_embed: (
+                        rating_embed.set_footer(
+                            text=f"ticket:{ticket['id']}:{ticket['guild_id']}"
+                        ),
+                        rating_embed,
+                    )[1])(discord.Embed(
                         title="⭐ قيّم مستوى خدمة التذاكر",
                         description="اختر عدد النجوم ثم اكتب ملاحظاتك عن الخدمة.",
                         color=0xF59E0B,
-                    ),
+                    )),
                     view=PersistentDMRatingView(
                         ticket["id"], ticket["guild_id"], ticket["user_id"]
                     ),
