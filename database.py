@@ -5983,7 +5983,7 @@ async def replace_ticket_dropdown_categories(
                     int(guild_id),
                     str(category.get("label") or "")[:80],
                     str(category.get("description") or "")[:100],
-                    str(category.get("emoji") or "🎫")[:2],
+                    str(category.get("emoji") or "🎫").strip()[:100],
                     int(category["role_id"]) if category.get("role_id") else None,
                     int(category["category_id"]) if category.get("category_id") else None,
                 ),

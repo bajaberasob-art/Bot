@@ -2992,6 +2992,19 @@
       if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
     }
   }
+  function ticketEmojiNode(value, className = "") {
+    const raw = String(value || "🎫");
+    const guildEmojis = [
+      ...(Array.isArray(state.meta?.emojis) ? state.meta.emojis : []),
+      ...(Array.isArray(state.meta?.guild_emojis) ? state.meta.guild_emojis : []),
+    ];
+    const custom = guildEmojis.find((emoji) =>
+      (emoji.token || `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`) === raw,
+    );
+    return custom?.url
+      ? el("img", { class: `ticket-emoji-image ${className}`.trim(), src: custom.url, alt: custom.name || "" })
+      : el("span", { class: `ticket-emoji-glyph ${className}`.trim(), text: raw });
+  }
   function ticketCategoryEditor() {
     const wrap = el("div", { class: "ticket-category-list" });
     const defaultTicketEmojis = [
@@ -3037,12 +3050,7 @@
       const grid = el("div", { class: "ticket-emoji-grid" });
       const popover = el("div", { class: "ticket-emoji-popover", hidden: true }, search, grid);
       const renderPreview = (value) => {
-        const custom = emojiCatalog().find((item) => item.value === value && item.custom);
-        preview.replaceChildren(
-          custom?.url
-            ? el("img", { src: custom.url, alt: custom.name || "" })
-            : document.createTextNode(value || "🎫"),
-        );
+        preview.replaceChildren(ticketEmojiNode(value));
       };
       const setEmoji = (value) => {
         category.emoji = String(value || "🎫").trim() || "🎫";
@@ -3782,7 +3790,7 @@
           el("span", { class: "ticket-kicker", text: "VISUAL BUILDER" }),
           el("h3", { text: config.embed_title || "مركز الدعم والتذاكر" }),
           el("p", { text: config.embed_description || "اختر القسم المناسب لفتح تذكرة خاصة مع فريق الدعم." }),
-          el("div", { class: "ticket-builder-options" }, categories.slice(0, 6).map((item) => el("span", {}, item.emoji || "🎫", item.label))),
+          el("div", { class: "ticket-builder-options" }, categories.slice(0, 6).map((item) => el("span", {}, ticketEmojiNode(item.emoji || "🎫"), item.label))),
         ),
         !sectionsOnly && el("div", { class: "ticket-builder-form-grid" },
           el("label", {}, "قناة النشر", el("select", { name: "target_channel_id", class: "studio-input" }, channelOptions("اختر قناة نصية"))),
