@@ -26,3 +26,9 @@ Newly deployed panels use a guild-scoped persistent select view backed by `ticke
 **Why:** A dropdown must rebuild its options after a gateway restart without trusting process memory, while existing servers must not lose their deployed controls during migration.
 
 **How to apply:** Persist panel message/embed state and option metadata, restore the select view during cog setup, and enforce duplicate-open checks by `(guild, user, category)` rather than across all categories.
+
+Channel deletion must be preceded by transcript persistence, including for legacy closed records that do not yet have a transcript.
+
+**Why:** A Discord channel can be deleted after an earlier partial close, and deleting it without backfilling the record permanently loses the conversation.
+
+**How to apply:** Check for an existing transcript before any destructive delete; if absent, capture and save the channel history before removing the channel.
