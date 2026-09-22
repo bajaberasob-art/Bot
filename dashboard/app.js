@@ -3553,10 +3553,12 @@
         renderPage();
       },
     }, el("span", { class: "ticket-tab-icon", text: icon }), label);
+    const categoryChannels = Array.isArray(state.meta?.categories)
+      ? state.meta.categories
+      : channels.filter((item) => item.type === "category");
     const channelOptions = (placeholder, onlyCategories = false) => [
       el("option", { value: "" }, placeholder),
-      ...channels
-        .filter((item) => onlyCategories ? item.type === "category" : item.type !== "category")
+      ...(onlyCategories ? categoryChannels : channels.filter((item) => item.type !== "category"))
         .map((item) => el("option", { value: item.id }, `${onlyCategories ? "▦" : "#"} ${item.name}`)),
     ];
     const metric = (label, value, detail, tone) => el("article", { class: `ticket-next-metric ${tone || ""}` },
