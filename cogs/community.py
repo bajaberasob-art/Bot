@@ -27,6 +27,7 @@ from database import (
     get_ticket_panels,
     get_ticket_configs,
     get_ticket_config,
+    get_ticket_permissions,
     get_ticket_options,
     replace_ticket_options,
     get_ticket_dropdown_config,
@@ -465,7 +466,7 @@ class TicketOptionsView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
 
-    async def _staff_ticket(self, itx):
+    async def _staff_ticket(self, itx, action=None):
         cog = itx.client.get_cog("Community")
         if cog is None:
             await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
@@ -474,14 +475,14 @@ class TicketOptionsView(discord.ui.View):
         if not ticket or ticket["status"] == "closed":
             await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
             return None, None
-        if not cog._is_ticket_staff(itx.user, ticket):
+        if not await cog._ticket_action_allowed(itx.user, ticket, action):
             await cog._ticket_denied(itx)
             return None, None
         return cog, ticket
 
     @discord.ui.button(label="إضافة عضو", style=discord.ButtonStyle.secondary, emoji="➕", custom_id="tkt_opt_add")
     async def add_member(self, itx, btn):
-        cog, _ = await self._staff_ticket(itx)
+        cog, _ = await self._staff_ticket(itx, "add_member")
         if cog:
             await itx.response.send_message(
                 "اختر العضو الذي سيحصل على صلاحية رؤية التذكرة.",
@@ -491,7 +492,7 @@ class TicketOptionsView(discord.ui.View):
 
     @discord.ui.button(label="طرد عضو", style=discord.ButtonStyle.secondary, emoji="➖", custom_id="tkt_opt_remove")
     async def remove_member(self, itx, btn):
-        cog, _ = await self._staff_ticket(itx)
+        cog, _ = await self._staff_ticket(itx, "remove_member")
         if cog:
             await itx.response.send_message(
                 "اختر العضو الذي ستتم إزالة صلاحيته.",
@@ -501,13 +502,13 @@ class TicketOptionsView(discord.ui.View):
 
     @discord.ui.button(label="تغيير الأولوية", style=discord.ButtonStyle.primary, emoji="🚨", custom_id="tkt_opt_priority")
     async def priority(self, itx, btn):
-        cog, _ = await self._staff_ticket(itx)
+        cog, _ = await self._staff_ticket(itx, "priority")
         if cog:
             await itx.response.send_message("اختر الأولوية:", view=TicketPrioritySelectView(), ephemeral=True)
 
     @discord.ui.button(label="تحويل القسم", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="tkt_opt_transfer")
     async def transfer(self, itx, btn):
-        cog, _ = await self._staff_ticket(itx)
+        cog, _ = await self._staff_ticket(itx, "transfer")
         if cog:
             await itx.response.send_message(
                 "اختر القسم الذي ستُنقل إليه التذكرة:",
@@ -518,7 +519,7 @@ class TicketOptionsView(discord.ui.View):
     @discord.ui.button(label="ملاحظة داخلية", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="tkt_opt_note")
     @mark_modal_callback
     async def note(self, itx, btn):
-        cog, _ = await self._staff_ticket(itx)
+        cog, _ = await self._staff_ticket(itx, "note")
         if cog:
             await itx.response.send_modal(InternalNoteModal())
 
@@ -529,7 +530,7 @@ class StreamlinedTicketControlsView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def _ticket(self, itx):
+    async def _ticket(self, itx, action=None):
         cog = itx.client.get_cog("Community")
         if cog is None:
             await itx.response.send_message("نظام التذاكر غير متاح حالياً.", ephemeral=True)
@@ -538,7 +539,7 @@ class StreamlinedTicketControlsView(discord.ui.View):
         if not ticket:
             await itx.response.send_message("هذه القناة ليست تذكرة مسجلة.", ephemeral=True)
             return None
-        if not cog._is_ticket_staff(itx.user, ticket):
+        if not await cog._ticket_action_allowed(itx.user, ticket, action):
             await cog._ticket_denied(itx)
             return None
         return cog
