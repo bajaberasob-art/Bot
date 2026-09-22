@@ -2191,6 +2191,7 @@ class Community(commands.Cog):
         self,
         itx: discord.Interaction,
         reason: str,
+        delay_seconds: int = 0,
     ):
         ticket = await get_ticket_by_channel(itx.channel.id)
         if not ticket or ticket["status"] == "closed":
@@ -2198,6 +2199,8 @@ class Community(commands.Cog):
         if not self._is_ticket_staff(itx.user, ticket):
             return await self._ticket_denied(itx)
         await itx.response.defer(ephemeral=True)
+        if delay_seconds:
+            await asyncio.sleep(max(0, min(int(delay_seconds), 30)))
         text, content_html = await self._build_transcript(itx.channel, ticket)
         text += f"\n\nClose reason: {reason}"
         content_html = content_html.replace(
@@ -2208,6 +2211,21 @@ class Community(commands.Cog):
             ticket["id"], ticket["guild_id"], ticket["channel_id"], text, content_html
         )
         ticket = await close_ticket(ticket["guild_id"], ticket["id"], itx.user.id, reason)
+        await save_ticket_log(
+            ticket["id"],
+            ticket["guild_id"],
+            "closed",
+            staff_id=itx.user.id,
+            metadata={"reason": reason},
+        )
+        await send_ticket_action_embed(
+            itx.channel,
+            "🔒 تم إغلاق التذكرة",
+            f"تم إغلاق التذكرة **#{ticket['id']}** وأرشفتها.",
+            0xEF4444,
+            itx.user,
+            extra_field=("السبب", reason),
+        )
         self._schedule_ticket_channel_deletion(itx.channel, ticket["id"])
         await itx.channel.edit(
             name=f"archived-ticket-{ticket['id']}"[:100],
@@ -2242,8 +2260,13 @@ class Community(commands.Cog):
                             filename=f"ticket-{ticket['id']}.txt",
                         ),
                     ],
-                    view=TicketRatingView(
-                        ticket["id"], ticket["user_id"], ticket["guild_id"]
+                    embed=discord.Embed(
+                        title="⭐ قيّم مستوى خدمة التذاكر",
+                        description="اختر عدد النجوم ثم اكتب ملاحظاتك عن الخدمة.",
+                        color=0xF59E0B,
+                    ),
+                    view=PersistentDMRatingView(
+                        ticket["id"], ticket["guild_id"], ticket["user_id"]
                     ),
                 )
             except (discord.Forbidden, discord.HTTPException):
@@ -2555,6 +2578,8 @@ class Community(commands.Cog):
 async def setup(bot: commands.Bot):
     bot.add_view(SuggestionActionView())
     bot.add_view(TicketControlView())
+    bot.add_view(StreamlinedTicketControlsView())
+    bot.add_view(PersistentDMRatingView())
     legacy_panels = await get_ticket_panels()
     legacy_by_message = {
         (int(panel["guild_id"]), int(panel["message_id"])): panel["categories"]
