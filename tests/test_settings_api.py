@@ -399,6 +399,20 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((status, data["deleted"]), (200, True))
         self.assertIn(("reassign", FakeGuild.id, 42, 10), self.community.calls)
 
+    async def test_legacy_ticket_categories_without_support_roles_remain_editable(self):
+        categories, error = ws._ticket_role_ids(
+            FakeGuild(),
+            [{
+                "key": "general",
+                "label": "الدعم العام",
+                "emoji": "🔧",
+                "support_role_ids": [],
+                "senior_role_ids": [],
+            }],
+        )
+        self.assertIsNone(error)
+        self.assertEqual(categories[0]["support_role_ids"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

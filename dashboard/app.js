@@ -3565,17 +3565,13 @@
       const channelId = form.elements.target_channel_id.value;
       if (!channelId) return toast("اختر قناة نشر اللوحة");
       try {
-        const response = await api(`api/guild/${state.guild.id}/tickets/deploy`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-CSRF-Token": state.session.csrf },
-          body: JSON.stringify({
-            target_channel_id: channelId,
-            categories,
-            embed_title: form.elements.embed_title.value.trim(),
-            embed_description: form.elements.embed_description.value.trim(),
-            embed_color: form.elements.embed_color.value,
-            footer_text: form.elements.footer_text.value.trim(),
-          }),
+        const response = await writeApi(`api/guild/${state.guild.id}/tickets/deploy`, {
+          target_channel_id: channelId,
+          categories,
+          embed_title: form.elements.embed_title.value.trim(),
+          embed_description: form.elements.embed_description.value.trim(),
+          embed_color: form.elements.embed_color.value,
+          footer_text: form.elements.footer_text.value.trim(),
         });
         const data = await readJson(response, {});
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر نشر اللوحة");
@@ -3587,16 +3583,12 @@
     };
     const saveSections = async () => {
       try {
-        const response = await api(`api/guild/${state.guild.id}/tickets/config`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-CSRF-Token": state.session.csrf },
-          body: JSON.stringify({
-            categories,
-            embed_title: config.embed_title,
-            embed_description: config.embed_description,
-            embed_color: config.embed_color,
-            footer_text: config.footer_text,
-          }),
+        const response = await writeApi(`api/guild/${state.guild.id}/tickets/config`, {
+          categories,
+          embed_title: config.embed_title,
+          embed_description: config.embed_description,
+          embed_color: config.embed_color,
+          footer_text: config.footer_text,
         });
         const data = await readJson(response, {});
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الأقسام");

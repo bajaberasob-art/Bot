@@ -836,7 +836,7 @@ def pwa_svg() -> str:
 
 
 def service_worker_source() -> str:
-    return """const CACHE = "prime-dashboard-shell-v5";
+    return """const CACHE = "prime-dashboard-shell-v6";
 const STATIC = [
   "./",
   "./static/app.css",
@@ -2292,8 +2292,10 @@ def _ticket_role_ids(guild, categories):
         senior_ids = raw.get("senior_role_ids", [])
         if not isinstance(role_ids, list) or not isinstance(senior_ids, list):
             return None, f"رتب التصنيف رقم {index + 1} غير صالحة"
-        if not role_ids:
-            return None, f"حدد رتبة دعم واحدة على الأقل للتصنيف رقم {index + 1}"
+        # Legacy panels may intentionally have no support-role restriction.
+        # Keep those categories editable and deployable; Discord permissions
+        # still grant access to administrators/manage-channel staff, while a
+        # support role can be added later from the dashboard.
         for role_id in [*role_ids, *senior_ids]:
             try:
                 role = guild.get_role(int(role_id))
