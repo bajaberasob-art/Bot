@@ -4315,6 +4315,160 @@ def _ticket_config_row(row) -> dict[str, Any] | None:
     return item
 
 
+def _ticket_settings_row(row) -> dict[str, Any] | None:
+    if not row:
+        return None
+    item = dict(row)
+    item["guild_id"] = int(item["guild_id"])
+    for key in (
+        "log_channel_id",
+        "evaluation_channel_id",
+        "default_open_category_id",
+        "closed_category_id",
+    ):
+        if item.get(key) is not None:
+            item[key] = int(item[key])
+    item["allow_user_close"] = bool(item.get("allow_user_close", False))
+    item["send_transcript_dm"] = bool(item.get("send_transcript_dm", True))
+    return item
+
+
+def _ticket_permissions_value(value: Any) -> dict[str, list[str]]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            value = {}
+    if not isinstance(value, dict):
+        return {}
+    allowed_actions = {
+        "claim",
+        "close",
+        "rename",
+        "priority",
+        "transfer",
+        "add_member",
+        "remove_member",
+        "private_ticket",
+        "summon",
+        "tag",
+        "note",
+        "reopen",
+    }
+    return {
+        str(action): [str(role_id) for role_id in role_ids if str(role_id).isdigit()][:100]
+        for action, role_ids in value.items()
+        if str(action) in allowed_actions and isinstance(role_ids, list)
+    }
+
+
+async def get_ticket_settings(guild_id: int) -> dict[str, Any]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT * FROM ticket_settings WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    if row:
+        return _ticket_settings_row(row) or {}
+    # Read-only compatibility fallback for installations where only the
+    # original ticket_config row has been populated.
+    config = await get_ticket_config(guild_id) or {}
+    return {
+        "guild_id": int(guild_id),
+        "log_channel_id": config.get("log_channel_id"),
+        "evaluation_channel_id": config.get("evaluation_channel_id"),
+        "default_open_category_id": config.get("default_open_category_id"),
+        "closed_category_id": config.get("closed_category_id"),
+        "allow_user_close": bool(config.get("allow_user_close", False)),
+        "send_transcript_dm": bool(config.get("send_transcript_dm", True)),
+    }
+
+
+async def save_ticket_settings(
+    guild_id: int,
+    *,
+    log_channel_id: int | None | object = None,
+    evaluation_channel_id: int | None | object = None,
+    default_open_category_id: int | None | object = None,
+    closed_category_id: int | None | object = None,
+    allow_user_close: bool | object = None,
+    send_transcript_dm: bool | object = None,
+) -> dict[str, Any]:
+    current = await get_ticket_settings(guild_id)
+    values = {
+        "log_channel_id": current.get("log_channel_id") if log_channel_id is None else log_channel_id,
+        "evaluation_channel_id": current.get("evaluation_channel_id") if evaluation_channel_id is None else evaluation_channel_id,
+        "default_open_category_id": current.get("default_open_category_id") if default_open_category_id is None else default_open_category_id,
+        "closed_category_id": current.get("closed_category_id") if closed_category_id is None else closed_category_id,
+        "allow_user_close": current.get("allow_user_close", False) if allow_user_close is None else bool(allow_user_close),
+        "send_transcript_dm": current.get("send_transcript_dm", True) if send_transcript_dm is None else bool(send_transcript_dm),
+    }
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            """
+            INSERT INTO ticket_settings
+                (guild_id, log_channel_id, evaluation_channel_id,
+                 default_open_category_id, closed_category_id,
+                 allow_user_close, send_transcript_dm, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                log_channel_id = excluded.log_channel_id,
+                evaluation_channel_id = excluded.evaluation_channel_id,
+                default_open_category_id = excluded.default_open_category_id,
+                closed_category_id = excluded.closed_category_id,
+                allow_user_close = excluded.allow_user_close,
+                send_transcript_dm = excluded.send_transcript_dm,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                int(guild_id),
+                int(values["log_channel_id"]) if values["log_channel_id"] is not None else None,
+                int(values["evaluation_channel_id"]) if values["evaluation_channel_id"] is not None else None,
+                int(values["default_open_category_id"]) if values["default_open_category_id"] is not None else None,
+                int(values["closed_category_id"]) if values["closed_category_id"] is not None else None,
+                int(bool(values["allow_user_close"])),
+                int(bool(values["send_transcript_dm"])),
+            ),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM ticket_settings WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    return _ticket_settings_row(row) or {}
+
+
+async def get_ticket_permissions(guild_id: int) -> dict[str, list[str]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT permissions FROM ticket_permissions WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    return _ticket_permissions_value(row["permissions"] if row else {})
+
+
+async def save_ticket_permissions(
+    guild_id: int, permissions: dict[str, Any]
+) -> dict[str, list[str]]:
+    normalized = _ticket_permissions_value(permissions)
+    async with connect() as db:
+        await db.execute(
+            """
+            INSERT INTO ticket_permissions (guild_id, permissions, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                permissions = excluded.permissions,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (int(guild_id), json.dumps(normalized, ensure_ascii=False)),
+        )
+        await db.commit()
+    return normalized
+
+
 def _ticket_option_row(row) -> dict[str, Any]:
     item = dict(row)
     for key in ("id", "guild_id", "role_id", "category_id"):
@@ -4566,24 +4720,40 @@ async def replace_ticket_options(
 
 def _ticket_category_row(row) -> dict[str, Any]:
     item = dict(row)
-    for key in ("id", "guild_id", "category_id"):
+    for key in (
+        "id",
+        "guild_id",
+        "panel_id",
+        "category_id",
+        "open_category_id",
+        "closed_category_id",
+        "max_open_per_user",
+        "auto_close_hours",
+    ):
         if item.get(key) is not None:
             item[key] = int(item[key])
     for key in ("ping_role_ids", "staff_role_ids"):
         item[key] = _ticket_json_ids(item.get(key))
+    item["label"] = str(item.get("label") or item.get("name") or "قسم دعم")
+    item["name"] = str(item.get("name") or item["label"])
+    item["button_color"] = str(item.get("button_color") or "primary")
+    item["naming_format"] = str(item.get("naming_format") or "ticket-{count}")
+    item["closed_naming_format"] = str(
+        item.get("closed_naming_format") or "closed-{count}"
+    )
+    item["welcome_message"] = str(
+        item.get("welcome_message") or item.get("welcome_msg") or ""
+    )
+    item["welcome_msg"] = str(item.get("welcome_msg") or item["welcome_message"])
+    item["max_open_per_user"] = max(1, int(item.get("max_open_per_user") or 1))
+    item["auto_close_hours"] = max(0, int(item.get("auto_close_hours") or 0))
     return item
 
 
 async def get_ticket_categories(guild_id: int) -> list[dict[str, Any]]:
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
-            """
-            SELECT id, guild_id, name, ping_role_ids, staff_role_ids,
-                   description, emoji, category_id, welcome_msg
-            FROM ticket_categories
-            WHERE guild_id = ?
-            ORDER BY id
-            """,
+            "SELECT * FROM ticket_categories WHERE guild_id = ? ORDER BY id",
             (int(guild_id),),
         ) as cur:
             rows = [_ticket_category_row(row) for row in await cur.fetchall()]
@@ -4605,6 +4775,172 @@ async def get_ticket_categories(guild_id: int) -> list[dict[str, Any]]:
         }
         for option in await get_ticket_options(guild_id)
     ]
+
+
+def _ticket_category_payload(data: dict[str, Any]) -> dict[str, Any]:
+    label = str(data.get("label") or data.get("name") or "").strip()[:100]
+    if not label:
+        raise ValueError("category label is required")
+    def ids(key: str) -> list[str]:
+        value = data.get(key, [])
+        if not isinstance(value, list):
+            value = []
+        return [str(item) for item in value if str(item).isdigit()][:50]
+    return {
+        "name": str(data.get("name") or label).strip()[:100] or label,
+        "label": label,
+        "panel_id": int(data["panel_id"]) if data.get("panel_id") not in (None, "") else None,
+        "description": str(data.get("description") or "").strip()[:100],
+        "emoji": str(data.get("emoji") or "🎫").strip()[:100],
+        "button_color": str(data.get("button_color") or "primary").strip().lower()[:20],
+        "naming_format": str(data.get("naming_format") or "ticket-{count}").strip()[:100],
+        "closed_naming_format": str(
+            data.get("closed_naming_format") or "closed-{count}"
+        ).strip()[:100],
+        "open_category_id": (
+            int(data["open_category_id"])
+            if data.get("open_category_id") not in (None, "")
+            else None
+        ),
+        "closed_category_id": (
+            int(data["closed_category_id"])
+            if data.get("closed_category_id") not in (None, "")
+            else None
+        ),
+        "category_id": (
+            int(data["category_id"])
+            if data.get("category_id") not in (None, "")
+            else None
+        ),
+        "ping_role_ids": ids("ping_role_ids"),
+        "staff_role_ids": ids("staff_role_ids"),
+        "welcome_message": str(
+            data.get("welcome_message", data.get("welcome_msg", ""))
+        )[:2000],
+        "max_open_per_user": max(1, min(20, int(data.get("max_open_per_user") or 1))),
+        "auto_close_hours": max(0, min(8760, int(data.get("auto_close_hours") or 0))),
+    }
+
+
+async def save_ticket_category(
+    guild_id: int,
+    data: dict[str, Any],
+    category_id: int | None = None,
+) -> dict[str, Any]:
+    payload = _ticket_category_payload(data)
+    async with connect(aiosqlite.Row) as db:
+        if category_id is None:
+            cursor = await db.execute(
+                """
+                INSERT INTO ticket_categories
+                    (guild_id, panel_id, name, label, ping_role_ids,
+                     staff_role_ids, description, emoji, button_color,
+                     naming_format, closed_naming_format, open_category_id,
+                     closed_category_id, category_id, welcome_msg,
+                     welcome_message, max_open_per_user, auto_close_hours)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING *
+                """,
+                (
+                    int(guild_id),
+                    payload["panel_id"],
+                    payload["name"],
+                    payload["label"],
+                    json.dumps(payload["ping_role_ids"]),
+                    json.dumps(payload["staff_role_ids"]),
+                    payload["description"],
+                    payload["emoji"],
+                    payload["button_color"],
+                    payload["naming_format"],
+                    payload["closed_naming_format"],
+                    payload["open_category_id"],
+                    payload["closed_category_id"],
+                    payload["category_id"],
+                    payload["welcome_message"],
+                    payload["welcome_message"],
+                    payload["max_open_per_user"],
+                    payload["auto_close_hours"],
+                ),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                UPDATE ticket_categories
+                SET panel_id = ?, name = ?, label = ?, ping_role_ids = ?,
+                    staff_role_ids = ?, description = ?, emoji = ?,
+                    button_color = ?, naming_format = ?,
+                    closed_naming_format = ?, open_category_id = ?,
+                    closed_category_id = ?, category_id = ?, welcome_msg = ?,
+                    welcome_message = ?, max_open_per_user = ?,
+                    auto_close_hours = ?
+                WHERE guild_id = ? AND id = ?
+                RETURNING *
+                """,
+                (
+                    payload["panel_id"],
+                    payload["name"],
+                    payload["label"],
+                    json.dumps(payload["ping_role_ids"]),
+                    json.dumps(payload["staff_role_ids"]),
+                    payload["description"],
+                    payload["emoji"],
+                    payload["button_color"],
+                    payload["naming_format"],
+                    payload["closed_naming_format"],
+                    payload["open_category_id"],
+                    payload["closed_category_id"],
+                    payload["category_id"],
+                    payload["welcome_message"],
+                    payload["welcome_message"],
+                    payload["max_open_per_user"],
+                    payload["auto_close_hours"],
+                    int(guild_id),
+                    int(category_id),
+                ),
+            )
+        row = await cursor.fetchone()
+        if not row:
+            await db.rollback()
+            raise LookupError("ticket category not found")
+        await db.commit()
+    return _ticket_category_row(row)
+
+
+async def delete_ticket_category(
+    guild_id: int, category_id: int
+) -> dict[str, Any]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT name, label FROM ticket_categories WHERE guild_id = ? AND id = ?",
+            (int(guild_id), int(category_id)),
+        ) as cur:
+            category = await cur.fetchone()
+        if not category:
+            return {"deleted": False, "found": False, "in_use": False}
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM tickets
+            WHERE guild_id = ? AND status != 'closed'
+              AND (category_key = ? OR category_label = ?)
+            """,
+            (int(guild_id), str(category["name"]), str(category["label"])),
+        ) as cur:
+            active_count = int((await cur.fetchone())["count"] or 0)
+        if active_count:
+            await db.rollback()
+            return {
+                "deleted": False,
+                "found": True,
+                "in_use": True,
+                "active_tickets": active_count,
+            }
+        cursor = await db.execute(
+            "DELETE FROM ticket_categories WHERE guild_id = ? AND id = ?",
+            (int(guild_id), int(category_id)),
+        )
+        await db.commit()
+    return {"deleted": cursor.rowcount > 0, "found": True, "in_use": False}
 
 
 async def save_ticket_log(
