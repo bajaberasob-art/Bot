@@ -60,6 +60,7 @@
     ticketAnalytics: { overview: {}, priorities: [], ratings: [], staff: [], activity: [] },
     ticketBlacklist: [],
     ticketSettings: null,
+    ticketPermissions: {},
     gaming: [],
     clanOps: {
       applications: [],
@@ -2692,7 +2693,7 @@
   async function refreshTickets() {
     const id = state.guild.id;
     try {
-      const [active, archive, kpis, canned, configResponse, panels, analytics, settings, blacklist, ratingsResponse] = await Promise.all([
+      const [active, archive, kpis, canned, configResponse, panels, analytics, settings, permissions, categories, blacklist, ratingsResponse] = await Promise.all([
         api(`api/guild/${id}/tickets/active`),
         api(`api/guild/${id}/tickets/archive?q=${encodeURIComponent(state.ticketSearch)}`),
         api(`api/guild/${id}/tickets/kpis`),
@@ -2700,8 +2701,10 @@
         api(`api/guild/${id}/tickets/config`),
         api(`api/guild/${id}/tickets/panels`),
         api(`api/guild/${id}/tickets/analytics`),
-        api(`api/guild/${id}/tickets/settings`),
-        api(`api/guild/${id}/tickets/blacklist`),
+        api(`api/guilds/${id}/tickets/settings`),
+        api(`api/guilds/${id}/tickets/permissions`),
+        api(`api/guilds/${id}/tickets/categories`),
+        api(`api/guilds/${id}/tickets/blacklist`),
         api(`api/guilds/${id}/tickets/ratings`),
       ]);
       state.tickets = {
@@ -2726,6 +2729,22 @@
         const settingsData = await readJson(settings, {});
         state.ticketSettings = settingsData.config || null;
         state.ticketConfig = { ...state.ticketConfig, ...(settingsData.config || {}) };
+        state.ticketPermissions = settingsData.permissions || state.ticketPermissions;
+      }
+      if (permissions.ok) {
+        const permissionsData = await readJson(permissions, {});
+        state.ticketPermissions = permissionsData.permissions || state.ticketPermissions;
+      }
+      if (categories.ok) {
+        const categoriesData = await readJson(categories, {});
+        if (Array.isArray(categoriesData.categories) && categoriesData.categories.length) {
+          state.ticketCategories = categoriesData.categories.map((item) => ({
+            ...item,
+            key: item.key || item.name,
+            welcome_msg: item.welcome_msg || item.welcome_message || "",
+            support_role_ids: item.support_role_ids || item.staff_role_ids || [],
+          }));
+        }
       }
       if (blacklist.ok) state.ticketBlacklist = (await readJson(blacklist, { entries: [] })).entries || [];
       if (ratingsResponse.ok) state.ticketRatings = (await readJson(ratingsResponse, { ratings: [] })).ratings || [];
@@ -3553,7 +3572,7 @@
         },
       };
       try {
-        const response = await writeApi(`api/guild/${state.guild.id}/tickets/settings`, body);
+        const response = await writeApi(`api/guilds/${state.guild.id}/tickets/settings`, body);
         const data = await readJson(response, {});
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ إعدادات التذاكر");
         state.ticketConfig = { ...state.ticketConfig, ...(data.config || {}) };
@@ -3657,7 +3676,7 @@
     };
     const addBlacklist = async (form) => {
       try {
-        const response = await writeApi(`api/guild/${state.guild.id}/tickets/blacklist`, {
+        const response = await writeApi(`api/guilds/${state.guild.id}/tickets/blacklist`, {
           user_id: form.elements.user_id.value.trim(),
           duration_days: form.elements.duration_days.value || null,
           reason: form.elements.reason.value.trim(),
@@ -3674,7 +3693,7 @@
     };
     const removeBlacklist = async (entry) => {
       try {
-        const response = await api(`api/guild/${state.guild.id}/tickets/blacklist/${entry.user_id}`, {
+        const response = await api(`api/guilds/${state.guild.id}/tickets/blacklist/${entry.user_id}`, {
           method: "DELETE",
           headers: { "X-CSRF-Token": state.session.csrf },
         });
