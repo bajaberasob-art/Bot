@@ -3222,6 +3222,11 @@ async def api_guilds_tickets_panel_publish(req):
     except (ValueError, discord.Forbidden, discord.HTTPException) as error:
         logger.warning("CRM ticket panel publication failed: %s", error)
         return json_error(400, "ticket_panel_deploy_failed")
+    # A CRM draft uses message_id=0 as a database-only placeholder. The
+    # deployment above creates and persists the real Discord message, so the
+    # placeholder must not remain as a second panel in the dashboard.
+    if int(panel.get("message_id") or 0) == 0:
+        await delete_ticket_panel(guild.id, int(panel["channel_id"]), 0)
     return web.json_response({"ok": True, "panel": result})
 
 
