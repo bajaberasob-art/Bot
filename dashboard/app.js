@@ -3605,7 +3605,10 @@
     const removePanel = async (panel) => {
       if (!confirm("حذف هذه اللوحة من Discord؟")) return;
       try {
-        const response = await writeApi(`api/guild/${state.guild.id}/tickets/panels/${panel.message_id}`, {});
+        const response = await api(`api/guild/${state.guild.id}/tickets/panels/${panel.message_id}`, {
+          method: "DELETE",
+          headers: { "X-CSRF-Token": state.session.csrf },
+        });
         if (!response.ok) return toast("تعذر حذف اللوحة");
         state.ticketPanels = state.ticketPanels.filter((item) => String(item.message_id) !== String(panel.message_id));
         toast("تم حذف اللوحة", "success", 2000);
@@ -3798,22 +3801,195 @@
         ),
       );
     };
+    const formatTicketDate = (value) => {
+      if (!value) return "—";
+      const date = new Date(String(value).replace(" ", "T") + (String(value).includes("Z") ? "" : "Z"));
+      return Number.isNaN(date.getTime())
+        ? String(value)
+        : date.toLocaleString("ar", { dateStyle: "medium", timeStyle: "short" });
+    };
+    const ticketSearchInput = (placeholder, onChange) => {
+      const input = el("input", {
+        class: "studio-search ticket-collection-search",
+        type: "search",
+        value: state.ticketSearch,
+        placeholder,
+        "aria-label": placeholder,
+      });
+      let timer;
+      input.oninput = () => {
+        state.ticketSearch = input.value;
+        onChange?.();
+        clearTimeout(timer);
+        timer = setTimeout(refreshTickets, 280);
+      };
+      return input;
+    };
+    const ticketStatusFilterBar = () => el("div", { class: "ticket-collection-filters" },
+      [["all", "الكل"], ["active", "قيد المعالجة"], ["waiting_staff", "بانتظار الدعم"], ["waiting_user", "بانتظار العضو"]].map(([value, label]) =>
+        el("button", {
+          class: `ticket-collection-filter ${state.ticketStatusFilter === value ? "active" : ""}`,
+          type: "button",
+          text: label,
+          onClick: () => {
+            state.ticketStatusFilter = value;
+            renderPage();
+          },
+        }),
+      ),
+    );
+    const ticketRow = (ticket, archived = false) => {
+      const priority = ticket.priority || "normal";
+      const status = ticket.status || (archived ? "closed" : "active");
+      const actions = [
+        el("button", { class: "ticket-inline-action", type: "button", text: "التفاصيل", onClick: () => openTicketDetail(ticket) }),
+      ];
+      if (archived) {
+        actions.push(el("button", { class: "ticket-inline-action", type: "button", text: "السجل", onClick: () => openTicketTranscript(ticket) }));
+        if (status === "closed") {
+          actions.push(el("button", { class: "ticket-inline-action", type: "button", text: "إعادة فتح", onClick: () => ticketAction(ticket, "reopen") }));
+        }
+      } else {
+        actions.push(
+          el("button", { class: "ticket-inline-action", type: "button", text: "إسناد", onClick: () => ticketAction(ticket, "reassign") }),
+          el("button", { class: "ticket-inline-action danger", type: "button", text: "إغلاق", onClick: () => ticketAction(ticket, "close") }),
+        );
+      }
+      return el("article", { class: `ticket-collection-row ${priority}` },
+        el("div", { class: "ticket-collection-priority" }),
+        el("div", { class: "ticket-collection-main" },
+          el("div", { class: "ticket-collection-title" },
+            el("strong", { text: `#${ticket.id} · ${ticket.subject || "بدون عنوان"}` }),
+            el("span", { class: `status-tag ${status}`, text: ticketStatusLabels[status] || status }),
+          ),
+          el("small", { text: `${ticket.category_label || "دعم"} · العضو #${ticket.user_id || "—"} · ${ticket.claimed_by ? `المسؤول #${ticket.claimed_by}` : "غير مستلمة"}` }),
+          el("p", { text: ticket.details || ticket.close_reason || "بدون تفاصيل إضافية" }),
+        ),
+        el("div", { class: "ticket-collection-meta" },
+          el("span", { class: `priority-tag ${priority}`, text: ticketPriorityLabels[priority] || priority }),
+          el("time", { text: formatTicketDate(ticket.closed_at || ticket.opened_at || ticket.created_at) }),
+          el("div", { class: "ticket-collection-actions" }, actions),
+        ),
+      );
+    };
+    const ticketsListView = () => {
+      const query = state.ticketSearch.trim().toLocaleLowerCase();
+      const tickets = state.tickets.active.filter((ticket) => {
+        const matchesStatus = state.ticketStatusFilter === "all" || (ticket.status || "active") === state.ticketStatusFilter;
+        const haystack = `${ticket.id} ${ticket.subject || ""} ${ticket.category_label || ""} ${ticket.user_id || ""}`.toLocaleLowerCase();
+        return matchesStatus && (!query || haystack.includes(query));
+      });
+      const list = el("div", { class: "ticket-collection-list" });
+      if (!tickets.length) list.append(el("div", { class: "ticket-next-empty", text: "لا توجد تذاكر نشطة مطابقة للبحث الحالي" }));
+      tickets.forEach((ticket) => list.append(ticketRow(ticket)));
+      return el("div", { class: "ticket-next-content" },
+        el("div", { class: "ticket-section-title-row" },
+          el("div", {}, el("span", { class: "ticket-kicker", text: "ACTIVE TICKETS" }), el("h3", { text: "كل التذاكر النشطة" }), el("p", { text: "راجع الطابور الكامل ونفّذ الإسناد أو الإغلاق من دون فتح Discord." })),
+          el("span", { class: "ticket-live-pill", text: `${tickets.length} معروض` }),
+        ),
+        el("section", { class: "ticket-next-card ticket-collection-card" },
+          el("div", { class: "ticket-collection-toolbar" }, ticketSearchInput("ابحث بالرقم أو العنوان أو العضو…"), ticketStatusFilterBar()),
+          list,
+        ),
+      );
+    };
+    const archiveView = () => {
+      const query = state.ticketSearch.trim().toLocaleLowerCase();
+      const tickets = state.tickets.archive.filter((ticket) => {
+        const haystack = `${ticket.id} ${ticket.subject || ""} ${ticket.category_label || ""} ${ticket.user_id || ""} ${ticket.close_reason || ""}`.toLocaleLowerCase();
+        return !query || haystack.includes(query);
+      });
+      const list = el("div", { class: "ticket-collection-list" });
+      if (!tickets.length) list.append(el("div", { class: "ticket-next-empty", text: "لا توجد سجلات مغلقة مطابقة للبحث الحالي" }));
+      tickets.forEach((ticket) => list.append(ticketRow(ticket, true)));
+      return el("div", { class: "ticket-next-content" },
+        el("div", { class: "ticket-section-title-row" },
+          el("div", {}, el("span", { class: "ticket-kicker", text: "ARCHIVE VAULT" }), el("h3", { text: "أرشيف التذاكر" }), el("p", { text: "ارجع إلى التفاصيل والـ transcript وأعد فتح التذاكر المغلقة عند الحاجة." })),
+          el("span", { class: "ticket-live-pill", text: `${tickets.length} سجل` }),
+        ),
+        el("section", { class: "ticket-next-card ticket-collection-card" },
+          el("div", { class: "ticket-collection-toolbar" }, ticketSearchInput("ابحث في الأرشيف…")),
+          list,
+        ),
+      );
+    };
+    const ratingsView = () => {
+      const directRatings = state.ticketRatings || [];
+      const distribution = [5, 4, 3, 2, 1].map((stars) => ({
+        stars,
+        count: directRatings.filter((item) => Number(item.stars ?? item.rating) === stars).length,
+      }));
+      const total = directRatings.length;
+      const average = total
+        ? directRatings.reduce((sum, item) => sum + Number(item.stars ?? item.rating ?? 0), 0) / total
+        : Number(analytics.overview?.average_rating || 0) || null;
+      const rows = el("div", { class: "ticket-rating-list" });
+      if (!directRatings.length) rows.append(el("div", { class: "ticket-next-empty", text: "ستظهر تقييمات الأعضاء بعد إغلاق التذاكر واستلام التقييم." }));
+      directRatings.forEach((rating) => rows.append(el("article", { class: "ticket-rating-item" },
+        el("div", { class: "ticket-rating-stars", text: `${"★".repeat(Math.max(0, Math.min(5, Number(rating.stars || 0))))}${"☆".repeat(Math.max(0, 5 - Number(rating.stars || 0)))}` }),
+        el("div", {}, el("strong", { text: `التذكرة #${rating.ticket_id}` }), el("small", { text: `${rating.subject || "بدون عنوان"} · العضو #${rating.user_id || "—"} · الموظف #${rating.staff_id || "—"}` })),
+        el("time", { text: formatTicketDate(rating.created_at) }),
+        rating.comment ? el("p", { text: rating.comment }) : null,
+      )));
+      return el("div", { class: "ticket-next-content" },
+        el("div", { class: "ticket-section-title-row" },
+          el("div", {}, el("span", { class: "ticket-kicker", text: "MEMBER FEEDBACK" }), el("h3", { text: "تقييمات الأعضاء" }), el("p", { text: "راقب رضا الأعضاء واربط كل تقييم بالتذكرة والموظف المسؤول." })),
+          el("span", { class: "ticket-live-pill", text: `${total} تقييم` }),
+        ),
+        el("div", { class: "ticket-rating-summary-grid" },
+          metric("متوسط التقييم", average == null ? "—" : `${average.toFixed(1)}/5`, `${total} تقييم محفوظ`, "amber"),
+          metric("تقييمات 5 نجوم", distribution[0].count, total ? `${Math.round((distribution[0].count / total) * 100)}% من الإجمالي` : "لا توجد بيانات", "emerald"),
+          el("section", { class: "ticket-next-card ticket-rating-distribution-card" },
+            el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "RATING DISTRIBUTION" }), el("h3", { text: "توزيع النجوم" }))),
+            el("div", { class: "ticket-rating-bars" }, distribution.map((item) => {
+              const width = total ? Math.round((item.count / total) * 100) : 0;
+              return el("div", { class: "ticket-rating-row" }, el("span", { text: `${item.stars} ★` }), el("i", {}, el("b", { style: `width:${width}%` })), el("small", { text: String(item.count) }));
+            })),
+          ),
+        ),
+        el("section", { class: "ticket-next-card ticket-collection-card" },
+          el("div", { class: "ticket-card-heading" }, el("div", {}, el("span", { class: "ticket-kicker", text: "RATING LOG" }), el("h3", { text: "آخر التقييمات" })), el("button", { class: "ticket-inline-action", type: "button", text: "تحديث", onClick: refreshTickets })),
+          rows,
+        ),
+      );
+    };
     const panelsView = () => {
       const cards = state.ticketPanels.map((panel) => el("article", { class: "ticket-panel-tile" },
-        el("div", { class: "ticket-panel-tile-top" }, el("span", { class: "ticket-panel-status", text: "● متصلة" }), el("small", { text: `#${panel.message_id}` })),
-        el("div", { class: "ticket-panel-preview-mini" },
-          el("span", { class: "ticket-kicker", text: "PR1ME SUPPORT" }),
-          el("strong", { text: config.embed_title || "مركز الدعم والتذاكر" }),
-          el("small", { text: config.select_placeholder || "اختر القسم المناسب لطلبك" }),
-          el("div", { class: "ticket-panel-category-list" }, (panel.categories || []).slice(0, 4).map((item) =>
-            el("span", {}, ticketEmojiNode(item.emoji || "🎫"), item.label || "قسم دعم"),
-          )),
-        ),
-        el("div", { class: "ticket-panel-tile-meta" }, el("span", { text: `#${window.guildChannels?.[panel.channel_id] || panel.channel_id}` }), el("span", { text: `${(panel.categories || []).length} أقسام` })),
-        el("div", { class: "ticket-tile-actions" },
-          el("button", { class: "ticket-inline-action", type: "button", text: "تحرير", onClick: () => { state.ticketCategories = (panel.categories || []).map((item) => ({ ...item })); state.ticketTab = "builder"; renderPage(); } }),
-          el("button", { class: "ticket-inline-action danger", type: "button", text: "حذف", onClick: () => removePanel(panel) }),
-        ),
+        (() => {
+          const isDraft = !Number(panel.message_id);
+          const panelTitle = panel.title || config.embed_title || "مركز الدعم والتذاكر";
+          const panelDescription = panel.description || config.embed_description || "اختر القسم المناسب لطلبك";
+          const panelColor = `#${Number(panel.color || 0x5865F2).toString(16).padStart(6, "0").slice(-6)}`;
+          const preview = el("div", { class: "ticket-panel-preview-mini", style: `--panel-accent:${panelColor}` },
+            el("span", { class: "ticket-kicker", text: "PR1ME SUPPORT" }),
+            el("strong", { text: panelTitle }),
+            el("small", { text: panelDescription }),
+            el("div", { class: "ticket-panel-category-list" }, (panel.categories || []).slice(0, 4).map((item) =>
+              el("span", {}, ticketEmojiNode(item.emoji || "🎫"), item.label || "قسم دعم"),
+            )),
+          );
+          const actions = [
+            el("button", { class: "ticket-inline-action", type: "button", text: "تحرير", onClick: () => { state.ticketCategories = (panel.categories || []).map((item) => ({ ...item })); state.ticketTab = "builder"; renderPage(); } }),
+            isDraft
+              ? el("button", { class: "ticket-inline-action publish", type: "button", text: "نشر", onClick: () => publishPanel(panel) })
+              : null,
+            el("button", { class: "ticket-inline-action", type: "button", text: "نسخ", onClick: () => duplicatePanel(panel) }),
+            el("button", { class: "ticket-inline-action", type: "button", text: "JSON", onClick: () => exportPanel(panel) }),
+            el("button", { class: "ticket-inline-action danger", type: "button", text: "حذف", onClick: () => removePanel(panel) }),
+          ];
+          return [
+            el("div", { class: "ticket-panel-tile-top" },
+              el("span", { class: `ticket-panel-status ${isDraft ? "draft" : ""}`, text: isDraft ? "○ مسودة" : "● منشورة" }),
+              el("small", { text: `v${panel.version || 1} · ${isDraft ? "بدون رسالة" : `#${panel.message_id}`}` }),
+            ),
+            preview,
+            el("div", { class: "ticket-panel-tile-meta" },
+              el("span", { text: `#${window.guildChannels?.[panel.channel_id] || panel.channel_id}` }),
+              el("span", { text: `${panel.mode === "buttons" ? "أزرار" : "Dropdown"} · ${(panel.categories || []).length} أقسام` }),
+            ),
+            el("div", { class: "ticket-tile-actions" }, actions),
+          ];
+        })(),
       ));
       if (!cards.length) cards.push(el("div", { class: "ticket-next-empty", text: "لم تنشر أي لوحة بعد. أنشئ أول لوحة من المحرر المرئي." }));
       return el("div", { class: "ticket-next-content" },
@@ -3953,13 +4129,16 @@
     }
     let body;
     if (state.ticketTab === "panels") body = panelsView();
+    else if (state.ticketTab === "tickets") body = ticketsListView();
+    else if (state.ticketTab === "archive") body = archiveView();
+    else if (state.ticketTab === "ratings") body = ratingsView();
     else if (state.ticketTab === "builder") body = builderView(false);
     else if (state.ticketTab === "sections") body = builderView(true);
     else if (state.ticketTab === "settings") body = settingsView();
     else if (state.ticketTab === "permissions") body = permissionsView();
     else body = overviewView();
     const tabs = el("nav", { class: "ticket-next-tabs", "aria-label": "وحدات مركز التذاكر" },
-      tab("overview", "نظرة عامة", "◈"), tab("panels", "البانلات", "▦"), tab("builder", "محرر البانل", "✦"), tab("sections", "باني الأقسام", "☷"), tab("settings", "الإعدادات", "⚙"), tab("permissions", "الصلاحيات", "⌘"),
+      tab("overview", "نظرة عامة", "◈"), tab("panels", "البانلات", "▦"), tab("tickets", "التذاكر", "▤"), tab("archive", "الأرشيف", "◫"), tab("ratings", "التقييمات", "★"), tab("settings", "الإعدادات", "⚙"), tab("builder", "محرر البانل", "✦"), tab("sections", "باني الأقسام", "☷"), tab("permissions", "الصلاحيات", "⌘"),
     );
     return el("section", { id: "view-tickets", class: "tickets-view tickets-nextgen" },
       el("header", { class: "ticket-next-hero" },
