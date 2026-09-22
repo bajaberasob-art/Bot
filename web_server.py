@@ -2334,7 +2334,13 @@ def _ticket_role_ids(guild, categories):
         normalized = dict(raw)
         normalized["role_id"] = str(role_ids[0]) if role_ids else None
         normalized["description"] = str(raw.get("description") or "").strip()[:100]
-        normalized["emoji"] = str(raw.get("emoji") or "🎫").strip()[:100]
+        emoji = str(raw.get("emoji") or "🎫").strip()
+        if not emoji or len(emoji) > 100:
+            return None, f"إيموجي التصنيف رقم {index + 1} غير صالح"
+        custom_emoji = re.fullmatch(r"<a?:[A-Za-z0-9_]+:(\d+)>", emoji)
+        if custom_emoji and guild.get_emoji(int(custom_emoji.group(1))) is None:
+            return None, f"إيموجي التصنيف رقم {index + 1} غير موجود في السيرفر"
+        normalized["emoji"] = emoji
         normalized["welcome_msg"] = str(raw.get("welcome_msg") or "").strip()[:2000]
         normalized["intake_fields"] = clean_fields
         clean.append(normalized)
