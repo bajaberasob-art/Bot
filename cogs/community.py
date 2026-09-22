@@ -1644,6 +1644,22 @@ class Community(commands.Cog):
             )
         )
 
+    async def _ticket_action_allowed(self, member, ticket: dict, action: str | None) -> bool:
+        """Apply the optional CRM matrix without removing legacy staff access."""
+        if not self._is_ticket_staff(member, ticket):
+            return False
+        if not action:
+            return True
+        configured = await get_ticket_permissions(ticket["guild_id"])
+        role_ids = configured.get(str(action))
+        # An omitted/empty action preserves the legacy support-role policy.
+        if not role_ids:
+            return True
+        permissions = getattr(member, "guild_permissions", None)
+        if permissions and getattr(permissions, "administrator", False):
+            return True
+        return bool({str(role.id) for role in getattr(member, "roles", [])}.intersection(role_ids))
+
     async def _ticket_denied(self, itx: discord.Interaction):
         message = "⛔ هذا الإجراء متاح لفريق الدعم والإدارة فقط."
         if itx.response.is_done():
