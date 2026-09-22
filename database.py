@@ -921,12 +921,64 @@ async def init_db() -> None:
                     UNIQUE (guild_id, name)
                 );
             """)
+            async with db.execute("PRAGMA table_info(ticket_categories)") as cur:
+                ticket_category_columns = {row[1] for row in await cur.fetchall()}
+            ticket_category_migrations = {
+                "panel_id": "INTEGER DEFAULT NULL",
+                "label": "TEXT NOT NULL DEFAULT ''",
+                "button_color": "TEXT NOT NULL DEFAULT 'primary'",
+                "naming_format": "TEXT NOT NULL DEFAULT 'ticket-{count}'",
+                "closed_naming_format": "TEXT NOT NULL DEFAULT 'closed-{count}'",
+                "open_category_id": "INTEGER DEFAULT NULL",
+                "closed_category_id": "INTEGER DEFAULT NULL",
+                "welcome_message": "TEXT NOT NULL DEFAULT ''",
+                "max_open_per_user": "INTEGER NOT NULL DEFAULT 1",
+                "auto_close_hours": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for column, definition in ticket_category_migrations.items():
+                if column not in ticket_category_columns:
+                    await db.execute(
+                        f"ALTER TABLE ticket_categories ADD COLUMN {column} {definition}"
+                    )
+            # Keep the old name/welcome_msg contract readable while populating
+            # the additive CRM vocabulary for upgraded installations.
+            await db.execute(
+                "UPDATE ticket_categories SET label = name "
+                "WHERE label IS NULL OR label = ''"
+            )
+            await db.execute(
+                "UPDATE ticket_categories SET welcome_message = welcome_msg "
+                "WHERE (welcome_message IS NULL OR welcome_message = '') "
+                "AND welcome_msg IS NOT NULL AND welcome_msg != ''"
+            )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS ticket_settings (
                     guild_id INTEGER PRIMARY KEY,
                     log_channel_id INTEGER DEFAULT NULL,
                     evaluation_channel_id INTEGER DEFAULT NULL,
                     allow_user_close INTEGER NOT NULL DEFAULT 0,
+                    send_transcript_dm INTEGER NOT NULL DEFAULT 1,
+                    default_open_category_id INTEGER DEFAULT NULL,
+                    closed_category_id INTEGER DEFAULT NULL,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            async with db.execute("PRAGMA table_info(ticket_settings)") as cur:
+                ticket_setting_columns = {row[1] for row in await cur.fetchall()}
+            for column, definition in {
+                "send_transcript_dm": "INTEGER NOT NULL DEFAULT 1",
+                "default_open_category_id": "INTEGER DEFAULT NULL",
+                "closed_category_id": "INTEGER DEFAULT NULL",
+                "updated_at": "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            }.items():
+                if column not in ticket_setting_columns:
+                    await db.execute(
+                        f"ALTER TABLE ticket_settings ADD COLUMN {column} {definition}"
+                    )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_permissions (
+                    guild_id INTEGER PRIMARY KEY,
+                    permissions TEXT NOT NULL DEFAULT '{}',
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
             """)
@@ -1010,6 +1062,16 @@ async def init_db() -> None:
                     UNIQUE (guild_id, user_id)
                 );
             """)
+            async with db.execute("PRAGMA table_info(ticket_blacklist)") as cur:
+                ticket_blacklist_columns = {row[1] for row in await cur.fetchall()}
+            if "expiration" not in ticket_blacklist_columns:
+                await db.execute(
+                    "ALTER TABLE ticket_blacklist ADD COLUMN expiration DATETIME DEFAULT NULL"
+                )
+            await db.execute(
+                "UPDATE ticket_blacklist SET expiration = expires_at "
+                "WHERE expiration IS NULL AND expires_at IS NOT NULL"
+            )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ticket_blacklist_lookup "
                 "ON ticket_blacklist(guild_id, user_id, expires_at);"
