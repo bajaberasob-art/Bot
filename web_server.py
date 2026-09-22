@@ -3149,6 +3149,101 @@ def _ticket_panel_payload(body: dict, existing: dict | None = None) -> tuple[dic
     }, None
 
 
+TICKET_PERMISSION_ACTIONS = (
+    "claim", "close", "rename", "priority", "transfer", "add_member",
+    "remove_member", "private_ticket", "summon", "tag", "note", "reopen",
+)
+
+
+def _ticket_role_list(guild, value, field_name: str):
+    if value is None:
+        return [], None
+    if not isinstance(value, list) or len(value) > 100:
+        return None, f"{field_name} غير صالح"
+    result = []
+    for raw in value:
+        role_id, error = _dashboard_snowflake(raw, field_name)
+        if error or role_id is None:
+            return None, error or f"{field_name} غير صالح"
+        role = guild.get_role(role_id)
+        if role is None or role.is_default():
+            return None, f"{field_name} يحتوي رتبة غير موجودة"
+        result.append(str(role_id))
+    return list(dict.fromkeys(result)), None
+
+
+def _ticket_category_payload_for_guild(guild, raw: dict):
+    if not isinstance(raw, dict):
+        return None, {"category": "بيانات التصنيف غير صالحة"}
+    label = str(raw.get("label") or raw.get("name") or "").strip()
+    if not label or len(label) > 100:
+        return None, {"label": "اسم التصنيف يجب أن يكون بين 1 و100 حرف"}
+    name = str(raw.get("name") or raw.get("key") or label).strip()
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", name).strip("-_")[:100] or f"ticket-{label[:20]}"
+    description = str(raw.get("description") or "").strip()[:100]
+    welcome = str(raw.get("welcome_message", raw.get("welcome_msg", "")) or "").strip()[:2000]
+    emoji = str(raw.get("emoji") or "🎫").strip()[:100]
+    role_fields = (
+        ("ping_role_ids", "رتب التنبيه"),
+        ("staff_role_ids", "رتب الدعم"),
+    )
+    cleaned = {}
+    for key, field_name in role_fields:
+        value, error = _ticket_role_list(guild, raw.get(key, []), field_name)
+        if error:
+            return None, {key: error}
+        cleaned[key] = value
+    # Legacy category payloads use support_role_ids/role_id for staff access.
+    if not cleaned["staff_role_ids"]:
+        legacy_roles = raw.get("support_role_ids", [])
+        if not legacy_roles and raw.get("role_id") not in (None, ""):
+            legacy_roles = [raw.get("role_id")]
+        value, error = _ticket_role_list(guild, legacy_roles, "رتب الدعم")
+        if error:
+            return None, {"staff_role_ids": error}
+        cleaned["staff_role_ids"] = value
+    ids = {}
+    for key, field_name, expected_type in (
+        ("panel_id", "معرف اللوحة", None),
+        ("open_category_id", "فئة القنوات المفتوحة", discord.CategoryChannel),
+        ("closed_category_id", "فئة القنوات المغلقة", discord.CategoryChannel),
+        ("category_id", "الفئة الأب", discord.CategoryChannel),
+    ):
+        if key not in raw or raw[key] in (None, ""):
+            ids[key] = None
+            continue
+        value, error = _dashboard_snowflake(raw[key], field_name)
+        if error:
+            return None, {key: error}
+        channel = guild.get_channel(value)
+        if expected_type and not isinstance(channel, expected_type):
+            return None, {key: f"{field_name} غير موجودة"}
+        ids[key] = value
+    try:
+        max_open = max(1, min(20, int(raw.get("max_open_per_user", 1))))
+        auto_close = max(0, min(8760, int(raw.get("auto_close_hours", 0))))
+    except (TypeError, ValueError):
+        return None, {"limits": "حدود التصنيف غير صالحة"}
+    return {
+        "panel_id": ids["panel_id"],
+        "name": name,
+        "label": label,
+        "ping_role_ids": cleaned["ping_role_ids"],
+        "staff_role_ids": cleaned["staff_role_ids"],
+        "description": description,
+        "emoji": emoji,
+        "button_color": str(raw.get("button_color") or "#5865F2")[:20],
+        "naming_format": str(raw.get("naming_format") or "ticket-{id}")[:100],
+        "closed_naming_format": str(raw.get("closed_naming_format") or "closed-{id}")[:100],
+        "open_category_id": ids["open_category_id"],
+        "closed_category_id": ids["closed_category_id"],
+        "category_id": ids["category_id"],
+        "welcome_message": welcome,
+        "max_open_per_user": max_open,
+        "auto_close_hours": auto_close,
+    }, None
+
+
 @routes.post('/api/guilds/{guild_id}/tickets/panels')
 async def api_guilds_tickets_panels_save(req):
     _, guild = await authorize(req, write=True)
@@ -3240,6 +3335,177 @@ async def api_guilds_tickets_panel_publish(req):
 async def api_guild_tickets_settings_get(req):
     _, guild = await authorize(req)
     return web.json_response({"config": await get_ticket_config(guild.id) or {}})
+
+
+async def _ticket_settings_response(guild):
+    legacy = await get_ticket_config(guild.id) or {}
+    settings = await get_ticket_settings(guild.id)
+    permissions = await get_ticket_permissions(guild.id)
+    merged = {**legacy, **settings, "permissions": permissions, "permissions_json": permissions}
+    return {
+        "config": merged,
+        "settings": settings,
+        "permissions": permissions,
+    }
+
+
+@routes.get('/api/guilds/{guild_id}/tickets/settings')
+async def api_guilds_tickets_settings_get(req):
+    _, guild = await authorize(req)
+    return web.json_response(await _ticket_settings_response(guild))
+
+
+@routes.post('/api/guilds/{guild_id}/tickets/settings')
+async def api_guilds_tickets_settings_save(req):
+    session, guild = await authorize(req, write=True)
+    try:
+        body = await read_json_body(req)
+    except (json.JSONDecodeError, ValueError):
+        return json_error(400, "invalid_json")
+    if not isinstance(body, dict):
+        return json_error(400, "validation", fields={"_": "صيغة الطلب غير صالحة"})
+
+    channel_fields = ("log_channel_id", "evaluation_channel_id", "default_open_category_id", "closed_category_id")
+    settings_kwargs = {}
+    legacy_kwargs = {}
+    for field in channel_fields:
+        if field not in body:
+            continue
+        value, error = _dashboard_snowflake(body.get(field), field)
+        if error:
+            return json_error(400, "validation", fields={field: error})
+        if value is not None and field in {"default_open_category_id", "closed_category_id"}:
+            if not isinstance(guild.get_channel(value), discord.CategoryChannel):
+                return json_error(400, "validation", fields={field: "الفئة غير موجودة"})
+        elif value is not None and not isinstance(guild.get_channel(value), MESSAGE_CHANNEL_TYPES):
+            return json_error(400, "validation", fields={field: "القناة غير موجودة"})
+        settings_kwargs[field] = value
+        legacy_kwargs[field] = value
+
+    for field in ("allow_user_close", "send_transcript_dm"):
+        if field in body:
+            settings_kwargs[field] = bool(body[field])
+            legacy_kwargs[field] = bool(body[field])
+    if "auto_close_minutes" in body:
+        try:
+            value = max(0, min(10080, int(body["auto_close_minutes"])))
+        except (TypeError, ValueError):
+            return json_error(400, "validation", fields={"auto_close_minutes": "قيمة المهلة غير صالحة"})
+        legacy_kwargs["auto_close_minutes"] = value
+    if "open_limit" in body:
+        try:
+            value = max(1, min(20, int(body["open_limit"])))
+        except (TypeError, ValueError):
+            return json_error(400, "validation", fields={"open_limit": "حد التذاكر غير صالح"})
+        legacy_kwargs["open_limit"] = value
+    for field in ("panel_mode", "select_placeholder", "close_config"):
+        if field in body:
+            legacy_kwargs[field] = body[field]
+    if "panel_mode" in legacy_kwargs and legacy_kwargs["panel_mode"] not in {"dropdown", "buttons"}:
+        return json_error(400, "validation", fields={"panel_mode": "نمط اللوحة غير صالح"})
+    if "close_config" in legacy_kwargs and not isinstance(legacy_kwargs["close_config"], dict):
+        return json_error(400, "validation", fields={"close_config": "إعدادات الإغلاق غير صالحة"})
+
+    try:
+        settings = await save_ticket_settings(guild.id, **settings_kwargs) if settings_kwargs else await get_ticket_settings(guild.id)
+        if legacy_kwargs:
+            await update_ticket_control_config(guild.id, **legacy_kwargs)
+        if "permissions" in body:
+            if not isinstance(body["permissions"], dict):
+                return json_error(400, "validation", fields={"permissions": "مصفوفة الصلاحيات غير صالحة"})
+            permissions = await save_ticket_permissions(guild.id, body["permissions"])
+            await update_ticket_control_config(guild.id, permissions=permissions)
+        response = await _ticket_settings_response(guild)
+        logger.info("Ticket CRM settings saved in guild %s by user %s", guild.id, session["id"])
+        return web.json_response(response)
+    except (TypeError, ValueError):
+        return json_error(400, "validation", fields={"settings": "قيمة إعداد غير صالحة"})
+
+
+@routes.get('/api/guilds/{guild_id}/tickets/permissions')
+async def api_guilds_tickets_permissions_get(req):
+    _, guild = await authorize(req)
+    permissions = await get_ticket_permissions(guild.id)
+    return web.json_response({"permissions": permissions, "actions": list(TICKET_PERMISSION_ACTIONS)})
+
+
+@routes.post('/api/guilds/{guild_id}/tickets/permissions')
+async def api_guilds_tickets_permissions_save(req):
+    session, guild = await authorize(req, write=True)
+    try:
+        body = await read_json_body(req)
+    except (json.JSONDecodeError, ValueError):
+        return json_error(400, "invalid_json")
+    permissions = body.get("permissions", body) if isinstance(body, dict) else None
+    if not isinstance(permissions, dict):
+        return json_error(400, "validation", fields={"permissions": "مصفوفة الصلاحيات غير صالحة"})
+    for action, role_ids in permissions.items():
+        if action not in TICKET_PERMISSION_ACTIONS:
+            return json_error(400, "validation", fields={"permissions": f"الإجراء غير مدعوم: {action}"})
+        _, error = _ticket_role_list(guild, role_ids, f"رتب {action}")
+        if error:
+            return json_error(400, "validation", fields={"permissions": error})
+    saved = await save_ticket_permissions(guild.id, permissions)
+    # Mirror into legacy config so older cogs continue to read the same policy.
+    await update_ticket_control_config(guild.id, permissions=saved)
+    logger.info("Ticket CRM permissions saved in guild %s by user %s", guild.id, session["id"])
+    return web.json_response({"permissions": saved, "actions": list(TICKET_PERMISSION_ACTIONS)})
+
+
+@routes.get('/api/guilds/{guild_id}/tickets/categories')
+async def api_guilds_tickets_categories_get(req):
+    _, guild = await authorize(req)
+    categories = await get_ticket_categories(guild.id)
+    if not categories:
+        categories = normalize_ticket_categories(await get_ticket_options(guild.id))
+    return web.json_response({"categories": categories})
+
+
+@routes.post('/api/guilds/{guild_id}/tickets/categories')
+async def api_guilds_tickets_categories_save(req):
+    _, guild = await authorize(req, write=True)
+    try:
+        body = await read_json_body(req)
+    except (json.JSONDecodeError, ValueError):
+        return json_error(400, "invalid_json")
+    raw_categories = body.get("categories") if isinstance(body, dict) else None
+    if raw_categories is None:
+        raw_categories = [body]
+    if not isinstance(raw_categories, list) or not 1 <= len(raw_categories) <= 25:
+        return json_error(400, "validation", fields={"categories": "أضف من 1 إلى 25 تصنيفاً"})
+    saved = []
+    for raw in raw_categories:
+        payload, error = _ticket_category_payload_for_guild(guild, raw)
+        if error:
+            return json_error(400, "validation", fields=error)
+        try:
+            category_id = int(raw["id"]) if raw.get("id") not in (None, "") else None
+        except (TypeError, ValueError):
+            return json_error(400, "validation", fields={"id": "معرف التصنيف غير صالح"})
+        if category_id is not None:
+            existing = next((item for item in await get_ticket_categories(guild.id) if int(item["id"]) == category_id), None)
+            if not existing:
+                return json_error(404, "ticket_category_not_found")
+        try:
+            saved.append(await save_ticket_category(guild.id, payload, category_id))
+        except LookupError:
+            return json_error(404, "ticket_category_not_found")
+    return web.json_response({"categories": saved})
+
+
+@routes.delete('/api/guilds/{guild_id}/tickets/categories/{category_id}')
+async def api_guilds_tickets_category_delete(req):
+    _, guild = await authorize(req, write=True)
+    try:
+        category_id = int(req.match_info["category_id"])
+    except (TypeError, ValueError):
+        return json_error(400, "validation", fields={"category_id": "معرف التصنيف غير صالح"})
+    result = await delete_ticket_category(guild.id, category_id)
+    if not result.get("found"):
+        return json_error(404, "ticket_category_not_found")
+    if result.get("in_use"):
+        return json_error(409, "ticket_category_in_use", details=result)
+    return web.json_response(result)
 
 
 @routes.post('/api/guild/{guild_id}/tickets/settings')
