@@ -3570,12 +3570,14 @@ async def api_guild_tickets_settings_save(req):
     return web.json_response({"config": config})
 
 
+@routes.get('/api/guilds/{guild_id}/tickets/blacklist')
 @routes.get('/api/guild/{guild_id}/tickets/blacklist')
 async def api_guild_tickets_blacklist_get(req):
     _, guild = await authorize(req)
     return web.json_response({"entries": await get_ticket_blacklist(guild.id)})
 
 
+@routes.post('/api/guilds/{guild_id}/tickets/blacklist')
 @routes.post('/api/guild/{guild_id}/tickets/blacklist')
 async def api_guild_tickets_blacklist_save(req):
     session, guild = await authorize(req, write=True)
@@ -3591,16 +3593,21 @@ async def api_guild_tickets_blacklist_save(req):
     member = guild.get_member(user_id)
     if member is None:
         return json_error(400, "validation", fields={"user_id": "العضو غير موجود في السيرفر"})
+    expiration = body.get("expiration")
+    if expiration is not None and not isinstance(expiration, str):
+        return json_error(400, "validation", fields={"expiration": "تاريخ الانتهاء غير صالح"})
     entry = await save_ticket_blacklist(
         guild.id,
         user_id,
         reason=str(body.get("reason") or ""),
         duration_days=duration_days,
+        expiration=expiration.strip()[:40] if isinstance(expiration, str) and expiration.strip() else None,
         created_by=int(session["id"]),
     )
     return web.json_response({"entry": entry})
 
 
+@routes.delete('/api/guilds/{guild_id}/tickets/blacklist/{user_id}')
 @routes.delete('/api/guild/{guild_id}/tickets/blacklist/{user_id}')
 async def api_guild_tickets_blacklist_delete(req):
     _, guild = await authorize(req, write=True)
