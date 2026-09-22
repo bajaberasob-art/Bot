@@ -1641,11 +1641,15 @@ class Community(commands.Cog):
                 value=str(category["welcome_msg"])[:1024],
                 inline=False,
             )
+        ping_role_ids = category.get("ping_role_ids") or category.get("support_role_ids") or []
+        ping_mentions = " ".join(
+            f"<@&{role_id}>" for role_id in ping_role_ids if str(role_id).isdigit()
+        )
         message = await channel.send(
-            content=itx.user.mention,
+            content=ping_mentions or itx.user.mention,
             embed=embed,
-            view=TicketControlView(),
-            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            view=StreamlinedTicketControlsView(),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
         )
         try:
             await message.pin()
@@ -1743,6 +1747,21 @@ class Community(commands.Cog):
         await itx.channel.edit(
             topic=f"Ticket • {ticket['category_label']} • مستلمة بواسطة {itx.user.display_name}"
         )
+        await save_ticket_log(
+            ticket["id"],
+            ticket["guild_id"],
+            "claimed",
+            staff_id=itx.user.id,
+            metadata={"claimed_by": itx.user.id},
+        )
+        await send_ticket_action_embed(
+            itx.channel,
+            "✋ تم استلام التذكرة",
+            f"تم استلام التذكرة **#{ticket['id']}** حصرياً بواسطة {itx.user.mention}.",
+            0x10B981,
+            itx.user,
+            extra_field=("الحالة", "قيد المعالجة"),
+        )
         await itx.response.send_message("✅ تم استلام التذكرة حصرياً لك.", ephemeral=True)
 
     async def _resolve_ticket_member(self, guild, raw_value: str):
@@ -1792,6 +1811,18 @@ class Community(commands.Cog):
                     attach_files=True,
                 ),
             )
+            await save_ticket_log(
+                ticket["id"], ticket["guild_id"], "member_added",
+                staff_id=itx.user.id, target_user_id=member.id,
+            )
+            await send_ticket_action_embed(
+                itx.channel,
+                "➕ تمت إضافة عضو",
+                f"تم منح {member.mention} صلاحية الوصول إلى التذكرة.",
+                0x10B981,
+                itx.user,
+                target_user=member,
+            )
             return await itx.response.send_message(
                 f"✅ تمت إضافة {member.mention} إلى التذكرة.",
                 ephemeral=True,
@@ -1820,6 +1851,18 @@ class Community(commands.Cog):
                 )
             else:
                 await itx.channel.set_permissions(member, overwrite=None)
+            await save_ticket_log(
+                ticket["id"], ticket["guild_id"], "member_removed",
+                staff_id=itx.user.id, target_user_id=member.id,
+            )
+            await send_ticket_action_embed(
+                itx.channel,
+                "➖ تمت إزالة عضو",
+                f"تمت إزالة {member.mention} من صلاحيات التذكرة.",
+                0xEF4444,
+                itx.user,
+                target_user=member,
+            )
             return await itx.response.send_message(
                 f"✅ تمت إزالة {member.mention} من التذكرة.",
                 ephemeral=True,
@@ -1868,6 +1911,18 @@ class Community(commands.Cog):
             await itx.channel.set_permissions(member, overwrite=target_overwrite)
             await itx.channel.edit(
                 topic=f"Ticket • {ticket['category_label']} • مستلمة بواسطة {member.display_name}"
+            )
+            await save_ticket_log(
+                ticket["id"], ticket["guild_id"], "transferred",
+                staff_id=itx.user.id, target_user_id=member.id,
+            )
+            await send_ticket_action_embed(
+                itx.channel,
+                "🔄 تم تحويل التذكرة",
+                f"تم تحويل التذكرة إلى {member.mention}.",
+                0x6366F1,
+                itx.user,
+                target_user=member,
             )
             return await itx.response.send_message(
                 f"🔁 تم تحويل التذكرة إلى {member.mention}.",
