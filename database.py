@@ -4470,7 +4470,7 @@ async def get_ticket_dashboard_analytics(guild_id: int) -> dict[str, Any]:
             priorities = [dict(row) for row in await cur.fetchall()]
         async with db.execute(
             """
-            SELECT rating, COUNT(*) AS count
+            SELECT stars AS rating, COUNT(*) AS count
             FROM ticket_ratings
             WHERE guild_id = ?
             GROUP BY rating ORDER BY rating
@@ -4483,7 +4483,7 @@ async def get_ticket_dashboard_analytics(guild_id: int) -> dict[str, Any]:
             SELECT
                 COALESCE(t.closed_by, t.claimed_by) AS staff_id,
                 COUNT(*) AS resolved,
-                AVG(r.rating) AS avg_rating
+            AVG(r.stars) AS avg_rating
             FROM tickets t
             LEFT JOIN ticket_ratings r ON r.ticket_id = t.id
             WHERE t.guild_id = ?
@@ -4501,7 +4501,7 @@ async def get_ticket_dashboard_analytics(guild_id: int) -> dict[str, Any]:
             SELECT
                 t.id, t.subject, t.category_label, t.status, t.priority,
                 t.user_id, t.claimed_by, t.opened_at, t.closed_at,
-                r.rating
+                r.stars AS rating
             FROM tickets t
             LEFT JOIN ticket_ratings r ON r.ticket_id = t.id
             WHERE t.guild_id = ?
