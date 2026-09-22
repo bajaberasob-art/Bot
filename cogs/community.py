@@ -1300,6 +1300,50 @@ class Community(commands.Cog):
     async def get_ticket(self, guild_id: int, ticket_id: int) -> dict | None:
         return await get_ticket(guild_id, ticket_id)
 
+    async def publish_ticket_evaluation(
+        self,
+        ticket_id: int,
+        guild_id: int,
+        stars: int,
+        feedback: str,
+    ):
+        ticket = await get_ticket(guild_id, ticket_id)
+        config = await get_ticket_config(guild_id) or {}
+        channel_id = config.get("evaluation_channel_id")
+        channel = self.bot.get_channel(int(channel_id)) if channel_id else None
+        if channel is None or ticket is None:
+            return
+        guild = self.bot.get_guild(int(guild_id))
+        user = guild.get_member(int(ticket["user_id"])) if guild else None
+        staff = guild.get_member(int(ticket["closed_by"])) if guild and ticket.get("closed_by") else None
+        embed = discord.Embed(
+            title="⭐ تقييم جديد لخدمة التذاكر",
+            description=f"تم استلام تقييم للتذكرة **#{ticket_id}**.",
+            color=0xF59E0B,
+            timestamp=discord.utils.utcnow(),
+        )
+        if user:
+            avatar = getattr(getattr(user, "display_avatar", None), "url", None)
+            if avatar:
+                embed.set_author(name=user.display_name, icon_url=str(avatar))
+        embed.add_field(
+            name="العضو",
+            value=getattr(user, "mention", f"<@{ticket['user_id']}>"),
+            inline=True,
+        )
+        embed.add_field(
+            name="المشرف",
+            value=getattr(staff, "mention", f"<@{ticket.get('closed_by') or 0}>"),
+            inline=True,
+        )
+        embed.add_field(name="التقييم", value=f"{'⭐' * int(stars)} ({int(stars)}/5)", inline=True)
+        embed.add_field(name="الملاحظات", value=str(feedback or "بدون ملاحظات")[:1024], inline=False)
+        embed.set_footer(text=f"PR1ME Ticket Engine • ticket:{ticket_id}")
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.info("Could not publish ticket evaluation for %s", ticket_id)
+
     async def save_canned_response(
         self,
         guild_id: int,
@@ -1429,6 +1473,76 @@ class Community(commands.Cog):
         self, guild_id: int, ticket_id: int, priority: str
     ) -> dict | None:
         return await set_ticket_priority(guild_id, ticket_id, priority)
+
+    async def set_ticket_priority_from_interaction(
+        self,
+        itx: discord.Interaction,
+        priority: str,
+    ):
+        ticket = await get_ticket_by_channel(itx.channel.id)
+        if not ticket or ticket["status"] == "closed":
+            return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
+        if not self._is_ticket_staff(itx.user, ticket):
+            return await self._ticket_denied(itx)
+        if priority not in TICKET_PRIORITIES:
+            return await itx.response.send_message("الأولوية غير صالحة.", ephemeral=True)
+        updated = await set_ticket_priority(itx.guild.id, ticket["id"], priority)
+        if not updated:
+            return await itx.response.send_message("تعذر تحديث الأولوية.", ephemeral=True)
+        await itx.channel.edit(
+            topic=f"Ticket • {updated['category_label']} • {priority.upper()}"
+        )
+        color = {"normal": 0xF59E0B, "high": 0xF59E0B, "management": 0xEF4444}[priority]
+        label = {"normal": "عادية", "high": "مرتفعة", "management": "عاجلة"}[priority]
+        await save_ticket_log(
+            updated["id"], updated["guild_id"], "priority_changed",
+            staff_id=itx.user.id, metadata={"priority": priority},
+        )
+        await send_ticket_action_embed(
+            itx.channel,
+            "🚨 تغيرت أولوية التذكرة",
+            f"تم ضبط أولوية التذكرة **#{updated['id']}** إلى **{label}**.",
+            color,
+            itx.user,
+            extra_field=("الأولوية", label),
+        )
+        await itx.response.send_message(f"تم تحديث الأولوية إلى **{label}**.", ephemeral=True)
+
+    async def transfer_ticket_category_from_interaction(
+        self,
+        itx: discord.Interaction,
+        category: dict,
+    ):
+        ticket = await get_ticket_by_channel(itx.channel.id)
+        if not ticket or ticket["status"] == "closed":
+            return await itx.response.send_message("هذه التذكرة مغلقة.", ephemeral=True)
+        if not self._is_ticket_staff(itx.user, ticket):
+            return await self._ticket_denied(itx)
+        parent = None
+        if category.get("category_id"):
+            parent = itx.guild.get_channel(int(category["category_id"]))
+            if not isinstance(parent, discord.CategoryChannel):
+                parent = None
+        try:
+            await itx.channel.edit(
+                category=parent,
+                topic=f"Ticket • {category['label']} • transferred",
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return await itx.response.send_message("تعذر نقل قناة التذكرة إلى القسم المحدد.", ephemeral=True)
+        await save_ticket_log(
+            ticket["id"], ticket["guild_id"], "category_transferred",
+            staff_id=itx.user.id, metadata={"category": category.get("key"), "label": category.get("label")},
+        )
+        await send_ticket_action_embed(
+            itx.channel,
+            "🔄 تم تحويل قسم التذكرة",
+            f"تم نقل التذكرة إلى قسم **{category['label']}**.",
+            0x6366F1,
+            itx.user,
+            extra_field=("القسم", category["label"]),
+        )
+        await itx.response.send_message("تم نقل التذكرة إلى القسم الجديد.", ephemeral=True)
 
     async def set_ticket_status(
         self, guild_id: int, ticket_id: int, status: str, staff_id: int | None = None
