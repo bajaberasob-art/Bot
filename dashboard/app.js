@@ -3748,21 +3748,56 @@
     const permissionsView = () => {
       const permissionDefaults = currentPermissions(config.permissions_json || config.permissions || {});
       const permissionRows = [
-        ["open", "فتح التذاكر"], ["claim", "استلام التذكرة"], ["close", "إغلاق وأرشفة"], ["reassign", "إعادة الإسناد"], ["manage", "تعديل الإعدادات"],
+        ["open", "فتح التذاكر"],
+        ["claim", "استلام التذكرة"],
+        ["close", "إغلاق وأرشفة"],
+        ["reassign", "إعادة الإسناد"],
+        ["manage", "تعديل الإعدادات"],
       ];
-      const matrix = el("div", { class: "ticket-permission-matrix" },
-        el("div", { class: "ticket-permission-row head" }, el("strong", { text: "السلوك" }), ...roles.slice(0, 8).map((role) => el("span", { text: `@${role.name}` }))),
-        ...permissionRows.map(([key, label]) => el("div", { class: "ticket-permission-row" }, el("strong", { text: label }), ...roles.slice(0, 8).map((role) => el("label", {}, el("input", { type: "checkbox", value: String(role.id), "data-permission-key": key, checked: (permissionDefaults[key] || []).map(String).includes(String(role.id)) }), el("span", { text: "●" }))))),
-      );
+      const matrix = el("div", { class: "ticket-permission-matrix" });
+      const header = el("div", { class: "ticket-permission-row head" });
+      header.append(el("strong", { text: "السلوك" }));
+      roles.slice(0, 8).forEach((role) => header.append(el("span", { text: `@${role.name}` })));
+      matrix.append(header);
+      permissionRows.forEach(([key, label]) => {
+        const row = el("div", { class: "ticket-permission-row" });
+        row.append(el("strong", { text: label }));
+        roles.slice(0, 8).forEach((role) => {
+          const input = el("input", {
+            type: "checkbox",
+            value: String(role.id),
+            "data-permission-key": key,
+            checked: (permissionDefaults[key] || []).map(String).includes(String(role.id)),
+          });
+          row.append(el("label", {}, input, el("span", { text: "●" })));
+        });
+        matrix.append(row);
+      });
+      const save = el("button", {
+        class: "ticket-add-button",
+        type: "button",
+        text: "حفظ مصفوفة الصلاحيات",
+        onClick: () => {
+          const permissions = {};
+          matrix.querySelectorAll("[data-permission-key]").forEach((input) => {
+            if (input.checked) (permissions[input.dataset.permissionKey] ||= []).push(input.value);
+          });
+          writeApi(`api/guild/${state.guild.id}/tickets/settings`, { permissions })
+            .then(() => toast("تم حفظ الصلاحيات", "success", 2200));
+        },
+      });
       return el("div", { class: "ticket-next-content" },
-        el("div", { class: "ticket-section-title-row" }, el("div", {}, el("span", { class: "ticket-kicker", text: "PERMISSIONS" }), el("h3", { text: "الصلاحيات وسلوك الإغلاق" }), el("p", { text: "المصفوفة تحفظ الرتب المختارة وتبقى متوافقة مع فحوصات محرك التذاكر." }))),
-        el("section", { class: "ticket-next-card ticket-permissions-card" }, matrix, el("div", { class: "ticket-permissions-actions" }, el("button", { class: "ticket-add-button", type: "button", text: "حفظ مصفوفة الصلاحيات", onClick: () => {
-          const fakeForm = el("form");
-          matrix.querySelectorAll("[data-permission-key]").forEach((input) => fakeForm.append(input.cloneNode(true)));
-          const body = { ...config, permissions: {} };
-          matrix.querySelectorAll("[data-permission-key]").forEach((input) => { if (input.checked) (body.permissions[input.dataset.permissionKey] ||= []).push(input.value); });
-          writeApi(`api/guild/${state.guild.id}/tickets/settings`, { permissions: body.permissions }).then(() => toast("تم حفظ الصلاحيات", "success", 2200));
-        } })),
+        el("div", { class: "ticket-section-title-row" },
+          el("div", {},
+            el("span", { class: "ticket-kicker", text: "PERMISSIONS" }),
+            el("h3", { text: "الصلاحيات وسلوك الإغلاق" }),
+            el("p", { text: "المصفوفة تحفظ الرتب المختارة وتبقى متوافقة مع فحوصات محرك التذاكر." }),
+          ),
+        ),
+        el("section", { class: "ticket-next-card ticket-permissions-card" },
+          matrix,
+          el("div", { class: "ticket-permissions-actions" }, save),
+        ),
       );
     };
     function currentPermissions(value) {
