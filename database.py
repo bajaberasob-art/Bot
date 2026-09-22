@@ -4553,17 +4553,17 @@ async def save_ticket_config(
 async def update_ticket_control_config(
     guild_id: int,
     *,
-    closed_category_id: int | None = None,
-    log_channel_id: int | None = None,
-    evaluation_channel_id: int | None = None,
-    allow_user_close: bool | None = None,
-    send_transcript_dm: bool | None = None,
-    auto_close_minutes: int | None = None,
-    open_limit: int | None = None,
-    panel_mode: str | None = None,
-    select_placeholder: str | None = None,
-    permissions: dict[str, Any] | None = None,
-    close_config: dict[str, Any] | None = None,
+    closed_category_id: int | None | object = _UNSET,
+    log_channel_id: int | None | object = _UNSET,
+    evaluation_channel_id: int | None | object = _UNSET,
+    allow_user_close: bool | None | object = _UNSET,
+    send_transcript_dm: bool | None | object = _UNSET,
+    auto_close_minutes: int | None | object = _UNSET,
+    open_limit: int | None | object = _UNSET,
+    panel_mode: str | None | object = _UNSET,
+    select_placeholder: str | None | object = _UNSET,
+    permissions: dict[str, Any] | None | object = _UNSET,
+    close_config: dict[str, Any] | None | object = _UNSET,
 ) -> dict[str, Any]:
     config = await get_ticket_config(guild_id) or {}
     await save_ticket_config(
@@ -4596,17 +4596,23 @@ async def update_ticket_control_config(
             WHERE guild_id = ?
             """,
             (
-                int(closed_category_id) if closed_category_id is not None else None,
-                int(log_channel_id) if log_channel_id is not None else None,
-                int(evaluation_channel_id) if evaluation_channel_id is not None else None,
-                int(bool(config.get("allow_user_close", False) if allow_user_close is None else allow_user_close)),
-                int(bool(config.get("send_transcript_dm", True) if send_transcript_dm is None else send_transcript_dm)),
-                max(0, min(10080, int(config.get("auto_close_minutes", 0) if auto_close_minutes is None else auto_close_minutes))),
-                max(1, min(20, int(config.get("open_limit", 1) if open_limit is None else open_limit))),
-                "buttons" if (config.get("panel_mode", "dropdown") if panel_mode is None else panel_mode) == "buttons" else "dropdown",
-                str(config.get("select_placeholder") or "اختر القسم المناسب لطلبك" if select_placeholder is None else select_placeholder)[:200],
-                json.dumps(current_permissions if permissions is None else permissions, ensure_ascii=False),
-                json.dumps(current_close_config if close_config is None else close_config, ensure_ascii=False),
+                int(config.get("closed_category_id")) if closed_category_id is _UNSET and config.get("closed_category_id") is not None else (
+                    int(closed_category_id) if closed_category_id is not None else None
+                ),
+                int(config.get("log_channel_id")) if log_channel_id is _UNSET and config.get("log_channel_id") is not None else (
+                    int(log_channel_id) if log_channel_id is not None else None
+                ),
+                int(config.get("evaluation_channel_id")) if evaluation_channel_id is _UNSET and config.get("evaluation_channel_id") is not None else (
+                    int(evaluation_channel_id) if evaluation_channel_id is not None else None
+                ),
+                int(bool(config.get("allow_user_close", False) if allow_user_close is _UNSET or allow_user_close is None else allow_user_close)),
+                int(bool(config.get("send_transcript_dm", True) if send_transcript_dm is _UNSET or send_transcript_dm is None else send_transcript_dm)),
+                max(0, min(10080, int(config.get("auto_close_minutes", 0) if auto_close_minutes is _UNSET or auto_close_minutes is None else auto_close_minutes))),
+                max(1, min(20, int(config.get("open_limit", 1) if open_limit is _UNSET or open_limit is None else open_limit))),
+                "buttons" if (config.get("panel_mode", "dropdown") if panel_mode is _UNSET or panel_mode is None else panel_mode) == "buttons" else "dropdown",
+                str(config.get("select_placeholder") or "اختر القسم المناسب لطلبك" if select_placeholder is _UNSET or select_placeholder is None else select_placeholder)[:200],
+                json.dumps(current_permissions if permissions is _UNSET or permissions is None else permissions, ensure_ascii=False),
+                json.dumps(current_close_config if close_config is _UNSET or close_config is None else close_config, ensure_ascii=False),
                 int(guild_id),
             ),
         )
