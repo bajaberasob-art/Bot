@@ -3605,10 +3605,7 @@
     const removePanel = async (panel) => {
       if (!confirm("حذف هذه اللوحة من Discord؟")) return;
       try {
-        const response = await api(`api/guild/${state.guild.id}/tickets/panels/${panel.message_id}`, {
-          method: "DELETE",
-          headers: { "X-CSRF-Token": state.session.csrf },
-        });
+        const response = await writeApi(`api/guild/${state.guild.id}/tickets/panels/${panel.message_id}`, {});
         if (!response.ok) return toast("تعذر حذف اللوحة");
         state.ticketPanels = state.ticketPanels.filter((item) => String(item.message_id) !== String(panel.message_id));
         toast("تم حذف اللوحة", "success", 2000);
@@ -3616,6 +3613,44 @@
       } catch (error) {
         if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
       }
+    };
+    const publishPanel = async (panel) => {
+      try {
+        const response = await writeApi(`api/guilds/${state.guild.id}/tickets/panels/${panel.id}/publish`, {});
+        const data = await readJson(response, {});
+        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر نشر اللوحة");
+        toast("تم نشر اللوحة في Discord", "success", 2400);
+        await refreshTickets();
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      }
+    };
+    const duplicatePanel = async (panel) => {
+      try {
+        const response = await writeApi(`api/guilds/${state.guild.id}/tickets/panels`, {
+          channel_id: panel.channel_id,
+          title: `${panel.title || "مركز الدعم"} · نسخة`,
+          description: panel.description || "",
+          color: panel.color,
+          mode: panel.mode || "dropdown",
+          categories: panel.categories || [],
+        });
+        const data = await readJson(response, {});
+        if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر نسخ اللوحة");
+        state.ticketPanels.unshift(data.panel);
+        toast("تم إنشاء نسخة مسودة من اللوحة", "success", 2200);
+        renderPage();
+      } catch (error) {
+        if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      }
+    };
+    const exportPanel = (panel) => {
+      const blob = new Blob([JSON.stringify(panel, null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `prime-ticket-panel-${panel.id || panel.message_id}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
     };
     const addBlacklist = async (form) => {
       try {
