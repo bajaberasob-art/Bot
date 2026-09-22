@@ -2285,6 +2285,8 @@ def _ticket_role_ids(guild, categories):
         senior_ids = raw.get("senior_role_ids", [])
         if not isinstance(role_ids, list) or not isinstance(senior_ids, list):
             return None, f"رتب التصنيف رقم {index + 1} غير صالحة"
+        if not role_ids:
+            return None, f"حدد رتبة دعم واحدة على الأقل للتصنيف رقم {index + 1}"
         for role_id in [*role_ids, *senior_ids]:
             try:
                 role = guild.get_role(int(role_id))
@@ -2441,6 +2443,8 @@ def _dropdown_categories(guild, raw_categories):
         role_id, error = _dashboard_snowflake(raw.get("role_id"), "معرف الرتبة")
         if error:
             return None, error
+        if role_id is None:
+            return None, f"حدد رتبة دعم للتصنيف رقم {index + 1}"
         if role_id is not None:
             role = guild.get_role(role_id)
             if role is None or role.is_default():
