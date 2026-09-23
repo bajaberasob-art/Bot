@@ -5365,7 +5365,7 @@
       el("div", { class: "overview-system-matrix" },
         [
           ["التذاكر", state.tickets.active.length > 0, "tickets"],
-          ["المستويات", state.economy.levels.length > 0, "economy"],
+          ["الاقتصاد", Boolean(state.economy.settings), "economy"],
           ["الإدارة", state.online, "settings"],
         ].map(([label, active, view]) => el("div", { class: `system-status-card ${active ? "is-active" : "is-disabled"}` },
           el("span", { text: active ? "●" : "—" }),
@@ -6419,8 +6419,6 @@
       { class: "fields economy-config-form" },
       el("label", {}, el("span", { text: "قناة لوحة المتصدرين" }), channelSelect),
       el("label", {}, el("span", { text: "المكافأة اليومية الأساسية" }), el("input", { name: "daily_base_amount", type: "number", min: "0", max: "1000000", value: String(config.daily_base_amount ?? 200) })),
-      el("label", {}, el("span", { text: "نسبة زيادة المستوى %" }), el("input", { name: "level_multiplier_pct", type: "range", min: "0", max: "500", value: String(config.level_multiplier_pct ?? 10), onInput: (event) => { pctValue.textContent = `${event.target.value}%`; } })),
-      el("span", { class: "economy-slider-value", text: `${config.level_multiplier_pct ?? 10}%` }),
       el("div", { class: "economy-role-multipliers" },
         el("div", { class: "panel-heading" }, el("h3", { text: "مضاعفات الرتب" }), el("small", { text: "اترك القيمة فارغة لإلغاء المضاعف" })),
         ...roles.map((role) => {
@@ -6431,7 +6429,6 @@
       el("label", {}, el("span", { text: "أدوار دعم الاقتصاد" }), supportSelect),
       el("button", { class: "btn primary", type: "submit", text: "حفظ وتثبيت اللوحة 📌" }),
     );
-    const pctValue = form.querySelector(".economy-slider-value");
     form.onsubmit = async (event) => {
       event.preventDefault();
       const multipliers = {};
@@ -6441,7 +6438,6 @@
       const body = {
         leaderboard_channel_id: channelSelect.value,
         daily_base_amount: Number(form.elements.daily_base_amount.value),
-        level_multiplier_pct: Number(form.elements.level_multiplier_pct.value),
         role_multipliers: multipliers,
         economy_support_role_ids: [...supportSelect.selectedOptions].map((option) => option.value),
       };
@@ -6454,10 +6450,8 @@
     const openAdjust = (row) => {
       const back = el("div", { class: "modal-back", role: "dialog", "aria-modal": "true" });
       const wallet = el("input", { name: "wallet_delta", type: "number", placeholder: "مثال: 500 أو -250", value: "0" });
-      const level = el("input", { name: "level_delta", type: "number", placeholder: "مثال: 1 أو -1", value: "0" });
       const edit = el("form", { class: "fields" },
         el("label", {}, el("span", { text: "إضافة/خصم رصيد" }), wallet),
-        el("label", {}, el("span", { text: "تعديل المستوى" }), level),
         el("button", { class: "btn primary", type: "submit", text: "تنفيذ التعديل فوراً" }),
       );
       edit.onsubmit = async (event) => {
@@ -6465,7 +6459,6 @@
         const response = await writeApi(`api/guild/${state.guild.id}/economy/adjust`, {
           user_id: row.user_id,
           wallet_delta: Number(wallet.value || 0),
-          level_delta: Number(level.value || 0),
         });
         const data = await readJson(response, {});
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر تعديل الحساب");
@@ -6475,7 +6468,7 @@
       };
       back.append(el("div", { class: "modal" },
         el("h2", { text: `تعديل حساب ${row.user_id}` }),
-        el("p", { text: `الرصيد الحالي: ${(Number(row.balance) + Number(row.bank)).toLocaleString()} · المستوى: ${row.level}` }),
+        el("p", { text: `الرصيد الحالي: ${(Number(row.balance) + Number(row.bank)).toLocaleString()}` }),
         edit,
         el("button", { class: "btn ghost", type: "button", text: "إلغاء", onClick: () => back.remove() }),
       ));
@@ -6485,11 +6478,11 @@
       ? state.economy.wealth.map((row, index) => el("button", { class: "economy-user-row", type: "button", onClick: () => openAdjust(row) },
         el("span", { text: `#${index + 1}` }),
         el("strong", { text: `عضو ${row.user_id}` }),
-        el("span", { text: `${Number(row.total).toLocaleString()} عملة · مستوى ${row.level}` }),
+        el("span", { text: `${Number(row.total).toLocaleString()} عملة` }),
       ))
       : [el("div", { class: "empty-row", text: "لا توجد حسابات اقتصادية بعد" })];
     return el("section", { id: "view-economy", class: "economy-view" },
-      el("div", { class: "section-intro" }, el("div", { class: "eyebrow", text: `${state.guild.name} / ECONOMY CONTROL` }), el("h1", { text: "الاقتصاد والمتصدرون" }), el("p", { text: "مكافآت يومية متدرجة، مضاعفات للرتب، ولوحة متصدرين حية لا تختفي عند التحديث." })),
+      el("div", { class: "section-intro" }, el("div", { class: "eyebrow", text: `${state.guild.name} / ECONOMY CONTROL` }), el("h1", { text: "الاقتصاد والمتصدرون" }), el("p", { text: "مكافآت يومية، مضاعفات للرتب، ولوحة متصدرين حية لا تختفي عند التحديث." })),
       card("إعدادات الاقتصاد واللوحة الحية", form),
       el("section", { class: "overview-panel economy-leaderboard-panel" },
         el("div", { class: "panel-heading" }, el("div", { class: "eyebrow", text: "LIVE BALANCE MANAGER" }), el("h2", { text: "أغنى الأعضاء" }), el("small", { text: "اضغط على أي صف لفتح التعديل السريع" })),
@@ -6505,7 +6498,6 @@
         const data = await readJson(response, {});
         state.economy = {
           wealth: data.wealth || [],
-          levels: data.levels || [],
           settings: data.settings || { settings: {} },
           multipliers: data.multipliers || {},
         };
