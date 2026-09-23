@@ -192,7 +192,7 @@ _COMMAND_SPECS = {
     "deposit": ("الإيداع (Deposit)", "أوامر الأعضاء — أدوات", "send_messages", ["إيداع"], "!deposit [المبلغ]", "!deposit 500", "إيداع المال من المحفظة في الحساب البنكي."),
     "withdraw": ("السحب (Withdraw)", "أوامر الأعضاء — أدوات", "send_messages", ["سحب"], "!withdraw [المبلغ]", "!withdraw 250", "سحب المال من الحساب البنكي إلى المحفظة."),
     "rob": ("المخاطرة (Rob)", "أوامر الأعضاء — أدوات", "send_messages", ["سرقة"], "!rob @عضو", "!rob @أحمد", "محاولة سرقة اقتصادية بمخاطرة واحتمال عقوبة."),
-    "leaderboard": ("المتصدرون (Leaderboard)", "أوامر الأعضاء — أدوات", "send_messages", ["توب", "متصدرين"], "!leaderboard [النوع]", "!leaderboard wealth", "عرض ترتيب أعضاء السيرفر حسب الثروة أو المستوى."),
+    "leaderboard": ("المتصدرون (Leaderboard)", "أوامر الأعضاء — أدوات", "send_messages", ["توب", "متصدرين"], "!leaderboard", "!leaderboard", "عرض ترتيب أعضاء السيرفر حسب الثروة."),
     "giveaway": ("السحب (Giveaway)", "أوامر الأعضاء — أدوات", "manage_events", ["سحب", "قرعة"], "!giveaway [المدة] [الجائزة]", "!giveaway 60m رتبة VIP", "إطلاق سحب مؤقت واختيار فائز من المشاركين."),
     "remind": ("تذكير (Remind)", "أوامر الأعضاء — أدوات", "send_messages", ["ذكرني"], "!remind [المدة] [النص]", "!remind 30m راجع البطولة", "حفظ تذكير شخصي وإرساله عند حلول موعده."),
     "reminders": ("تذكيراتي (Reminders)", "أوامر الأعضاء — أدوات", "send_messages", ["تذكيراتي"], "!reminders", "!reminders", "عرض التذكيرات المحفوظة للمستخدم في السيرفر."),
@@ -238,7 +238,7 @@ _COMMAND_SPECS = {
     "transcript_log": ("سجل المحادثة (Transcript Log)", "السجل والملاحظات", "read_message_history", ["سجل_المحادثة"], "!transcript_log [العدد]", "!transcript_log 50", "عرض سجل مختصر لرسائل القناة للمراجعة."),
     "reminders_log": ("سجل التذكيرات (Reminders Log)", "السجل والملاحظات", "manage_messages", ["سجل_التذكيرات"], "!reminders_log", "!reminders_log", "عرض عمليات إنشاء وإلغاء التذكيرات في السيرفر."),
     # إحصائيات وتراجع
-    "leaderboard": ("المتصدرون (Leaderboard)", "إحصائيات وتراجع", "send_messages", ["ترتيب_الأعضاء"], "!leaderboard [النوع]", "!leaderboard levels", "عرض إحصائيات المتصدرين وترتيب أعضاء السيرفر."),
+    "leaderboard": ("المتصدرون (Leaderboard)", "إحصائيات وتراجع", "send_messages", ["ترتيب_الأعضاء"], "!leaderboard", "!leaderboard", "عرض ترتيب أعضاء السيرفر حسب الثروة."),
     "stats": ("إحصائيات (Stats)", "إحصائيات وتراجع", "send_messages", ["إحصائيات"], "!stats [الفترة]", "!stats week", "عرض إحصائيات النشاط والأعضاء خلال فترة محددة."),
     "analytics": ("تحليل النشاط (Analytics)", "إحصائيات وتراجع", "view_audit_log", ["تحليل"], "!analytics [الفترة]", "!analytics month", "تحليل اتجاهات النشاط والتفاعل في السيرفر."),
     "rollback": ("تراجع آمن (Rollback)", "إحصائيات وتراجع", "administrator", ["تراجع"], "!rollback [المعرف]", "!rollback last", "التراجع عن إعداد مدعوم بعد تأكيد المدير وحفظ سجل العملية."),

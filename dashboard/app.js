@@ -7112,7 +7112,7 @@
       },
       categories: [],
     };
-    state.economy = { wealth: [], levels: [], settings: null, multipliers: {} };
+    state.economy = { wealth: [], settings: null, multipliers: {} };
     state.ticketSearch = "";
     state.ticketStatusFilter = "all";
     state.selfRoleBuilder = null;
@@ -7144,7 +7144,7 @@
         { counts: {}, series: [] },
         { actions: [] },
         { scrims: [] },
-        { wealth: [], levels: [], settings: { settings: {} }, multipliers: {} },
+        { wealth: [], settings: { settings: {} }, multipliers: {} },
         { channels: {} },
         { applications: [] },
         { roster: [] },
@@ -7264,7 +7264,6 @@
       };
       state.economy = {
         wealth: economy.wealth || [],
-        levels: economy.levels || [],
         settings: economy.settings || { settings: {} },
         multipliers: economy.multipliers || {},
       };

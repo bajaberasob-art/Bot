@@ -1789,7 +1789,6 @@ def validate_setting(key: str, value: Any) -> Any:
             "anti_mention_timeout_duration_minutes": (1, 10080),
             "daily_amount": (0, 1_000_000),
             "daily_base_amount": (0, 1_000_000),
-            "level_multiplier_pct": (0, 500),
         }
         low, high = limits.get(key, (0, 2**31 - 1))
         if not low <= value <= high:
