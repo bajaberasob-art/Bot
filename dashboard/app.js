@@ -4138,8 +4138,10 @@
       settingsForm.querySelector(".ticket-blacklist-form").onsubmit = (event) => { event.preventDefault(); addBlacklist(event.currentTarget); };
       return el("div", { class: "ticket-next-content" }, el("div", { class: "ticket-section-title-row" }, el("div", {}, el("span", { class: "ticket-kicker", text: "CLOSE & ARCHIVE" }), el("h3", { text: "الإعدادات العامة والسلوك" }), el("p", { text: "تحكم في النقل، الأرشفة، التقييم وقنوات السجل." }))), settingsForm);
     };
-    const permissionsView = () => {
-      const permissionDefaults = currentPermissions(state.ticketPermissions || config.permissions_json || config.permissions || {});
+     const permissionsView = () => {
+       const permissionDefaults = state.ticketPermissions && Object.keys(state.ticketPermissions).length
+         ? state.ticketPermissions
+         : (config.permissions_json || config.permissions || {});
       const permissionRows = [
         ["claim", "استلام التذكرة"],
         ["close", "إغلاق وأرشفة"],
@@ -4163,32 +4165,57 @@
         const row = el("div", { class: "ticket-permission-row" });
         row.append(el("strong", { text: label }));
         roles.slice(0, 8).forEach((role) => {
-          const input = el("input", {
+           const input = el("input", {
             type: "checkbox",
+             class: "perm-checkbox",
             value: String(role.id),
             "data-permission-key": key,
+             "data-permission-action": key,
+             "data-role-id": String(role.id),
             checked: (permissionDefaults[key] || []).map(String).includes(String(role.id)),
           });
-          row.append(el("label", {}, input, el("span", { text: "●" })));
+           const labelNode = el("label", {}, input, el("span", { text: "●" }));
+           const initiallyChecked = Boolean(input.checked);
+           labelNode.classList.toggle("is-checked", initiallyChecked);
+           input.classList.toggle("checked", initiallyChecked);
+           input.classList.toggle("is-checked", initiallyChecked);
+           input.addEventListener("change", () => {
+             labelNode.classList.toggle("is-checked", input.checked);
+             input.classList.toggle("checked", input.checked);
+             input.classList.toggle("is-checked", input.checked);
+           });
+           row.append(labelNode);
         });
         matrix.append(row);
       });
-      const save = el("button", {
-        class: "ticket-add-button",
+       const save = el("button", {
+         class: "ticket-add-button perm-save-button",
         type: "button",
         text: "حفظ مصفوفة الصلاحيات",
-        onClick: () => {
+         onClick: async (event) => {
           const permissions = {};
           matrix.querySelectorAll("[data-permission-key]").forEach((input) => {
             if (input.checked) (permissions[input.dataset.permissionKey] ||= []).push(input.value);
           });
-          writeApi(`api/guilds/${state.guild.id}/tickets/permissions`, { permissions })
-            .then(async (response) => {
-              const data = await readJson(response, {});
-              if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الصلاحيات");
-              state.ticketPermissions = data.permissions || permissions;
-              toast("تم حفظ الصلاحيات", "success", 2200);
-            });
+           const button = event.currentTarget;
+           button.disabled = true;
+           button.replaceChildren(el("span", { class: "spinner" }), document.createTextNode(" جارٍ الحفظ…"));
+           try {
+             const response = await writeApi(`api/guilds/${state.guild.id}/tickets/permissions`, { permissions });
+             const data = await readJson(response, {});
+             if (!response.ok) {
+               toast(data.fields ? Object.values(data.fields)[0] : "تعذر حفظ الصلاحيات");
+               return;
+             }
+             state.ticketPermissions = data.permissions || permissions;
+             await loadAndHydratePermissions(state.guild.id);
+             toast("✅ تم حفظ مصفوفة الصلاحيات وتثبيتها بنجاح!", "success", 2600);
+           } catch (error) {
+             if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+           } finally {
+             button.disabled = false;
+             button.textContent = "حفظ مصفوفة الصلاحيات";
+           }
         },
       });
       return el("div", { class: "ticket-next-content" },
@@ -4199,8 +4226,8 @@
             el("p", { text: "المصفوفة تحفظ الرتب المختارة وتبقى متوافقة مع فحوصات محرك التذاكر." }),
           ),
         ),
-        el("section", { class: "ticket-next-card ticket-permissions-card" },
-          matrix,
+         el("section", { class: "ticket-next-card ticket-permissions-card" },
+           el("div", { class: "table-responsive-wrapper" }, matrix),
           el("div", { class: "ticket-permissions-actions" }, save),
         ),
       );
