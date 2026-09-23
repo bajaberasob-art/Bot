@@ -62,7 +62,6 @@ SETTINGS_SCHEMA: Dict[str, Tuple[str, Any, str]] = {
     "leaderboard_channel_id": ("INTEGER", 0, "id"),
     "leaderboard_message_id": ("INTEGER", 0, "id"),
     "daily_base_amount": ("INTEGER", 200, "int"),
-    "level_multiplier_pct": ("INTEGER", 10, "int"),
     "role_multipliers": ("TEXT", {}, "json_map"),
     "economy_support_role_ids": ("TEXT", [], "json_list"),
     # أعمدة قديمة يتم الإبقاء عليها للتوافق
@@ -277,7 +276,7 @@ async def _ensure_canonical_views(db: aiosqlite.Connection) -> None:
         """,
         "economy_vault": """
             SELECT user_id, guild_id, balance AS wallet,
-                   bank, xp, level
+                   bank, last_daily
             FROM users
         """,
     }
@@ -370,19 +369,127 @@ async def _migrate_auto_responder_uniqueness(db: aiosqlite.Connection) -> None:
     )
 
 
+async def _migrate_legacy_level_schema(db: aiosqlite.Connection) -> None:
+    """Remove the retired XP/level schema without losing wallet data."""
+    async with db.execute("PRAGMA table_info(users);") as cur:
+        user_columns = {row[1] for row in await cur.fetchall()}
+    if {"xp", "level"} & user_columns:
+        # The canonical view depends on the old columns, so it must be removed
+        # before SQLite swaps the users table.
+        await db.execute("DROP VIEW IF EXISTS economy_vault")
+        await db.execute("DROP INDEX IF EXISTS idx_users_guild_xp")
+        await db.execute(
+            """
+            CREATE TABLE users_wallet_v2 (
+                user_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                balance INTEGER DEFAULT 100,
+                bank INTEGER DEFAULT 0,
+                last_daily TEXT DEFAULT NULL,
+                PRIMARY KEY (user_id, guild_id)
+            )
+            """
+        )
+        await db.execute(
+            """
+            INSERT INTO users_wallet_v2
+                (user_id, guild_id, balance, bank, last_daily)
+            SELECT user_id, guild_id,
+                   COALESCE(balance, 100),
+                   COALESCE(bank, 0),
+                   last_daily
+            FROM users
+            """
+        )
+        await db.execute("DROP TABLE users")
+        await db.execute("ALTER TABLE users_wallet_v2 RENAME TO users")
+
+    # Level rewards have no remaining consumer and are not part of wallet data.
+    await db.execute("DROP TABLE IF EXISTS level_rewards")
+
+    async with db.execute("PRAGMA table_info(economy_audit_logs);") as cur:
+        audit_columns = {row[1] for row in await cur.fetchall()}
+    if "level_delta" in audit_columns:
+        await db.execute(
+            """
+            CREATE TABLE economy_audit_logs_wallet_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                actor_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                wallet_delta INTEGER NOT NULL DEFAULT 0,
+                details TEXT NOT NULL DEFAULT '',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.execute(
+            """
+            INSERT INTO economy_audit_logs_wallet_v2
+                (id, guild_id, user_id, actor_id, action,
+                 wallet_delta, details, created_at)
+            SELECT id, guild_id, user_id, actor_id, action,
+                   wallet_delta, details, created_at
+            FROM economy_audit_logs
+            """
+        )
+        await db.execute("DROP TABLE economy_audit_logs")
+        await db.execute(
+            "ALTER TABLE economy_audit_logs_wallet_v2 RENAME TO economy_audit_logs"
+        )
+
+    # self_role_panels is shared with the ordinary self-role studio. Rebuild
+    # only to remove the level-gate columns while preserving every studio row.
+    async with db.execute("PRAGMA table_info(self_role_panels);") as cur:
+        panel_columns = {row[1] for row in await cur.fetchall()}
+    if {"min_level", "color_hex"} & panel_columns:
+        await db.execute(
+            """
+            CREATE TABLE self_role_panels_wallet_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT '#5865f2',
+                emoji TEXT NOT NULL DEFAULT '🏷️',
+                role_specs TEXT NOT NULL DEFAULT '[]',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (guild_id, message_id)
+            )
+            """
+        )
+        await db.execute(
+            """
+            INSERT INTO self_role_panels_wallet_v2
+                (id, guild_id, channel_id, message_id, title, description,
+                 color, emoji, role_specs, created_at, updated_at)
+            SELECT id, guild_id, channel_id, message_id, title, description,
+                   color, emoji, role_specs, created_at, updated_at
+            FROM self_role_panels
+            """
+        )
+        await db.execute("DROP TABLE self_role_panels")
+        await db.execute(
+            "ALTER TABLE self_role_panels_wallet_v2 RENAME TO self_role_panels"
+        )
+    await db.execute("DROP TABLE IF EXISTS self_role_buttons")
+
+
 async def init_db() -> None:
     """تهيئة الجداول، العلاقات، والفهارس مع تفعيل قيود المفاتيح الخارجية."""
     ensure_db_directory()
     try:
         async with connect() as db:
 
-            # 1. جدول الاقتصاد والمستويات
+            # 1. جدول الاقتصاد wallet-only
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER NOT NULL,
                     guild_id INTEGER NOT NULL,
-                    xp INTEGER DEFAULT 0,
-                    level INTEGER DEFAULT 1,
                     balance INTEGER DEFAULT 100,
                     bank INTEGER DEFAULT 0,
                     last_daily TEXT DEFAULT NULL,
@@ -563,18 +670,7 @@ async def init_db() -> None:
             # columns and rows remain untouched; only missing columns are added.
             await _migrate_logging_channels(db)
 
-            # فهارس لتسريع استعلامات الرتب ولوحة الشرف (Leaderboard)
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_users_guild_xp ON users(guild_id, xp DESC);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings(guild_id, user_id);")
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS level_rewards (
-                    guild_id INTEGER NOT NULL,
-                    level INTEGER NOT NULL,
-                    role_id INTEGER NOT NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (guild_id, level, role_id)
-                );
-            """)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS economy_audit_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -583,7 +679,6 @@ async def init_db() -> None:
                     actor_id INTEGER NOT NULL,
                     action TEXT NOT NULL,
                     wallet_delta INTEGER NOT NULL DEFAULT 0,
-                    level_delta INTEGER NOT NULL DEFAULT 0,
                     details TEXT NOT NULL DEFAULT '',
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -721,36 +816,11 @@ async def init_db() -> None:
             """)
             async with db.execute("PRAGMA table_info(self_role_panels)") as cur:
                 self_role_panel_columns = {row[1] for row in await cur.fetchall()}
-            # The self-role studio predates level-gated panels. Extend its
-            # existing rows instead of replacing the live table or its
-            # role_specs payload.
-            if "min_level" not in self_role_panel_columns:
-                await db.execute(
-                    "ALTER TABLE self_role_panels ADD COLUMN min_level INTEGER NOT NULL DEFAULT 0"
-                )
-            if "color_hex" not in self_role_panel_columns:
-                await db.execute(
-                    "ALTER TABLE self_role_panels ADD COLUMN color_hex TEXT NOT NULL DEFAULT '#5865F2'"
-                )
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS self_role_buttons (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    panel_id INTEGER NOT NULL,
-                    role_id INTEGER NOT NULL,
-                    label TEXT NOT NULL,
-                    emoji TEXT NOT NULL DEFAULT '',
-                    custom_min_level INTEGER NOT NULL DEFAULT 0,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_self_role_buttons_panel "
-                "ON self_role_buttons(panel_id, id);"
-            )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_self_role_panels_guild "
                 "ON self_role_panels(guild_id);"
             )
+            await _migrate_legacy_level_schema(db)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS guild_command_controls (
                     guild_id INTEGER NOT NULL,
