@@ -6837,7 +6837,7 @@ async def get_recent_broadcast_logs(
     safe_limit = max(1, min(int(limit), 50))
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
-            f"""
+            """
             SELECT id, guild_id, channel_id, author_id, message_type, title,
                    content, description, color, sent_at
             FROM broadcast_logs
