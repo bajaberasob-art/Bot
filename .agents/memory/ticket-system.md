@@ -27,6 +27,12 @@ Newly deployed panels use a guild-scoped persistent select view backed by `ticke
 
 **How to apply:** Persist panel message/embed state and option metadata, restore the select view during cog setup, and enforce duplicate-open checks by `(guild, user, category)` rather than across all categories.
 
+Dashboard panel publishing must call the existing community deployment path with the saved message and display mode, rather than creating a second ticket-panel implementation.
+
+**Why:** Reusing the persistent Discord view registration keeps button/dropdown behavior, message replacement, and restart restoration consistent.
+
+**How to apply:** Pass the panel's channel/message IDs and mode to the community cog, then retain the existing database record and API response shape for older dashboard clients.
+
 Channel deletion must be preceded by transcript persistence, including for legacy closed records that do not yet have a transcript.
 
 **Why:** A Discord channel can be deleted after an earlier partial close, and deleting it without backfilling the record permanently loses the conversation.
