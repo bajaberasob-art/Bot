@@ -6891,23 +6891,22 @@
       button.replaceChildren(el("span", { class: "spinner" }), document.createTextNode(" جارٍ النشر…"));
     }
     try {
-      const r = await api(`api/guild/${state.guild.id}/self-roles/deploy`, {
+      const r = await api(`api/guild/${state.guild.id}/onboarding/self-roles`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-CSRF-Token": state.session.csrf,
         },
         body: JSON.stringify({
-          channel_id: String(builder.target_channel_id),
+          target_channel_id: String(builder.target_channel_id),
           title: builder.title,
           description: builder.description,
-          min_level: Number(builder.min_level || 0),
-          color_hex: normalizePanelColor(builder.color),
-          buttons: builder.roles.map((role) => ({
-            role_id: String(role.id),
+          color: normalizePanelColor(builder.color),
+          emoji: builder.emoji || "🏷️",
+          roles: builder.roles.map((role) => ({
+            id: String(role.id),
             label: String(role.label || roleName(role.id)).slice(0, 100),
             emoji: String(role.emoji || "").slice(0, 100),
-            custom_min_level: Number(role.custom_min_level || 0),
           })),
         }),
       });
