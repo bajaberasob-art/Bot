@@ -52,6 +52,7 @@ from database import (
     get_ticket_options,
     get_ticket_panels,
     delete_ticket_panel,
+    save_ticket_panel,
     save_ticket_config,
     replace_ticket_options,
     update_ticket_control_config,
