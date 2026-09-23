@@ -5291,11 +5291,14 @@ async def get_ticket_overview_metrics(guild_id: int) -> dict[str, Any]:
     return {
         "overview": overview,
         "panels": panels,
+        "total_panels": panels,
         "active_tickets": int(overview.get("active") or 0),
         "total_tickets": int(overview.get("total") or 0),
         "average_rating": overview["average_rating"],
         "priority_distribution": analytics.get("priorities", []),
+        "priorities_donut": analytics.get("priorities", []),
         "rating_distribution": rating_distribution,
+        "ratings_bar": rating_distribution,
         "staff_leaderboard": analytics.get("staff", []),
         "last_activity_logs": activity_logs,
         # Keep the existing dashboard consumer compatible during rollout.
