@@ -898,7 +898,7 @@ async def init_db() -> None:
                 "message_id": "INTEGER DEFAULT NULL",
                 "title": "TEXT NOT NULL DEFAULT 'مركز الدعم والتذاكر'",
                 "description": "TEXT NOT NULL DEFAULT ''",
-                "color": "INTEGER NOT NULL DEFAULT 6513407",
+                "color": "INTEGER NOT NULL DEFAULT 6514417",
                 "mode": "TEXT NOT NULL DEFAULT 'dropdown'",
                 "version": "INTEGER NOT NULL DEFAULT 1",
             }
