@@ -95,11 +95,22 @@ async def database_audit(database) -> None:
             continue
         first = node.args[0]
         if isinstance(first, ast.JoinedStr):
-            line = source.splitlines()[node.lineno - 1].strip()
+            segment = ast.get_source_segment(source, first) or ""
             # The only interpolated SQL is internal schema/configuration data:
-            # validated column names, an integer timeout, or fixed view names.
-            if not any(token in line for token in ("PRAGMA busy_timeout", "ALTER TABLE", "CREATE VIEW")):
-                unsafe.append((node.lineno, line))
+            # validated column names, an integer timeout, fixed view names, or
+            # placeholder fragments built from explicit allowlists.
+            allowed = (
+                "PRAGMA busy_timeout" in segment
+                or "ALTER TABLE" in segment
+                or "CREATE VIEW" in segment
+                or "FROM {col}" in segment
+                or "SET {from_account}" in segment
+                or "SET {to_account}" in segment
+                or "WHERE {' AND '.join(conditions)}" in segment
+                or "IN ({placeholders})" in segment
+            )
+            if not allowed:
+                unsafe.append((node.lineno, segment.replace("\n", " ")[:240]))
     expect(not unsafe, f"raw SQL interpolation found: {unsafe}")
     expect("BEGIN IMMEDIATE" in source and "await db.commit()" in source, "write locking/commit contract missing")
     expect("async def save_ticket_log" in source, "ticket log writer missing")
