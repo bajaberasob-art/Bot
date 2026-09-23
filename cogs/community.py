@@ -2632,7 +2632,6 @@ async def setup(bot: commands.Bot):
     bot.add_view(SuggestionActionView())
     bot.add_view(TicketControlView())
     bot.add_view(StreamlinedTicketControlsView())
-    bot.add_view(PersistentDMRatingView())
     legacy_panels = await get_ticket_panels()
     legacy_by_message = {
         (int(panel["guild_id"]), int(panel["message_id"])): panel["categories"]

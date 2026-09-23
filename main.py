@@ -328,6 +328,11 @@ class EnterpriseBot(commands.Bot):
                 await self._cleanup_failed_setup(loaded_modules)
                 raise RuntimeError(f"فشل تحميل الوحدة {module}; أوقف الإقلاع.") from error
 
+        # Register the restart-safe DM rating callbacks from the central bot
+        # lifecycle after the Community extension is loaded.
+        from cogs.community import PersistentDMRatingView
+
+        self.add_view(PersistentDMRatingView())
         self.install_interaction_guards()
         if os.getenv("SYNC_COMMANDS", "false").strip().lower() in {
             "1",
