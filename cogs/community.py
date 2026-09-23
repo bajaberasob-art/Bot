@@ -1181,7 +1181,7 @@ class Community(commands.Cog):
             embed_color=int(config.get("embed_color") or 0x6366F1),
             footer_text=str(config.get("footer_text") or "Help Desk • اختر تصنيفاً لبدء المحادثة"),
         )
-        return await save_ticket_panel(
+        panel = await save_ticket_panel(
             guild_id,
             channel.id,
             message.id,
@@ -1191,6 +1191,12 @@ class Community(commands.Cog):
             color=int(config.get("embed_color") or 0x6366F1),
             mode=str(config.get("panel_mode") or "dropdown"),
         )
+        # Keep the public Discord deployment contract snowflake-safe for
+        # browser JSON consumers and legacy callers that compare IDs as text.
+        for key in ("guild_id", "channel_id", "message_id"):
+            if panel.get(key) is not None:
+                panel[key] = str(panel[key])
+        return panel
 
     async def deploy_persistent_dropdown_panel(
         self,
