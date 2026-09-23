@@ -814,13 +814,15 @@ async def init_db() -> None:
                     UNIQUE (guild_id, message_id)
                 );
             """)
-            async with db.execute("PRAGMA table_info(self_role_panels)") as cur:
-                self_role_panel_columns = {row[1] for row in await cur.fetchall()}
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_self_role_panels_guild "
                 "ON self_role_panels(guild_id);"
             )
             await _migrate_legacy_level_schema(db)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_economy_audit_guild "
+                "ON economy_audit_logs(guild_id, created_at DESC);"
+            )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS guild_command_controls (
                     guild_id INTEGER NOT NULL,
@@ -1969,57 +1971,6 @@ async def get_or_create_user(user_id: int, guild_id: int) -> Dict[str, Any]:
             return dict(row)
 
 
-async def get_user_level(user_id: int, guild_id: int) -> int:
-    """Read the current economy level without creating an account."""
-    async with connect(aiosqlite.Row) as db:
-        async with db.execute(
-            "SELECT level FROM users WHERE user_id = ? AND guild_id = ?",
-            (int(user_id), int(guild_id)),
-        ) as cur:
-            row = await cur.fetchone()
-    return max(0, int(row["level"])) if row else 0
-
-
-async def add_xp(user_id: int, guild_id: int, amount: int = 15) -> Tuple[bool, int]:
-    """إضافة خبرة وفحص الترقية داخل معاملة قفل واحدة."""
-    amount = max(0, int(amount))
-    async with connect(aiosqlite.Row) as db:
-        await db.execute("BEGIN IMMEDIATE")
-        try:
-            await db.execute(
-                "INSERT OR IGNORE INTO users (user_id, guild_id) VALUES (?, ?)",
-                (int(user_id), int(guild_id)),
-            )
-            async with db.execute(
-                "SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?",
-                (int(user_id), int(guild_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
-            if row is None:
-                raise RuntimeError("user row disappeared during XP update")
-
-            new_xp = int(row["xp"]) + amount
-            current_level = int(row["level"])
-            xp_needed = current_level * 120
-            leveled_up = new_xp >= xp_needed
-            if leveled_up:
-                current_level += 1
-                new_xp -= xp_needed
-
-            await db.execute(
-                """
-                UPDATE users SET xp = ?, level = ?
-                WHERE user_id = ? AND guild_id = ?
-                """,
-                (new_xp, current_level, int(user_id), int(guild_id)),
-            )
-            await db.commit()
-        except Exception:
-            await db.rollback()
-            raise
-    return leveled_up, current_level
-
-
 async def claim_daily_reward(
     user_id: int,
     guild_id: int,
@@ -2130,63 +2081,15 @@ async def adjust_user_balance(
             raise
 
 
-async def adjust_user_level(
-    guild_id: int,
-    user_id: int,
-    level_delta: int,
-    reset_xp: bool = False,
-) -> Optional[Dict[str, Any]]:
-    """Atomically adjust a member's level, never allowing a level below one."""
-    level_delta = int(level_delta)
-    async with connect(aiosqlite.Row) as db:
-        await db.execute("BEGIN IMMEDIATE")
-        try:
-            await db.execute(
-                "INSERT OR IGNORE INTO users (user_id, guild_id) VALUES (?, ?)",
-                (int(user_id), int(guild_id)),
-            )
-            if reset_xp:
-                cur = await db.execute(
-                    """
-                    UPDATE users SET level = MAX(1, level + ?), xp = 0
-                    WHERE user_id = ? AND guild_id = ?
-                    """,
-                    (level_delta, int(user_id), int(guild_id)),
-                )
-            else:
-                cur = await db.execute(
-                    """
-                    UPDATE users SET level = MAX(1, level + ?)
-                    WHERE user_id = ? AND guild_id = ?
-                    """,
-                    (level_delta, int(user_id), int(guild_id)),
-                )
-            if cur.rowcount != 1:
-                await db.rollback()
-                return None
-            async with db.execute(
-                "SELECT * FROM users WHERE user_id = ? AND guild_id = ?",
-                (int(user_id), int(guild_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
-            await db.commit()
-            return dict(row) if row else None
-        except Exception:
-            await db.rollback()
-            raise
-
-
 async def claim_scaled_daily_reward(
     user_id: int,
     guild_id: int,
     today: str,
     base_amount: int,
-    level_multiplier_pct: int,
     role_multiplier: float,
 ) -> Optional[Dict[str, Any]]:
-    """Calculate and claim a scaled daily reward in one SQLite transaction."""
+    """Calculate and claim a role-scaled daily reward in one transaction."""
     base_amount = max(0, int(base_amount))
-    level_multiplier_pct = max(0, int(level_multiplier_pct))
     role_multiplier = max(0.0, float(role_multiplier))
     async with connect(aiosqlite.Row) as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -2196,16 +2099,14 @@ async def claim_scaled_daily_reward(
                 (int(user_id), int(guild_id)),
             )
             async with db.execute(
-                "SELECT level, last_daily FROM users WHERE user_id = ? AND guild_id = ?",
+                "SELECT last_daily FROM users WHERE user_id = ? AND guild_id = ?",
                 (int(user_id), int(guild_id)),
             ) as cur:
                 account = await cur.fetchone()
             if account is None or account["last_daily"] == str(today):
                 await db.rollback()
                 return None
-            level = max(1, int(account["level"]))
-            level_bonus = 1.0 + level * (level_multiplier_pct / 100.0)
-            reward = max(0, round(base_amount * level_bonus * role_multiplier))
+            reward = max(0, round(base_amount * role_multiplier))
             cur = await db.execute(
                 """
                 UPDATE users SET balance = balance + ?, last_daily = ?
@@ -2221,8 +2122,6 @@ async def claim_scaled_daily_reward(
             return {
                 "reward": int(reward),
                 "base_amount": base_amount,
-                "level": level,
-                "level_bonus": round(level_bonus, 3),
                 "role_multiplier": round(role_multiplier, 3),
             }
         except Exception:
@@ -2276,39 +2175,20 @@ async def get_leaderboard_targets() -> list[Dict[str, Any]]:
             return [dict(row) for row in await cur.fetchall()]
 
 
-async def get_level_leaderboard(
-    guild_id: int,
-    limit: int = 10,
-) -> list[Dict[str, Any]]:
-    limit = max(1, min(int(limit), 25))
-    async with connect(aiosqlite.Row) as db:
-        async with db.execute(
-            """
-            SELECT user_id, level, balance, bank, xp, (balance + bank) AS total
-            FROM users WHERE guild_id = ?
-            ORDER BY level DESC, xp DESC, total DESC
-            LIMIT ?
-            """,
-            (int(guild_id), limit),
-        ) as cur:
-            return [dict(row) for row in await cur.fetchall()]
-
-
 async def add_economy_audit(
     guild_id: int,
     user_id: int,
     actor_id: int,
     action: str,
     wallet_delta: int = 0,
-    level_delta: int = 0,
     details: str = "",
 ) -> None:
     async with connect() as db:
         await db.execute(
             """
             INSERT INTO economy_audit_logs
-                (guild_id, user_id, actor_id, action, wallet_delta, level_delta, details)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (guild_id, user_id, actor_id, action, wallet_delta, details)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 int(guild_id),
@@ -2316,29 +2196,10 @@ async def add_economy_audit(
                 int(actor_id),
                 str(action)[:80],
                 int(wallet_delta),
-                int(level_delta),
                 str(details)[:1000],
             ),
         )
         await db.commit()
-
-
-async def get_level_rewards(guild_id: int, level: int | None = None) -> list[Dict[str, Any]]:
-    async with connect(aiosqlite.Row) as db:
-        if level is None:
-            query = (
-                "SELECT guild_id, level, role_id FROM level_rewards "
-                "WHERE guild_id = ? ORDER BY level ASC, role_id ASC"
-            )
-            params = (int(guild_id),)
-        else:
-            query = (
-                "SELECT guild_id, level, role_id FROM level_rewards "
-                "WHERE guild_id = ? AND level <= ? ORDER BY level ASC, role_id ASC"
-            )
-            params = (int(guild_id), int(level))
-        async with db.execute(query, params) as cur:
-            return [dict(row) for row in await cur.fetchall()]
 
 
 async def move_balance(
@@ -2440,10 +2301,11 @@ async def get_economy_leaderboard(
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
             """
-            SELECT user_id, level, balance, bank, xp, (balance + bank) AS total
+            SELECT user_id, balance, bank, last_daily,
+                   (balance + bank) AS total
             FROM users
             WHERE guild_id = ?
-            ORDER BY total DESC, level DESC, xp DESC
+            ORDER BY total DESC, user_id ASC
             LIMIT ?
             """,
             (int(guild_id), limit),
