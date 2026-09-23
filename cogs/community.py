@@ -1137,7 +1137,7 @@ class Community(commands.Cog):
                     "التفاصيل قبل فتح قناة خاصة مع فريق الدعم."
                 )
             )[:4096],
-            color=int(config.get("embed_color") or 0x00D9A6),
+            color=int(config.get("embed_color") or 0x6366F1),
         )
         embed.set_footer(
             text=str(

@@ -90,7 +90,7 @@
     ticketConfig: {
       embed_title: "مركز الدعم والتذاكر",
       embed_description: "اختر التصنيف الأقرب لطلبك لفتح قناة خاصة مع فريق الدعم.",
-      embed_color: 0x5865F2,
+       embed_color: 0x6366F1,
       footer_text: "Help Desk • اختر تصنيفاً لبدء المحادثة",
       channel_id: null,
       message_id: null,
@@ -99,7 +99,7 @@
       config: {
         embed_title: "مركز الدعم والتذاكر",
         embed_description: "اختر التصنيف الأقرب لطلبك لفتح قناة خاصة مع فريق الدعم.",
-        embed_color: "#5865F2",
+         embed_color: "#6366F1",
         footer_text: "Help Desk • اختر تصنيفاً لبدء المحادثة",
         channel_id: null,
         message_id: null,

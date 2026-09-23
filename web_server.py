@@ -3127,7 +3127,7 @@ def _ticket_panel_payload(body: dict, existing: dict | None = None) -> tuple[dic
     title = str(body.get("title", body.get("embed_title", existing.get("title") or "مركز الدعم والتذاكر"))).strip()
     description = str(body.get("description", body.get("embed_description", existing.get("description") or ""))).strip()
     mode = str(body.get("mode", existing.get("mode") or "dropdown")).strip().lower()
-    raw_color = body.get("color", body.get("embed_color", existing.get("color", 0x5865F2)))
+    raw_color = body.get("color", body.get("embed_color", existing.get("color", 0x6366F1)))
     try:
         color = int(str(raw_color).strip().lstrip("#"), 16) if isinstance(raw_color, str) else int(raw_color)
     except (TypeError, ValueError):
