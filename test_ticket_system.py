@@ -103,6 +103,10 @@ async def database_audit(database) -> None:
                 "PRAGMA busy_timeout" in segment
                 or "ALTER TABLE" in segment
                 or "CREATE VIEW" in segment
+                or "SELECT {col}" in segment
+                or "SET {new_col}" in segment
+                or "SET {dedicated}" in segment
+                or "LIMIT {safe_limit}" in segment
                 or "FROM {col}" in segment
                 or "SET {from_account}" in segment
                 or "SET {to_account}" in segment

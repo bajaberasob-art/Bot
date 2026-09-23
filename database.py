@@ -6843,9 +6843,9 @@ async def get_recent_broadcast_logs(
             FROM broadcast_logs
             WHERE guild_id = ?
             ORDER BY sent_at DESC, id DESC
-            LIMIT {safe_limit}
+            LIMIT ?
             """,
-            (int(guild_id),),
+            (int(guild_id), safe_limit),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
 
