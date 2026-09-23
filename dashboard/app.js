@@ -3755,7 +3755,7 @@
       }
     };
     const tab = (key, label, icon) => el("button", {
-      class: `ticket-next-tab ${state.ticketTab === key ? "active" : ""}`,
+       class: `ticket-next-tab nav-link category-chip ${state.ticketTab === key ? "active" : ""}`,
       type: "button",
       "aria-selected": String(state.ticketTab === key),
       onClick: () => {
@@ -4045,7 +4045,7 @@
           const actions = [
             el("button", { class: "ticket-inline-action", type: "button", text: "تحرير", onClick: () => { state.ticketCategories = (panel.categories || []).map((item) => ({ ...item })); state.ticketTab = "builder"; renderPage(); } }),
             isDraft
-              ? el("button", { class: "ticket-inline-action publish", type: "button", text: "نشر", onClick: () => publishPanel(panel) })
+              ? el("button", { class: "ticket-inline-action publish ticket-publish-button", type: "button", text: "🚀 نشر في ديسكورد", onClick: (event) => publishPanel(panel, event.currentTarget) })
               : null,
             el("button", { class: "ticket-inline-action", type: "button", text: "نسخ", onClick: () => duplicatePanel(panel) }),
             el("button", { class: "ticket-inline-action", type: "button", text: "JSON", onClick: () => exportPanel(panel) }),
