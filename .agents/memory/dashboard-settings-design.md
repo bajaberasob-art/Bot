@@ -19,3 +19,6 @@ description: Non-obvious decisions behind the guild-settings persistence, dashbo
 - The dashboard cookie uses a sliding expiry on authenticated `/api/me` requests, but the authoritative session store remains process-local.
   **Why:** refreshing the browser lifetime improves long-running dashboard use without pretending that an in-memory OAuth session survives a bot process restart.
   **How to apply:** preserve the server-side expiry check and do not describe cookie renewal as restart persistence; use the existing publishing/login follow-up for cross-restart auth.
+- Optional ticket-control updates must resolve the `_UNSET` sentinel to the existing value before type coercion; an omitted nullable field must remain `None`, not be cast as an object.
+  **Why:** permissions-only saves mirror into the legacy ticket config and can otherwise fail before the new permissions are committed.
+  **How to apply:** normalize each omitted nullable field through one preserve-or-coerce helper before SQLite writes.
