@@ -306,7 +306,9 @@ def discord_and_frontend_audit() -> None:
     expect(".sidebar-item.active" in css and ".nav-link.active" in css and ".category-chip.active" in css,
            "active navigation visual contract missing")
     expect('class="app"' in html and 'viewport-fit=cover' in html, "mobile viewport meta contract missing")
-    expect("overflow-x: hidden !important" in css[css.rfind("@media (max-width: 430px)"):],
+    final_contract = css[css.rfind("/* Final mobile layout contract."):]
+    expect("overflow-x: hidden !important" in final_contract
+           and "padding-bottom: calc(184px" in final_contract,
            "final mobile shell override missing")
 
 
