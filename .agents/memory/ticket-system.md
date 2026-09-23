@@ -38,3 +38,9 @@ Channel deletion must be preceded by transcript persistence, including for legac
 **Why:** A Discord channel can be deleted after an earlier partial close, and deleting it without backfilling the record permanently loses the conversation.
 
 **How to apply:** Check for an existing transcript before any destructive delete; if absent, capture and save the channel history before removing the channel.
+
+The CRM overview response must expose both the newer chart-oriented aliases and the legacy analytics collections.
+
+**Why:** Dashboard clients are deployed at different revisions; removing either shape breaks an older client even when the underlying ticket metrics are correct.
+
+**How to apply:** Keep `total_panels`, `priorities_donut`, and `ratings_bar` alongside `panels`, `priorities`, and `ratings` when evolving the overview endpoint.
