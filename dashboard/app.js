@@ -3762,6 +3762,11 @@
         state.ticketTab = key;
         sessionStorage.setItem("ticket-tab", key);
         renderPage();
+           if (key === "permissions" && state.guild?.id) {
+             loadAndHydratePermissions(state.guild.id).catch((error) => {
+               if (error.message !== "unauth") toast("تعذر تحميل حالة الصلاحيات");
+             });
+           }
       },
     }, el("span", { class: "ticket-tab-icon", text: icon }), label);
     const categoryChannels = Array.isArray(state.meta?.categories)
@@ -7326,6 +7331,7 @@
       };
       await fetchGuildAnalytics(id, state.analyticsRange, false);
       renderPage();
+      await loadAndHydratePermissions(id);
       openSSE(id);
       startIncidentRefresh(id);
     } catch (e) {
