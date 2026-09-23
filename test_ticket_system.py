@@ -163,8 +163,13 @@ async def rest_audit(database, ws, FakeBot, FakeGuild) -> None:
     app.add_routes(ws.routes)
     server = TestServer(app)
     client = TestClient(server)
-    headers = {"Cookie": f"bot_session={SESSION_ID}"}
     await client.start_server()
+    origin = str(client.make_url("/")).rstrip("/")
+    headers = {
+        "Cookie": f"bot_session={SESSION_ID}",
+        "Origin": origin,
+        "Referer": f"{origin}/dashboard",
+    }
     try:
         response = await client.get(f"/api/guilds/{GUILD_ID}/tickets/overview", headers=headers)
         expect(response.status == 200, f"overview returned {response.status}")
