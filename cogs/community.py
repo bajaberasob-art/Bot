@@ -2637,6 +2637,7 @@ async def setup(bot: commands.Bot):
     legacy_by_message = {
         (int(panel["guild_id"]), int(panel["message_id"])): panel["categories"]
         for panel in legacy_panels
+        if panel.get("message_id") is not None
     }
     for config in await get_ticket_configs():
         channel = bot.get_channel(config["channel_id"]) if config.get("channel_id") else None
@@ -2675,7 +2676,7 @@ async def setup(bot: commands.Bot):
                 message_id=config["message_id"],
             )
     for panel in legacy_panels:
-        if bot.get_channel(panel["channel_id"]):
+        if panel.get("message_id") is not None and bot.get_channel(panel["channel_id"]):
             bot.add_view(
                 TicketPanelView(panel["categories"]),
                 message_id=panel["message_id"],

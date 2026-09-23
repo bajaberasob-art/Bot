@@ -4252,8 +4252,8 @@ async def get_ticket_panels() -> list[dict[str, Any]]:
                 item["id"] = int(item["id"])
                 item["guild_id"] = int(item["guild_id"])
                 item["channel_id"] = int(item["channel_id"])
-                 if item.get("message_id") is not None:
-                     item["message_id"] = int(item["message_id"])
+                if item.get("message_id") is not None:
+                    item["message_id"] = int(item["message_id"])
                 item["color"] = int(item.get("color") or 0x5865F2)
                 item["version"] = int(item.get("version") or 1)
                 try:
