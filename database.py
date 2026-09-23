@@ -989,13 +989,29 @@ async def init_db() -> None:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticket_id INTEGER NOT NULL,
                     guild_id INTEGER NOT NULL,
+                    channel_id INTEGER DEFAULT NULL,
                     action TEXT NOT NULL,
+                    status TEXT DEFAULT NULL,
+                    claimed_by INTEGER DEFAULT NULL,
+                    closed_by INTEGER DEFAULT NULL,
                     staff_id INTEGER DEFAULT NULL,
                     target_user_id INTEGER DEFAULT NULL,
                     metadata TEXT NOT NULL DEFAULT '{}',
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            async with db.execute("PRAGMA table_info(ticket_logs)") as cur:
+                ticket_log_columns = {row[1] for row in await cur.fetchall()}
+            for column, definition in {
+                "channel_id": "INTEGER DEFAULT NULL",
+                "status": "TEXT DEFAULT NULL",
+                "claimed_by": "INTEGER DEFAULT NULL",
+                "closed_by": "INTEGER DEFAULT NULL",
+            }.items():
+                if column not in ticket_log_columns:
+                    await db.execute(
+                        f"ALTER TABLE ticket_logs ADD COLUMN {column} {definition}"
+                    )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ticket_logs_guild_time "
                 "ON ticket_logs(guild_id, created_at DESC, id DESC);"
@@ -1264,10 +1280,28 @@ async def init_db() -> None:
                     guild_id INTEGER NOT NULL,
                     staff_id INTEGER DEFAULT NULL,
                     user_id INTEGER NOT NULL,
-                    stars INTEGER NOT NULL,
+                    stars INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5),
                     feedback TEXT NOT NULL DEFAULT '',
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            # Existing installations may predate the CHECK constraint. Triggers
+            # enforce the same invariant without rebuilding or copying user data.
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS ticket_ratings_stars_insert_guard
+                BEFORE INSERT ON ticket_ratings
+                WHEN NEW.stars < 1 OR NEW.stars > 5
+                BEGIN
+                    SELECT RAISE(ABORT, 'ticket_ratings_stars_check');
+                END;
+            """)
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS ticket_ratings_stars_update_guard
+                BEFORE UPDATE OF stars ON ticket_ratings
+                WHEN NEW.stars < 1 OR NEW.stars > 5
+                BEGIN
+                    SELECT RAISE(ABORT, 'ticket_ratings_stars_check');
+                END;
             """)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ticket_ratings_staff "
@@ -4960,17 +4994,32 @@ async def save_ticket_log(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        async with db.execute(
+            """
+            SELECT channel_id, status, claimed_by, closed_by
+            FROM tickets
+            WHERE guild_id = ? AND id = ?
+            """,
+            (int(guild_id), int(ticket_id)),
+        ) as ticket_cur:
+            ticket = await ticket_cur.fetchone()
         cursor = await db.execute(
             """
             INSERT INTO ticket_logs
-                (ticket_id, guild_id, action, staff_id, target_user_id, metadata)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (ticket_id, guild_id, channel_id, action, status, claimed_by,
+                 closed_by, staff_id, target_user_id, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING *
             """,
             (
                 int(ticket_id),
                 int(guild_id),
+                int(ticket["channel_id"]) if ticket and ticket["channel_id"] is not None else None,
                 str(action)[:80],
+                str(ticket["status"]) if ticket and ticket["status"] is not None else None,
+                int(ticket["claimed_by"]) if ticket and ticket["claimed_by"] is not None else None,
+                int(ticket["closed_by"]) if ticket and ticket["closed_by"] is not None else None,
                 int(staff_id) if staff_id is not None else None,
                 int(target_user_id) if target_user_id is not None else None,
                 json.dumps(metadata or {}, ensure_ascii=False)[:4000],
