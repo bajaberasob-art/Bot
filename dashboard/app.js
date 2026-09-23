@@ -585,7 +585,7 @@
     return el(
       "button",
       {
-        class: `nav-item ${state.activeView === view ? "active" : ""}`,
+        class: `nav-item sidebar-item nav-link ${state.activeView === view ? "active" : ""}`,
         type: "button",
         "data-nav-view": view,
         "aria-current": state.activeView === view ? "page" : "false",
