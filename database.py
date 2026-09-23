@@ -4185,7 +4185,7 @@ async def save_ticket_panel(
     *,
     title: str = "مركز الدعم والتذاكر",
     description: str = "",
-    color: int = 0x5865F2,
+    color: int = 0x6366F1,
     mode: str = "dropdown",
 ) -> dict[str, Any]:
     encoded = json.dumps(categories, ensure_ascii=False)
@@ -4235,7 +4235,7 @@ async def save_ticket_panel(
     for key in ("guild_id", "channel_id", "message_id", "id", "version"):
         if result.get(key) is not None:
             result[key] = int(result[key])
-    result["color"] = int(result.get("color") or 0x5865F2)
+    result["color"] = int(result.get("color") or 0x6366F1)
     return result
 
 

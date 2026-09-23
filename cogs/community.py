@@ -1178,7 +1178,7 @@ class Community(commands.Cog):
                 "اختر التصنيف الأقرب لطلبك. ستظهر لك نافذة قصيرة لجمع "
                 "التفاصيل قبل فتح قناة خاصة مع فريق الدعم."
             )),
-            embed_color=int(config.get("embed_color") or 0x00D9A6),
+            embed_color=int(config.get("embed_color") or 0x6366F1),
             footer_text=str(config.get("footer_text") or "Help Desk • اختر تصنيفاً لبدء المحادثة"),
         )
         return await save_ticket_panel(
@@ -1188,7 +1188,7 @@ class Community(commands.Cog):
             categories,
             title=str(config.get("embed_title") or "🎫 مركز الدعم والتذاكر"),
             description=str(config.get("embed_description") or ""),
-            color=int(config.get("embed_color") or 0x5865F2),
+            color=int(config.get("embed_color") or 0x6366F1),
             mode=str(config.get("panel_mode") or "dropdown"),
         )
 
