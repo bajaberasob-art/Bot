@@ -4566,6 +4566,10 @@ async def update_ticket_control_config(
     close_config: dict[str, Any] | None | object = _UNSET,
 ) -> dict[str, Any]:
     config = await get_ticket_config(guild_id) or {}
+    def preserved_snowflake(value: int | None | object, key: str) -> int | None:
+        current = config.get(key) if value is _UNSET else value
+        return int(current) if current is not None else None
+
     await save_ticket_config(
         guild_id,
         config.get("channel_id"),
@@ -4596,15 +4600,9 @@ async def update_ticket_control_config(
             WHERE guild_id = ?
             """,
             (
-                int(config.get("closed_category_id")) if closed_category_id is _UNSET and config.get("closed_category_id") is not None else (
-                    int(closed_category_id) if closed_category_id is not None else None
-                ),
-                int(config.get("log_channel_id")) if log_channel_id is _UNSET and config.get("log_channel_id") is not None else (
-                    int(log_channel_id) if log_channel_id is not None else None
-                ),
-                int(config.get("evaluation_channel_id")) if evaluation_channel_id is _UNSET and config.get("evaluation_channel_id") is not None else (
-                    int(evaluation_channel_id) if evaluation_channel_id is not None else None
-                ),
+                preserved_snowflake(closed_category_id, "closed_category_id"),
+                preserved_snowflake(log_channel_id, "log_channel_id"),
+                preserved_snowflake(evaluation_channel_id, "evaluation_channel_id"),
                 int(bool(config.get("allow_user_close", False) if allow_user_close is _UNSET or allow_user_close is None else allow_user_close)),
                 int(bool(config.get("send_transcript_dm", True) if send_transcript_dm is _UNSET or send_transcript_dm is None else send_transcript_dm)),
                 max(0, min(10080, int(config.get("auto_close_minutes", 0) if auto_close_minutes is _UNSET or auto_close_minutes is None else auto_close_minutes))),
