@@ -9,6 +9,12 @@ PWA assets and service-worker registration must use paths relative to the dashbo
 
 **How to apply:** Keep manifest, service worker, icon, stylesheet, and script references relative to the dashboard page. Keep `/healthz` and `/api/status` read-only and unauthenticated, and avoid caching API responses.
 
+Any user-visible dashboard CSS or JavaScript release must advance the service-worker shell cache name.
+
+**Why:** Mobile browsers can keep serving the previous shell indefinitely, making a correct layout fix appear ineffective.
+
+**How to apply:** Bump the cache identifier whenever static dashboard assets change, then restart the serving process so the new worker is delivered.
+
 SQLite performance changes are additive connection pragmas: WAL, `synchronous=NORMAL`, a bounded negative cache size, and a 20-second busy timeout. Passive checkpoints must run in a cancellable background task.
 
 **Why:** The bot has many short-lived SQLite connections and must tolerate concurrent dashboard and Discord writes without table replacement or data reset.
