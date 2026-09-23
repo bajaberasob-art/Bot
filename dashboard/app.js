@@ -2753,6 +2753,27 @@
       if (error.message !== "unauth") toast("تعذر تحديث مركز التذاكر");
     }
   }
+  async function loadAndHydratePermissions(guildId) {
+    const response = await api(`api/guilds/${guildId}/tickets/permissions`);
+    const data = await readJson(response, {});
+    if (!response.ok) return {};
+    const permissions = data.permissions && typeof data.permissions === "object"
+      ? data.permissions
+      : {};
+    if (state.guild?.id !== guildId) return permissions;
+    state.ticketPermissions = permissions;
+    document.querySelectorAll(".perm-checkbox").forEach((input) => {
+      const action = input.dataset.permissionAction;
+      const roleId = String(input.dataset.roleId || input.value);
+      const checked = Array.isArray(permissions[action])
+        && permissions[action].map(String).includes(roleId);
+      input.checked = checked;
+      input.classList.toggle("checked", checked);
+      input.classList.toggle("is-checked", checked);
+      input.closest("label")?.classList.toggle("is-checked", checked);
+    });
+    return permissions;
+  }
   async function deployTicketPanel(form) {
     const channelId = form.elements.target_channel_id.value;
     if (!channelId) return toast("اختر قناة نشر اللوحة");
