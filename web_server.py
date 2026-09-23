@@ -3318,12 +3318,14 @@ async def api_guilds_tickets_panel_publish(req):
     try:
         result = await community.deploy_ticket_panel(
             channel.id,
-            panel.get("categories") or [],
+            await get_ticket_categories(guild.id) or panel.get("categories") or [],
             {
                 "embed_title": panel.get("title"),
                 "embed_description": panel.get("description"),
                 "embed_color": panel.get("color"),
                 "panel_mode": panel.get("mode"),
+                "channel_id": panel.get("channel_id"),
+                "message_id": panel.get("message_id"),
             },
         )
     except (ValueError, discord.Forbidden, discord.HTTPException) as error:
@@ -3332,9 +3334,18 @@ async def api_guilds_tickets_panel_publish(req):
     # A CRM draft uses message_id=0 as a database-only placeholder. The
     # deployment above creates and persists the real Discord message, so the
     # placeholder must not remain as a second panel in the dashboard.
-    if int(panel.get("message_id") or 0) == 0:
+    previous_message_id = int(panel.get("message_id") or 0)
+    published_message_id = int(result.get("message_id") or 0)
+    if previous_message_id and published_message_id and previous_message_id != published_message_id:
+        await delete_ticket_panel(guild.id, int(panel["channel_id"]), previous_message_id)
+    if not previous_message_id:
         await delete_ticket_panel(guild.id, int(panel["channel_id"]), 0)
-    return web.json_response({"ok": True, "panel": result})
+    return web.json_response({
+        "ok": True,
+        "success": True,
+        "message_id": str(result.get("message_id")),
+        "panel": result,
+    })
 
 
 @routes.get('/api/guild/{guild_id}/tickets/settings')

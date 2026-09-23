@@ -1145,7 +1145,11 @@ class Community(commands.Cog):
                 or "Help Desk • اختر تصنيفاً لبدء المحادثة"
             )[:2048]
         )
-        view = TicketSelectView(categories, guild_id)
+        view = (
+            TicketPanelView(categories)
+            if str(config.get("panel_mode") or "dropdown").lower() == "buttons"
+            else TicketSelectView(categories, guild_id)
+        )
         message = None
         previous_message_id = config.get("message_id")
         previous_channel_id = config.get("channel_id")

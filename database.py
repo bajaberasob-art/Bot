@@ -895,9 +895,10 @@ async def init_db() -> None:
             async with db.execute("PRAGMA table_info(ticket_panels)") as cur:
                 ticket_panel_columns = {row[1] for row in await cur.fetchall()}
             ticket_panel_migrations = {
+                "message_id": "INTEGER DEFAULT NULL",
                 "title": "TEXT NOT NULL DEFAULT 'مركز الدعم والتذاكر'",
                 "description": "TEXT NOT NULL DEFAULT ''",
-                "color": "INTEGER NOT NULL DEFAULT 5793266",
+                "color": "INTEGER NOT NULL DEFAULT 6513407",
                 "mode": "TEXT NOT NULL DEFAULT 'dropdown'",
                 "version": "INTEGER NOT NULL DEFAULT 1",
             }
@@ -4251,7 +4252,8 @@ async def get_ticket_panels() -> list[dict[str, Any]]:
                 item["id"] = int(item["id"])
                 item["guild_id"] = int(item["guild_id"])
                 item["channel_id"] = int(item["channel_id"])
-                item["message_id"] = int(item["message_id"])
+                 if item.get("message_id") is not None:
+                     item["message_id"] = int(item["message_id"])
                 item["color"] = int(item.get("color") or 0x5865F2)
                 item["version"] = int(item.get("version") or 1)
                 try:
