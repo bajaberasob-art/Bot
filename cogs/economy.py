@@ -10,13 +10,9 @@ from discord.ext import commands, tasks
 logger = logging.getLogger("EconomyCog")
 
 from database import (
-    add_xp,
     add_economy_audit,
     adjust_user_balance,
-    adjust_user_level,
     get_economy_leaderboard,
-    get_level_leaderboard,
-    get_level_rewards,
     get_leaderboard_targets,
     get_guild_settings,
     get_or_create_user,
@@ -33,6 +29,7 @@ from database import (
     set_giveaway_message,
     transfer_balance,
     move_balance,
+    update_balance,
 )
 
 
@@ -93,7 +90,6 @@ class Economy(commands.Cog):
 
     async def _leaderboard_embed(self, guild: discord.Guild) -> discord.Embed:
         wealth = await get_economy_leaderboard(guild.id, 10)
-        levels = await get_level_leaderboard(guild.id, 10)
 
         def member_name(user_id: int) -> str:
             member = guild.get_member(int(user_id))
@@ -103,11 +99,6 @@ class Economy(commands.Cog):
             f"**{index}.** {member_name(row['user_id'])} — "
             f"`{int(row['total']):,}` عملة"
             for index, row in enumerate(wealth, 1)
-        ]
-        level_lines = [
-            f"**{index}.** {member_name(row['user_id'])} — "
-            f"مستوى `{int(row['level'])}` · `{int(row['xp']):,}` XP"
-            for index, row in enumerate(levels, 1)
         ]
         embed = discord.Embed(
             title="🏆 لوحة المتصدرين الحية",
@@ -120,8 +111,8 @@ class Economy(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name="🎖️ أعلى 10 مستويات",
-            value="\n".join(level_lines) or "لا توجد حسابات بعد.",
+            name="📊 طريقة الترتيب",
+            value="حسب مجموع المحفظة والبنك.",
             inline=True,
         )
         embed.set_footer(text=f"{guild.name} • LIVE ECONOMY")
@@ -165,31 +156,6 @@ class Economy(commands.Cog):
             await self.refresh_leaderboard(guild_id)
         except (discord.Forbidden, discord.HTTPException):
             logger.debug("Leaderboard refresh failed for guild %s", guild_id, exc_info=True)
-
-    async def _apply_level_rewards(
-        self,
-        member: discord.Member,
-        old_level: int,
-        new_level: int,
-    ) -> None:
-        rewards = await get_level_rewards(member.guild.id)
-        wanted = {
-            int(row["role_id"])
-            for row in rewards
-            if int(row["level"]) <= int(new_level)
-        }
-        managed = {int(row["role_id"]) for row in rewards}
-        for role_id in managed:
-            role = member.guild.get_role(role_id)
-            if role is None:
-                continue
-            try:
-                if role_id in wanted and role not in member.roles:
-                    await member.add_roles(role, reason="Economy level reward")
-                elif role_id not in wanted and role in member.roles:
-                    await member.remove_roles(role, reason="Economy level reward")
-            except (discord.Forbidden, discord.HTTPException):
-                logger.warning("Unable to update level reward role %s", role_id, exc_info=True)
 
     async def _admin_check(self, interaction: discord.Interaction) -> bool:
         if await self._is_economy_support(interaction.user):
@@ -252,30 +218,6 @@ class Economy(commands.Cog):
         self.cooldowns[key] = now
         return 0
 
-    @commands.Cog.listener()
-    async def on_message(self, msg: discord.Message):
-        if msg.author.bot or not msg.guild:
-            return
-        if self.check_cd(f"xp_{msg.author.id}", 60) > 0:
-            return
-
-        before = await get_or_create_user(msg.author.id, msg.guild.id)
-        leveled_up, level = await add_xp(
-            msg.author.id,
-            msg.guild.id,
-            random.randint(15, 25),
-        )
-        await self._leaderboard_changed(msg.guild.id)
-        if leveled_up:
-            await self._apply_level_rewards(
-                msg.author, int(before["level"]), int(level)
-            )
-            await msg.channel.send(
-                f"🎊 مبارك {msg.author.mention}! ارتقيت إلى المستوى "
-                f"**{level}**! 🚀",
-                delete_after=8,
-            )
-
     @app_commands.command(name="profile", description="عرض الملف المالي والشخصي")
     async def profile(
         self,
@@ -284,22 +226,11 @@ class Economy(commands.Cog):
     ):
         target = member or itx.user
         user = await get_or_create_user(target.id, itx.guild.id)
-        required_xp = user["level"] * 120
         embed = discord.Embed(
             title=f"💳 بطاقة: {target.display_name}",
             color=0x2ECC71,
         )
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(
-            name="المستوى 🎖️",
-            value=f"**{user['level']}**",
-            inline=True,
-        )
-        embed.add_field(
-            name="الخبرة ⚡",
-            value=f"`{user['xp']}/{required_xp}`",
-            inline=True,
-        )
         embed.add_field(
             name="الكاش 💵",
             value=f"`{user['balance']:,}`",
@@ -337,7 +268,6 @@ class Economy(commands.Cog):
             itx.guild.id,
             today,
             base_reward,
-            int(config.get("level_multiplier_pct", 10)),
             role_multiplier,
         )
         if result is None:
@@ -351,9 +281,7 @@ class Economy(commands.Cog):
             color=0x2ECC71,
         )
         embed.add_field(name="المبلغ الأساسي", value=f"`{result['base_amount']:,}`", inline=True)
-        embed.add_field(name="مكافأة المستوى", value=f"`×{result['level_bonus']}`", inline=True)
         embed.add_field(name="مضاعف الرتبة", value=f"`×{result['role_multiplier']}`", inline=True)
-        embed.add_field(name="المستوى الحالي", value=f"`{result['level']}`", inline=True)
         embed.add_field(name="الإجمالي المستلم", value=f"`{result['reward']:,}`", inline=True)
         await itx.response.send_message(embed=embed)
         await self._leaderboard_changed(itx.guild.id)
@@ -378,7 +306,6 @@ class Economy(commands.Cog):
             ctx.guild.id,
             today,
             int(config.get("daily_base_amount", 200)),
-            int(config.get("level_multiplier_pct", 10)),
             role_multiplier,
         )
         if result is None:
@@ -389,7 +316,6 @@ class Economy(commands.Cog):
             color=0x2ECC71,
         )
         embed.add_field(name="المبلغ الأساسي", value=f"`{result['base_amount']:,}`", inline=True)
-        embed.add_field(name="مكافأة المستوى", value=f"`×{result['level_bonus']}`", inline=True)
         embed.add_field(name="مضاعف الرتبة", value=f"`×{result['role_multiplier']}`", inline=True)
         embed.add_field(name="الإجمالي المستلم", value=f"`{result['reward']:,}`", inline=True)
         await ctx.send(embed=embed)
@@ -446,48 +372,12 @@ class Economy(commands.Cog):
         await send(embed=embed)
         await self._leaderboard_changed(guild.id)
 
-    async def _admin_level_action(
-        self,
-        guild: discord.Guild,
-        actor: discord.Member,
-        target: discord.Member,
-        levels: int,
-        increase: bool,
-        send,
-    ):
-        if levels <= 0:
-            return await send("❌ يجب أن يكون عدد المستويات أكبر من صفر.")
-        before = await get_or_create_user(target.id, guild.id)
-        delta = levels if increase else -levels
-        updated = await adjust_user_level(guild.id, target.id, delta)
-        if updated is None:
-            return await send("❌ تعذر تعديل مستوى العضو.")
-        await self._apply_level_rewards(target, int(before["level"]), int(updated["level"]))
-        await add_economy_audit(
-            guild.id,
-            target.id,
-            actor.id,
-            "give_level" if increase else "take_level",
-            level_delta=delta,
-            details=f"target={target.id}",
-        )
-        embed = discord.Embed(
-            title="✅ تم تحديث المستوى",
-            description=f"{target.mention} أصبح في المستوى **{updated['level']}**.",
-            color=0x8B5CF6,
-        )
-        embed.add_field(name="التغيير", value=f"`{delta:+d}` مستوى", inline=True)
-        embed.set_footer(text=f"بواسطة {actor.display_name}")
-        await send(embed=embed)
-        await self._leaderboard_changed(guild.id)
-
     async def dashboard_adjust(
         self,
         guild: discord.Guild,
         actor: discord.Member,
         target: discord.Member,
         wallet_delta: int = 0,
-        level_delta: int = 0,
     ) -> dict:
         """Apply a dashboard economy action using the same guarded mutation path."""
         before = await get_or_create_user(target.id, guild.id)
@@ -498,22 +388,12 @@ class Economy(commands.Cog):
             )
             if updated is None:
                 raise ValueError("لا يمكن أن يصبح الرصيد سالباً")
-        if level_delta:
-            updated = await adjust_user_level(
-                guild.id, target.id, int(level_delta)
-            )
-            if updated is None:
-                raise ValueError("تعذر تعديل المستوى")
-            await self._apply_level_rewards(
-                target, int(before["level"]), int(updated["level"])
-            )
         await add_economy_audit(
             guild.id,
             target.id,
             actor.id,
             "dashboard_adjust",
             wallet_delta=int(wallet_delta),
-            level_delta=int(level_delta),
             details=f"target={target.id}",
         )
         await self._leaderboard_changed(guild.id)
@@ -545,32 +425,6 @@ class Economy(commands.Cog):
             itx.guild, itx.user, member, amount, False, itx.response.send_message
         )
 
-    @app_commands.command(name="give_level", description="ترقية مستوى عضو")
-    async def give_level(
-        self,
-        itx: discord.Interaction,
-        member: discord.Member,
-        levels: int,
-    ):
-        if not await self._admin_check(itx):
-            return
-        await self._admin_level_action(
-            itx.guild, itx.user, member, levels, True, itx.response.send_message
-        )
-
-    @app_commands.command(name="take_level", description="تنزيل مستوى عضو")
-    async def take_level(
-        self,
-        itx: discord.Interaction,
-        member: discord.Member,
-        levels: int,
-    ):
-        if not await self._admin_check(itx):
-            return
-        await self._admin_level_action(
-            itx.guild, itx.user, member, levels, False, itx.response.send_message
-        )
-
     @commands.command(name="اعطاء_نقاط", aliases=["give-points"])
     async def give_points_text(
         self,
@@ -595,32 +449,6 @@ class Economy(commands.Cog):
             return await ctx.send("⛔ هذا الإجراء متاح للإدارة أو أدوار دعم الاقتصاد فقط.")
         await self._admin_balance_action(
             ctx.guild, ctx.author, member, amount, False, ctx.send
-        )
-
-    @commands.command(name="ترقية_مستوى", aliases=["give-level"])
-    async def give_level_text(
-        self,
-        ctx: commands.Context,
-        member: discord.Member,
-        levels: int,
-    ):
-        if not ctx.guild or not await self._is_economy_support(ctx.author):
-            return await ctx.send("⛔ هذا الإجراء متاح للإدارة أو أدوار دعم الاقتصاد فقط.")
-        await self._admin_level_action(
-            ctx.guild, ctx.author, member, levels, True, ctx.send
-        )
-
-    @commands.command(name="تنزيل_مستوى", aliases=["take-level"])
-    async def take_level_text(
-        self,
-        ctx: commands.Context,
-        member: discord.Member,
-        levels: int,
-    ):
-        if not ctx.guild or not await self._is_economy_support(ctx.author):
-            return await ctx.send("⛔ هذا الإجراء متاح للإدارة أو أدوار دعم الاقتصاد فقط.")
-        await self._admin_level_action(
-            ctx.guild, ctx.author, member, levels, False, ctx.send
         )
 
     @app_commands.command(name="work", description="العمل وكسب المال")
@@ -679,8 +507,7 @@ class Economy(commands.Cog):
             member = itx.guild.get_member(int(row["user_id"]))
             name = member.display_name if member else f"عضو {row['user_id']}"
             lines.append(
-                f"**{index}.** {name} — `{int(row['total']):,}` عملة "
-                f"(مستوى {int(row['level'])})"
+                f"**{index}.** {name} — `{int(row['total']):,}` عملة"
             )
         embed = discord.Embed(
             title="🏆 لوحة المتصدرين الاقتصادية",
