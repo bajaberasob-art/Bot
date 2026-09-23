@@ -3607,6 +3607,12 @@
     const deployPanel = async (form) => {
       const channelId = form.elements.target_channel_id.value;
       if (!channelId) return toast("اختر قناة نشر اللوحة");
+      const submitButton = form.querySelector("button[type=submit]");
+      const originalLabel = submitButton?.textContent || "🚀 نشر في ديسكورد";
+      if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.replaceChildren(el("span", { class: "spinner" }), document.createTextNode(" جارٍ النشر…"));
+      }
       try {
         const response = await writeApi(`api/guild/${state.guild.id}/tickets/deploy`, {
           target_channel_id: channelId,
@@ -3618,10 +3624,15 @@
         });
         const data = await readJson(response, {});
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر نشر اللوحة");
-        toast("تم نشر اللوحة في Discord", "success", 2600);
+        toast("✅ تم نشر وتحديث البانل في ديسكورد بنجاح!", "success", 2600);
         await refreshTickets();
       } catch (error) {
         if (error.message !== "unauth") toast("تعذر الاتصال لنشر اللوحة");
+      } finally {
+        if (submitButton) {
+          submitButton.disabled = false;
+          submitButton.textContent = originalLabel;
+        }
       }
     };
     const saveSections = async () => {
@@ -3665,15 +3676,25 @@
         if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
       }
     };
-    const publishPanel = async (panel) => {
+    const publishPanel = async (panel, button = null) => {
+      const originalLabel = button?.textContent || "🚀 نشر في ديسكورد";
+      if (button) {
+        button.disabled = true;
+        button.replaceChildren(el("span", { class: "spinner" }), document.createTextNode(" جارٍ النشر…"));
+      }
       try {
         const response = await writeApi(`api/guilds/${state.guild.id}/tickets/panels/${panel.id}/publish`, {});
         const data = await readJson(response, {});
         if (!response.ok) return toast(data.fields ? Object.values(data.fields)[0] : "تعذر نشر اللوحة");
-        toast("تم نشر اللوحة في Discord", "success", 2400);
+        toast("✅ تم نشر وتحديث البانل في ديسكورد بنجاح!", "success", 2400);
         await refreshTickets();
       } catch (error) {
         if (error.message !== "unauth") toast("تعذر الاتصال بالخادم");
+      } finally {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
       }
     };
     const duplicatePanel = async (panel) => {
