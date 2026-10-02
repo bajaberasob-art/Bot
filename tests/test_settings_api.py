@@ -2,6 +2,7 @@ import json
 import os
 import time
 from io import BytesIO
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
