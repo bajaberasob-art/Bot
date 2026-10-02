@@ -309,6 +309,7 @@ class EnterpriseBot(commands.Bot):
             "cogs.tools_channels",
             "cogs.engagement",
             "cogs.economy",
+            "cogs.levels",
             "cogs.utilities",
             "cogs.tournaments",
             "cogs.gaming",

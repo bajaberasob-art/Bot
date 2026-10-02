@@ -513,6 +513,7 @@ async def init_db() -> None:
                     web_leaderboard_enabled BOOLEAN DEFAULT 1,
                     web_slug TEXT DEFAULT NULL,
                     xp_multiplier REAL DEFAULT 1.0,
+                    message_cooldown_seconds INTEGER DEFAULT 60,
                     boost_multiplier REAL DEFAULT 1.0,
                     boost_expires_at TIMESTAMP DEFAULT NULL,
                     streak_enabled BOOLEAN DEFAULT 1,
@@ -556,6 +557,13 @@ async def init_db() -> None:
                     bot_embed_color TEXT DEFAULT '#6366F1'
                 );
             """)
+            async with db.execute("PRAGMA table_info(level_settings)") as cur:
+                level_columns = {row[1] for row in await cur.fetchall()}
+            if "message_cooldown_seconds" not in level_columns:
+                await db.execute(
+                    "ALTER TABLE level_settings ADD COLUMN "
+                    "message_cooldown_seconds INTEGER DEFAULT 60"
+                )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS user_levels (
                     guild_id INTEGER NOT NULL,
@@ -1716,7 +1724,7 @@ async def init_db() -> None:
 
 
 # -------------------------------------------------------------
-# Lona leveling database helpers — Phase 1 foundation only
+# Lona leveling database helpers
 # -------------------------------------------------------------
 _LEVEL_SETTINGS_JSON_FIELDS = {
     "command_rank_channels",
@@ -1736,6 +1744,7 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "web_leaderboard_enabled",
     "web_slug",
     "xp_multiplier",
+    "message_cooldown_seconds",
     "boost_multiplier",
     "boost_expires_at",
     "streak_enabled",
@@ -1885,6 +1894,96 @@ async def get_user_level(
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
             "SELECT * FROM user_levels WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def award_text_xp(
+    guild_id: int, user_id: int, xp: int, awarded_at: datetime,
+    cooldown_seconds: int = 60,
+) -> Optional[Dict[str, Any]]:
+    """Atomic text-only award; persisted cooldown protects restarts/races.
+
+    None means cooldown suppression. No user record is created until an award.
+    """
+    from level_progression import level_from_xp
+
+    xp = int(xp)
+    if xp <= 0:
+        raise ValueError("text XP award must be positive")
+    if awarded_at.tzinfo is None:
+        awarded_at = awarded_at.replace(tzinfo=timezone.utc)
+    awarded_at = awarded_at.astimezone(timezone.utc)
+    cooldown_seconds = max(0, int(cooldown_seconds))
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT * FROM user_levels WHERE guild_id = ? AND user_id = ?",
+                (int(guild_id), int(user_id)),
+            ) as cur:
+                row = await cur.fetchone()
+            # A voice-created record with zero messages has no text cooldown.
+            if row and row["total_messages"] and row["last_message_at"]:
+                last = datetime.fromisoformat(str(row["last_message_at"]).replace("Z", "+00:00"))
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                if (awarded_at - last).total_seconds() < cooldown_seconds:
+                    await db.rollback()
+                    return None
+            old_xp = int(row["text_xp"] or 0) if row else 0
+            old_level = int(row["text_level"] or 0) if row else 0
+            new_xp = old_xp + xp
+            new_level = level_from_xp(new_xp)
+            await db.execute(
+                """
+                INSERT INTO user_levels
+                    (guild_id, user_id, text_xp, text_level, total_messages, last_message_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    text_xp = excluded.text_xp,
+                    text_level = excluded.text_level,
+                    total_messages = COALESCE(user_levels.total_messages, 0) + 1,
+                    last_message_at = excluded.last_message_at
+                """,
+                (int(guild_id), int(user_id), new_xp, new_level, awarded_at.isoformat()),
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return {
+        "guild_id": int(guild_id), "user_id": int(user_id),
+        "old_xp": old_xp, "old_level": old_level,
+        "text_xp": new_xp, "text_level": new_level,
+        "total_messages": (int(row["total_messages"] or 0) if row else 0) + 1,
+        "last_message_at": awarded_at.isoformat(),
+    }
+
+
+async def get_text_rank(guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """On-demand rank among stored positive-XP participants, including ties.
+
+    Equal XP is ordered by user ID, matching get_text_leaderboard. Eligibility
+    here means a positive text XP record, not live Discord member presence.
+    """
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT u.user_id, u.text_xp, u.text_level,
+                CASE WHEN u.text_xp > 0 THEN 1 + (
+                    SELECT COUNT(*) FROM user_levels p
+                    WHERE p.guild_id = u.guild_id AND p.text_xp > 0
+                    AND (p.text_xp > u.text_xp OR
+                         (p.text_xp = u.text_xp AND p.user_id < u.user_id))
+                ) ELSE NULL END AS rank,
+                (SELECT COUNT(*) FROM user_levels p
+                 WHERE p.guild_id = u.guild_id AND p.text_xp > 0)
+                    AS total_eligible_members
+            FROM user_levels u WHERE u.guild_id = ? AND u.user_id = ?
+            """,
             (int(guild_id), int(user_id)),
         ) as cur:
             row = await cur.fetchone()
