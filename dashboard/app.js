@@ -6984,16 +6984,16 @@
   }
   const lvBgOk = (v) => { if (!v) return true; try { const u = new URL(v); return u.protocol === "https:" && v.length <= 400; } catch (_) { return false; } };
   function lvTabCard() {
-    const cv = el("canvas", { class: "leveling-canvas", role: "img", "aria-label": "معاينة بطاقة المستوى التوضيحية" });
+    const cv = el("img", { class: "leveling-canvas", role: "img", alt: "معاينة بطاقة المستوى الحقيقية" });
     const color = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(lvGet(["card", "color"])) ? lvGet(["card", "color"]) : "#38bdf8" });
     color.addEventListener("input", () => lvSet(["card", "color"], color.value));
-    const bg = lvText(["card", "bg"], "رابط الخلفية (HTTPS فقط)", { type: "text", dir: "ltr", placeholder: "https://" }, "اختياري. يُحمَّل في معاينة هذا المتصفح فقط.");
+    const bg = lvText(["card", "bg"], "رابط الخلفية (HTTPS فقط)", { type: "text", dir: "ltr", placeholder: "https://" }, "اختياري. يتحقق الخادم من الرابط ويحمّله عند إنشاء المعاينة.");
     bg.querySelector("input").addEventListener("input", (e) => e.target.setAttribute("aria-invalid", String(!lvBgOk(e.target.value.trim()))));
     return el("div", { class: "leveling-split" },
       el("div", { class: "leveling-stack" },
-        lvCard("تصميم البطاقة", "مسودة محلية", lvSelect(["card", "layout"], "القالب", Object.entries(LV_LAYOUTS).map(([k, v]) => [k, v[2]])),
+        lvCard("تصميم البطاقة", "الإعدادات المحفوظة تتحكم في البطاقة التي ينشئها البوت", lvSelect(["card", "layout"], "القالب", Object.entries(LV_LAYOUTS).map(([k, v]) => [k, v[2]])),
           lvSelect(["card", "particles"], "الجزيئات", Object.entries(LV_PARTS)), lvField("لون التمييز", color), bg, lvSwitch(["card", "animated"], "شريط تقدم لامع"), lvSwitch(["card", "showStats"], "عرض الإحصاءات في البطاقة", "يعمل مع القالبين العمودي والإحصائيات فقط، وبقية القوالب لا تعرض بلوك الإحصاءات"), lvIdentity(), el("p", { class: "leveling-bg-status", role: "status", "aria-live": "polite" }))),
-      lvCard("معاينة مباشرة", "بطاقة Phase 5 الأصلية بهوية حسابك • أرقام XP توضيحية فقط", lvDemoTag("هوية حقيقية / نقاط توضيحية"), el("div", { class: "leveling-canvas-wrap" }, cv),
+      lvCard("معاينة مباشرة", "تُنشأ بواسطة مولد بطاقة PRIME نفسه وتعرض بيانات حسابك الفعلية", el("div", { class: "leveling-canvas-wrap" }, cv),
         el("p", { class: "leveling-render-status", role: "status", "aria-live": "polite", text: "جارٍ تحميل بطاقة PRIME…" })));
   }
   let lvBgImg = { url: "", img: null, failed: false };
@@ -7004,9 +7004,7 @@
     let t = "", warn = false;
     if (!u) t = "لا توجد خلفية مخصصة.";
     else if (!lvBgOk(u)) { t = "تحذير: الرابط غير صالح، يلزم رابط https://."; warn = true; }
-    else if (lvBgImg.url === u && lvBgImg.failed) { t = "تحذير: تعذر تحميل الصورة، تظهر المعاينة بدون خلفية."; warn = true; }
-    else if (lvBgImg.url === u && lvBgImg.img) t = "تم تحميل الخلفية في المعاينة.";
-    else t = "جارٍ تحميل الخلفية...";
+    else t = "يحمّل الخادم الخلفية بعد التحقق من أن عنوانها عام وآمن.";
     n.textContent = t;
     n.classList.toggle("is-warn", warn);
   }
@@ -7071,7 +7069,7 @@
     }
     return url && lvAvatarImage.url === url ? lvAvatarImage.image : null;
   }
-  async function drawLvCard() {
+  async function drawLvCardLegacy() {
     cancelAnimationFrame(lvAnimation);
     const cv = $(".leveling-canvas");
     if (!cv) return;
@@ -7181,6 +7179,53 @@
       if (status) status.textContent = "تعذر تحميل أصول بطاقة Phase 5. حدّث الصفحة وحاول مجدداً؛ لم يُستخدم تصميم بديل.";
       cv.dataset.ready = "error";
     }
+  }
+  let lvDrawTimer = null, lvCardPreviewUrl = "";
+  function drawLvCard() {
+    clearTimeout(lvDrawTimer);
+    lvDrawTimer = setTimeout(async () => {
+      const image = $(".leveling-canvas");
+      if (!image) return;
+      const token = ++lvDrawToken, card = { ...lvState().draft.card };
+      const status = $(".leveling-render-status");
+      image.dataset.ready = "false";
+      if (status) status.textContent = "ينشئ الخادم معاينة بطاقة بحسابك ونقاطك الحقيقية…";
+      lvBgStatus();
+      try {
+        const params = new URLSearchParams({
+          layout: card.layout,
+          particles: card.particles,
+          color: card.color,
+          bg: String(card.bg || "").trim(),
+          animated: String(Boolean(card.animated)),
+          showStats: String(Boolean(card.showStats)),
+        });
+        const response = await api(
+          `api/guild/${state.guild.id}/leveling/card-preview?${params.toString()}`,
+        );
+        if (!response.ok) {
+          const problem = await readJson(response, {});
+          throw Error(problem.error || "preview");
+        }
+        const nextUrl = URL.createObjectURL(await response.blob());
+        if (token !== lvDrawToken || !image.isConnected) {
+          URL.revokeObjectURL(nextUrl);
+          return;
+        }
+        const previousUrl = lvCardPreviewUrl;
+        lvCardPreviewUrl = nextUrl;
+        image.src = nextUrl;
+        image.dataset.ready = "true";
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+        if (status) status.textContent = "المعاينة تعرض بيانات XP والترتيب الحقيقية للحساب المسجّل.";
+      } catch (error) {
+        if (token !== lvDrawToken || !image.isConnected) return;
+        image.dataset.ready = "error";
+        if (status) status.textContent = error.message === "unauth"
+          ? "انتهت الجلسة؛ سجّل الدخول مجدداً."
+          : "تعذر إنشاء المعاينة الحقيقية. تحقق من إعدادات البطاقة ثم أعد المحاولة.";
+      }
+    }, 300);
   }
   function lvTabMessages() {
     const mk = (key, title, vars) => lvCard(title, `المتغيرات: ${vars}`, lvSwitch(["messages", key, "on"], "تفعيل الإشعار"),
