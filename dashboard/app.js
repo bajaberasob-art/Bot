@@ -6866,7 +6866,7 @@
   const lvGrid = (...k) => el("div", { class: "leveling-grid" }, ...k);
   const lvDemoTag = (t = "بيانات توضيحية") => el("span", { class: "leveling-demo", text: t });
   const lvFmt = (n) => new Intl.NumberFormat("ar-EG").format(n);
-  const LV_WEEK = [["س", 320], ["ح", 410], ["ن", 380], ["ث", 520], ["ر", 470], ["خ", 640], ["ج", 590]];
+  const lvSeconds = (seconds) => lvMin(Math.floor((Number(seconds) || 0) / 60));
   function lvChart(rows, label) {
     const NS = "http://www.w3.org/2000/svg", W = 420, H = 150, pad = 18, mx = Math.max(...rows.map((r) => r[1]));
     const mk = (t, a) => { const n = document.createElementNS(NS, t); Object.entries(a).forEach(([k, v]) => n.setAttribute(k, v)); return n; };
@@ -6883,11 +6883,18 @@
     pts.forEach((q, i) => { svg.append(mk("circle", { cx: q[0], cy: q[1], r: 4, fill: "#030712", stroke: "#22d3ee", "stroke-width": 2 })); const t = mk("text", { x: q[0], y: H + 12, "text-anchor": "middle", fill: "#8aa4c8", "font-size": 11 }); t.textContent = rows[i][0]; svg.append(t); });
     return el("div", { class: "leveling-chart-wrap" }, svg);
   }
-  const lvLegend = () => el("p", { class: "leveling-legend", text: "قيم توضيحية: الأعلى 640 رسالة والأدنى 320. لا تمثل نشاط السيرفر الفعلي." });
-  function lvDist() {
-    const mx = Math.max(...LV_DEMO.map((r) => r[4]));
-    return el("div", { class: "leveling-dist" }, ...LV_DEMO.map((r) => el("div", { class: "leveling-dist-row" }, el("span", { text: r[0] }),
-      el("div", { class: "leveling-meter", role: "img", "aria-label": `${r[0]}: ${lvFmt(r[4])} نقطة (توضيحي)` }, el("i", { style: `width:${(r[4] / mx * 100).toFixed(1)}%` })), el("b", { text: lvFmt(r[4]) }))));
+  function lvDist(rows = []) {
+    const list = Array.isArray(rows) ? rows : [];
+    if (!list.length) return el("p", { class: "leveling-unavail", text: "لا توجد بيانات توزيع مستويات محفوظة بعد." });
+    const max = Math.max(1, ...list.map((row) => Number(row.members) || 0));
+    return el("div", { class: "leveling-dist" }, ...list.map((row) => {
+      const level = Number(row.level) || 0, members = Number(row.members) || 0;
+      return el("div", { class: "leveling-dist-row" },
+        el("span", { text: `المستوى ${lvFmt(level)}` }),
+        el("div", { class: "leveling-meter", role: "img", "aria-label": `${lvFmt(members)} أعضاء في المستوى ${lvFmt(level)}` },
+          el("i", { style: `width:${(members / max * 100).toFixed(1)}%` })),
+        el("b", { text: lvFmt(members) }));
+    }));
   }
   function lvIdentity() {
     const name = state.session?.username, av = state.session?.avatar;
@@ -6911,22 +6918,32 @@
   }
   function lvTabGeneral() {
     const st = state.stats || {};
+    const analytics = lvState().analytics;
+    const totals = analytics?.totals || {};
     const members = [st.guild?.members, state.meta?.guild?.members, state.guild?.members].find((v) => typeof v === "number" ? Number.isFinite(v) : (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))));
     const cell = (l, v) => el("div", { class: "leveling-stat" }, el("small", { text: l }), el("b", { text: v }));
     return el("div", { class: "leveling-stack" },
       lvCard("بيانات السيرفر الحقيقية", "من بيانات لوحة التحكم الحالية",
         lvGrid(cell("السيرفر", state.guild?.name || "غير متاح"), cell("الأعضاء", members != null ? lvFmt(Number(members)) : "غير متاح"),
           cell("القنوات", state.meta?.channels ? lvFmt(state.meta.channels.length) : "غير متاح"), cell("الرتب", state.meta?.roles ? lvFmt(state.meta.roles.length) : "غير متاح"))),
-      lvCard("حالة الأنظمة", "قيم المسودة المحلية (توضيحية)", lvDemoTag(),
+      lvCard("حالة الأنظمة", "إعدادات محفوظة فعلياً في قاعدة بيانات نظام المستويات",
         lvSwitch(["general", "enabled"], "تفعيل نظام المستويات"), lvSwitch(["general", "text"], "نقاط الرسائل"),
         lvSwitch(["voice", "enabled"], "نقاط الصوت"), lvSwitch(["general", "reaction"], "نقاط التفاعلات"), lvSwitch(["general", "streak"], "مكافأة التواصل اليومي")),
-      lvCard("إعدادات سريعة", "تُحفظ في المسودة نفسها وتظهر في بقية التبويبات",
+      lvCard("إعدادات سريعة", "تُحفظ مع إعدادات النظام الحقيقية",
         lvGrid(lvNum(["points", "minXp"], "أقل نقاط للرسالة", 0, 1000, "", true), lvNum(["points", "maxXp"], "أعلى نقاط للرسالة", 0, 1000, "", true), lvNum(["points", "cooldown"], "فترة التهدئة بالثواني", 0, 3600))),
-      lvCard("نظرة على النشاط", "رسوم توضيحية ثابتة، ليست إحصاءات السيرفر", lvDemoTag("عرض توضيحي"), lvChart(LV_WEEK, "نشاط الرسائل خلال أسبوع (توضيحي)"), lvLegend()));
+      lvCard("نشاط المستويات الفعلي", analytics ? "إجماليات من سجلات XP الحالية؛ لا توجد بيانات يومية تاريخية." : "تعذر تحميل إحصاءات المستويات.",
+        analytics ? lvGrid(
+          cell("أعضاء لديهم نقاط", lvFmt(Number(totals.participants) || 0)),
+          cell("نقاط الرسائل", lvFmt(Number(totals.text_xp) || 0)),
+          cell("نقاط الصوت", lvFmt(Number(totals.voice_xp) || 0)),
+          cell("الرسائل المسجلة", lvFmt(Number(totals.total_messages) || 0)),
+          cell("وقت الصوت المسجل", lvSeconds(totals.total_voice_seconds)),
+          cell("نشطون خلال 7 أيام", lvFmt(Number(totals.active_members_7d) || 0)),
+        ) : el("p", { class: "leveling-unavail", text: "حاول إعادة تحميل إعدادات هذا السيرفر." })));
   }
   function lvTabPoints() {
     return el("div", { class: "leveling-stack" },
-      lvCard("نقاط الرسائل", "مسودة محلية توضيحية", lvDemoTag(), lvGrid(lvNum(["points", "minXp"], "أقل نقاط", 0, 1000, "", true), lvNum(["points", "maxXp"], "أعلى نقاط", 0, 1000, "", true), lvNum(["points", "cooldown"], "التهدئة (ثانية)", 0, 3600)),
+      lvCard("نقاط الرسائل", "هذه القيم تتحكم في نقاط الرسائل المباشرة", lvGrid(lvNum(["points", "minXp"], "أقل نقاط", 0, 1000, "", true), lvNum(["points", "maxXp"], "أعلى نقاط", 0, 1000, "", true), lvNum(["points", "cooldown"], "التهدئة (ثانية)", 0, 3600)),
         lvSwitch(["general", "text"], "تفعيل نقاط الرسائل")),
       lvCard("المضاعفات", "عام وللرتب والقنوات", lvNum(["points", "xpMultiplier"], "المضاعف العام (xp_multiplier)", 0, 10, "من 0 إلى 10، الافتراضي 1 (يقبل كسوراً)", true), lvMultList(["points", "roleMult"], "مضاعفات الرتب", "role"), lvMultList(["points", "chanMult"], "مضاعفات القنوات", "channel"), lvBoosts()),
       lvCard("القنوات المسموحة", "اتركها فارغة للسماح بكل القنوات. عند التحديد تُحتسب النقاط في هذه القنوات فقط", lvPicker(["points", "allowedChannels"], "قنوات مسموحة", "channel")),
@@ -6960,7 +6977,7 @@
       if (!cur.length) body.append(el("p", { class: "leveling-empty", text: "لا توجد مكافآت بعد. أضف أول مكافأة." }));
     };
     render();
-    wrap.append(lvCard("مكافآت المستويات", "محرر مسودة محلية", lvDemoTag(), lvSwitch(["rewards", "highestOnly"], "الاحتفاظ بأعلى رتبة فقط", "تُزال الرتب الأقل عند الوصول لرتبة أعلى"),
+     wrap.append(lvCard("مكافآت المستويات", "تُحفظ وتُطبّق على ترقيات الرتب", lvSwitch(["rewards", "highestOnly"], "الاحتفاظ بأعلى رتبة فقط", "تُزال الرتب الأقل عند الوصول لرتبة أعلى"),
       body, el("button", { type: "button", class: "leveling-btn", text: "إضافة مكافأة", onClick: () => { lvGet(["rewards", "list"]).push({ level: 5, role: "", type: "text" }); lvTouch(); render(); } })));
     if (!state.meta?.roles?.length) wrap.append(el("p", { class: "leveling-unavail", text: "قائمة الرتب غير متاحة حالياً، لذلك لا يمكن اختيار رتبة للمكافأة." }));
     return wrap;
@@ -7172,22 +7189,47 @@
       el("div", { class: "leveling-msg-preview", "data-msg-key": key }));
     return el("div", { class: "leveling-stack" }, lvDemoTag("قوالب توضيحية محلية"), mk("levelup", "رسالة رفع المستوى", "{user} {level} {server}"), mk("milestone", "رسالة الإنجاز (توضيحية محلية فقط)", "{user} {level}"), mk("overtake", "رسالة التجاوز", "{passer} {passed} {rank}"));
   }
-  const LV_DEMO = [["لينا", 31, 18420, 9210, 27630, 5120, 6720], ["ياسر", 27, 14100, 7300, 21400, 4410, 5880], ["ريم", 22, 9800, 3100, 12900, 3350, 2460], ["سلطان", 15, 4300, 2500, 6800, 1990, 2220], ["نورة", 9, 1800, 640, 2440, 870, 720]];
-  const lvMin = (m) => `${lvFmt(Math.floor(m / 60))} س ${lvFmt(m % 60)} د`;
+  const lvMin = (m) => `${lvFmt(Math.floor(m / 60))} س ${lvFmt(Math.floor(m % 60))} د`;
   function lvTabData() {
-    const rows = LV_DEMO.map((r, i) => el("tr", {}, el("td", { text: lvFmt(i + 1) }), el("th", { scope: "row", text: r[0] }), el("td", { text: lvFmt(r[1]) }), el("td", { text: lvFmt(r[2]) }), el("td", { text: lvFmt(r[3]) }), el("td", { text: lvFmt(r[4]) }), el("td", { text: lvFmt(r[5]) }), el("td", { text: lvMin(r[6]) })));
-    const head = ["#", "العضو", "المستوى", "نقاط الرسائل", "نقاط الصوت", "المجموع", "الرسائل", "وقت الصوت"];
-    const sum = (i) => LV_DEMO.reduce((a, r) => a + r[i], 0);
-    const top = LV_DEMO.reduce((a, r) => (r[1] > a[1] ? r : a), LV_DEMO[0]);
-    const act = LV_DEMO.reduce((a, r) => (r[5] > a[5] ? r : a), LV_DEMO[0]);
+    const s = lvState(), analytics = s.analytics, totals = analytics?.totals || {};
+    const board = s.leaderboard, mode = s.dataMode;
+    const voice = mode === "voice";
+    const rows = (board?.rows || []).map((row) => el("tr", {},
+      el("td", { text: lvFmt(row.rank) }),
+      el("th", { scope: "row", text: row.name || `عضو ${String(row.user_id).slice(-4)}` }),
+      el("td", { text: lvFmt(row.level) }),
+      el("td", { text: lvFmt(row.xp) }),
+      el("td", { text: voice ? lvSeconds(row.activity_total) : lvFmt(row.activity_total) }),
+    ));
+    const tableHead = ["#", "العضو", "المستوى", voice ? "نقاط الصوت" : "نقاط الرسائل", voice ? "وقت الصوت" : "الرسائل"];
+    const modeSelect = el("select", { "aria-label": "ترتيب المتصدرين" },
+      el("option", { value: "text", text: "ترتيب الرسائل" }),
+      el("option", { value: "voice", text: "ترتيب الصوت" }));
+    modeSelect.value = mode;
+    modeSelect.addEventListener("change", () => lvLoadBoard(modeSelect.value, 0, false));
+    const summary = analytics ? lvGrid(
+      el("div", { class: "leveling-stat" }, el("small", { text: "الأعضاء المشاركون" }), el("b", { text: lvFmt(Number(totals.participants) || 0) })),
+      el("div", { class: "leveling-stat" }, el("small", { text: "إجمالي نقاط الرسائل" }), el("b", { text: lvFmt(Number(totals.text_xp) || 0) })),
+      el("div", { class: "leveling-stat" }, el("small", { text: "إجمالي نقاط الصوت" }), el("b", { text: lvFmt(Number(totals.voice_xp) || 0) })),
+      el("div", { class: "leveling-stat" }, el("small", { text: "الرسائل المسجلة" }), el("b", { text: lvFmt(Number(totals.total_messages) || 0) })),
+      el("div", { class: "leveling-stat" }, el("small", { text: "وقت الصوت المسجل" }), el("b", { text: lvSeconds(totals.total_voice_seconds) })),
+      el("div", { class: "leveling-stat" }, el("small", { text: "أعضاء نشطون خلال 7 أيام" }), el("b", { text: lvFmt(Number(totals.active_members_7d) || 0) })),
+    ) : el("p", { class: "leveling-unavail", text: "تعذر تحميل إحصاءات المستويات الحقيقية." });
+    const table = el("div", { class: "leveling-table-wrap", tabindex: "0", role: "region", "aria-label": "ترتيب أعضاء السيرفر الحقيقي" },
+      el("table", { class: "leveling-table" },
+        el("thead", {}, el("tr", {}, ...tableHead.map((h) => el("th", { scope: "col", text: h })))),
+        el("tbody", {}, ...rows)));
+    const pagination = board?.nextOffset != null
+      ? el("button", { type: "button", class: "leveling-btn", text: "تحميل المزيد", onClick: () => lvLoadBoard(mode, board.nextOffset, true) })
+      : null;
     return el("div", { class: "leveling-stack" },
-      lvCard("أبرز الأعضاء", "أسماء وأرقام توضيحية ولا تمثل السيرفر الحقيقي", lvDemoTag("عرض توضيحي"),
-        el("div", { class: "leveling-table-wrap", tabindex: "0", role: "region", "aria-label": "جدول الأعضاء التوضيحي" }, el("table", { class: "leveling-table" }, el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { scope: "col", text: h })))), el("tbody", {}, ...rows)))),
-      lvCard("ملخص النشاط (توضيحي)", "", lvDemoTag("عرض توضيحي"), lvGrid(...[["أعضاء لديهم نقاط", lvFmt(LV_DEMO.length)], ["إجمالي النقاط", lvFmt(sum(4))], ["نقاط الرسائل", lvFmt(sum(2))], ["نقاط الصوت", lvFmt(sum(3))], ["إجمالي وقت الصوت", lvMin(sum(6))], ["إجمالي الرسائل", lvFmt(sum(5))], ["أعلى مستوى", `${lvFmt(top[1])} - ${top[0]}`], ["الأكثر نشاطاً", `${act[0]} (${lvFmt(act[5])} رسالة)`]].map(([l, v]) => el("div", { class: "leveling-stat" }, el("small", { text: l }), el("b", { text: v }))))),
-      lvCard("توزيع النقاط (توضيحي)", "", lvDemoTag("عرض توضيحي"), lvDist()),
-      lvCard("النشاط الأخير (توضيحي)", "", lvDemoTag("عرض توضيحي"), lvChart(LV_WEEK, "رسائل آخر 7 أيام (توضيحي)"), lvLegend(),
-        el("ul", { class: "leveling-recent" }, ...["لينا وصلت إلى المستوى 31", "ياسر تجاوز ريم في الترتيب", "نورة أكملت 12 ساعة صوتية"].map((t) => el("li", { text: t })))),
-      el("p", { class: "leveling-unavail", text: "الإحصاءات الحقيقية للمستويات غير متاحة: لا توجد واجهة برمجية للمستويات في لوحة التحكم الحالية." }));
+      lvCard("ترتيب الأعضاء الحقيقي", "مصدره سجلات نقاط السيرفر. الصفحات تستخدم ترتيباً مفهرساً للنص أو الصوت.", modeSelect,
+        s.leaderboardError ? el("p", { class: "leveling-unavail", text: "تعذر تحميل ترتيب الأعضاء." }) : null,
+        table, pagination),
+      lvCard("ملخص النشاط الحقيقي", "إجماليات مباشرة من SQLite؛ نشاط آخر 7 أيام هو عدد الأعضاء ذوي آخر رسالة حديثة.", summary),
+      lvCard("توزيع مستويات الرسائل", "أعلى 20 مستوى موجوداً في السجلات المحفوظة", lvDist(analytics?.distribution || [])),
+      lvCard("السجل التاريخي", "لا يحتفظ النظام الحالي بتاريخ يومي أو بسجل أحداث مستوى قابل للرسم.",
+        el("p", { class: "leveling-unavail", text: "الرسم اليومي والأحداث الأخيرة غير متاحين من قاعدة البيانات الحالية؛ لم تُنشأ بيانات تقديرية." })));
   }
   function lvValidate() {
     const d = lvState().draft, e = [];
