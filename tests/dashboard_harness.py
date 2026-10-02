@@ -326,7 +326,13 @@ async def test_login(req):
     sid = "harness-session"
     ws.SESSIONS[sid] = {
         "id": "10", "username": "Harness Admin", "avatar": "https://cdn.discordapp.com/embed/avatars/1.png",
-        "guilds": [{"id": str(FakeGuild.id), "name": FakeGuild.name, "members": 1284, "icon": None, "is_owner": False}],
+        "guilds": [{
+            "id": str(FakeGuild.id), "name": FakeGuild.name, "members": 1284,
+            "icon": None, "is_owner": False, "permissions": "8",
+        }],
+        "_oauth_guilds": [{
+            "id": str(FakeGuild.id), "owner": False, "permissions": "8",
+        }],
         "expires_at": time.time() + 3600, "csrf": "harness-csrf",
     }
     res = web.HTTPFound("/")

@@ -484,6 +484,7 @@
     security: { label: "الحماية", icon: "◈", hint: "Security" },
     moderation: { label: "المراقبة", icon: "⚔", hint: "Moderation" },
     analytics: { label: "السجلات", icon: "◉", hint: "Analytics" },
+    leveling: { label: "المستويات", icon: "✦", hint: "Levels" },
     economy: { label: "الاقتصاد", icon: "◌", hint: "Economy" },
     community: { label: "المجتمع", icon: "◎", hint: "Community" },
     ai: { label: "الذكاء الاصطناعي", icon: "✧", hint: "AI Tools" },
@@ -636,6 +637,7 @@
       navButton("security"),
       navButton("moderation"),
       navButton("analytics"),
+      navButton("leveling"),
       navButton("economy"),
       navButton("community"),
       navButton("ai"),
@@ -645,7 +647,7 @@
     const moreButton = el(
       "button",
       {
-         class: `nav-item ${["onboarding", "gaming", "clan", "security", "moderation", "analytics", "economy", "community", "ai", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
+         class: `nav-item ${["onboarding", "gaming", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
         type: "button",
         "aria-expanded": "false",
         onClick: () => {
@@ -6604,6 +6606,612 @@
        el("div", { class: "analytics-route-grid" }, ...cards),
     );
   }
+  // ===== Leveling view (Phase 7): frontend-only, guild-scoped local drafts =====
+  const LV_TABS = [
+    ["general", "عام"], ["points", "النقاط"], ["voice", "الصوت"], ["rewards", "المكافآت"],
+    ["card", "البطاقة"], ["messages", "الرسائل"], ["data", "البيانات"],
+  ];
+  const LV_LAYOUTS = { vertical: [560, 900, "عمودية"], stats: [1000, 420, "إحصائيات"], minimal: [900, 230, "مصغرة"], ring: [620, 680, "حلقة"], classic: [1000, 340, "كلاسيكية"] };
+  const LV_PARTS = { none: "بدون", sparks: "شرارات", shine: "لمعان", embers: "جمر", snow: "ثلج", petals: "بتلات", neon: "نيون" };
+  const lvDefaults = () => ({
+    general: { enabled: true, text: true, reaction: false, streak: true },
+    points: { xpMultiplier: 1, minXp: 15, maxXp: 25, cooldown: 60, roleMult: [], chanMult: [], boosts: [], allowedChannels: [], bl: { channels: [], users: [], roles: [] } },
+    voice: { enabled: true, xpPerMin: 20, muteBlock: true, deafBlock: true, minMembers: 2, dimEnabled: false, dimThreshold: 60, dimRate: 50, separate: true },
+    rewards: { highestOnly: true, list: [] },
+    card: { layout: "vertical", particles: "none", color: "#38bdf8", bg: "", animated: true, showStats: true },
+    messages: {
+      levelup: { on: true, channel: "", tpl: "مبروك {user}! وصلت إلى المستوى {level} في {server}." },
+      milestone: { on: true, channel: "", tpl: "{user} حقق إنجازاً جديداً عند المستوى {level}." },
+      overtake: { on: false, channel: "", tpl: "{passer} تجاوز {passed} وأصبح في المركز {rank}." },
+    },
+  });
+  const lvKey = (suffix) => `prime-leveling:${state.guild?.id || "none"}:${suffix}`;
+  const lvMerge = (base, src) => {
+    if (Array.isArray(base)) return Array.isArray(src) ? src : base;
+    if (base && typeof base === "object") {
+      const o = {};
+      Object.keys(base).forEach((k) => { o[k] = lvMerge(base[k], src && typeof src === "object" ? src[k] : undefined); });
+      return o;
+    }
+    return typeof src === typeof base ? src : base;
+  };
+  const lvObjs = (a, fn) => (Array.isArray(a) ? a.filter((x) => x && typeof x === "object" && !Array.isArray(x)).map(fn) : []);
+  const lvStrs = (a) => (Array.isArray(a) ? a.filter((x) => typeof x === "string" || typeof x === "number").map(String) : []);
+  const lvSan = (d) => {
+    const p = d.points;
+    p.roleMult = lvObjs(p.roleMult, (m) => ({ id: String(m.id ?? ""), mult: typeof m.mult === "number" ? m.mult : "" }));
+    p.chanMult = lvObjs(p.chanMult, (m) => ({ id: String(m.id ?? ""), mult: typeof m.mult === "number" ? m.mult : "" }));
+    p.boosts = lvObjs(p.boosts, (b) => ({ label: String(b.label ?? ""), mult: typeof b.mult === "number" ? b.mult : "", hours: typeof b.hours === "number" ? b.hours : "" }));
+    ["channels", "users", "roles"].forEach((k) => { p.bl[k] = lvStrs(p.bl[k]); });
+    p.allowedChannels = lvStrs(p.allowedChannels);
+    d.rewards.list = lvObjs(d.rewards.list, (r) => ({ level: typeof r.level === "number" ? r.level : "", role: String(r.role ?? ""), type: r.type === "voice" ? "voice" : "text" }));
+    return d;
+  };
+  const lvLoad = (suffix) => {
+    try {
+      const raw = localStorage.getItem(lvKey(suffix));
+      return raw ? lvSan(lvMerge(lvDefaults(), JSON.parse(raw))) : null;
+    } catch (_) { return null; }
+  };
+  const lvStore = (suffix, v) => { try { localStorage.setItem(lvKey(suffix), JSON.stringify(v)); return true; } catch (_) { return false; } };
+  function lvState() {
+    const gid = state.guild?.id || "none";
+    if (!state.leveling || state.leveling.gid !== gid) {
+      const saved = lvLoad("saved");
+      state.leveling = {
+        gid, saved: saved || lvDefaults(), hasSaved: Boolean(saved),
+        draft: lvLoad("work") || (saved ? clone(saved) : lvDefaults()),
+        tab: sessionStorage.getItem("leveling-tab") || "general", errors: [],
+      };
+      if (!LV_TABS.some((t) => t[0] === state.leveling.tab)) state.leveling.tab = "general";
+    }
+    return state.leveling;
+  }
+  const lvDirty = () => { const s = lvState(); return JSON.stringify(s.draft) !== JSON.stringify(s.saved); };
+  function lvTouch() {
+    const s = lvState();
+    lvStore("work", s.draft);
+    lvStatus();
+    lvPreviews();
+    drawLvCard();
+  }
+  function lvStatus() {
+    const n = $(".leveling-state-pill");
+    if (!n) return;
+    const dirtyNow = lvDirty();
+    n.textContent = dirtyNow ? "تعديلات غير محفوظة (مسودة محلية في هذا المتصفح)" : lvState().hasSaved ? "مسودة محفوظة محلياً في هذا المتصفح" : "القيم الافتراضية التجريبية";
+    n.classList.toggle("is-dirty", dirtyNow);
+  }
+  const lvGet = (path) => path.reduce((o, k) => o?.[k], lvState().draft);
+  const lvSet = (path, v) => { path.slice(0, -1).reduce((o, k) => o[k], lvState().draft)[path[path.length - 1]] = v; lvTouch(); };
+  let lvUid = 0;
+  const lvId = () => `lv-${++lvUid}`;
+  function lvField(label, control, hint) {
+    const target = control.id ? control : control.querySelector?.("input,select,textarea") || control;
+    const id = target.id || lvId();
+    target.id = id;
+    return el("div", { class: "leveling-field" }, el("label", { for: id, text: label }), control, hint ? el("small", { text: hint }) : null);
+  }
+  function lvSwitch(path, label, hint) {
+    const id = lvId();
+    const b = el("button", { class: "leveling-switch", id, type: "button", role: "switch", "aria-checked": String(Boolean(lvGet(path))), "aria-labelledby": `${id}-l` }, el("i"));
+    b.addEventListener("click", () => { const v = !lvGet(path); lvSet(path, v); b.setAttribute("aria-checked", String(v)); });
+    return el("div", { class: "leveling-row" }, el("span", { class: "leveling-row-copy" }, el("b", { id: `${id}-l`, text: label }), hint ? el("small", { text: hint }) : null), b);
+  }
+  function lvNum(path, label, min, max, hint, slider) {
+    const step = path[1] === "xpMultiplier" ? 0.1 : 1;
+    const n = el("input", { type: "number", min, max, step, inputmode: "decimal", value: lvGet(path) });
+    const cur = lvGet(path);
+    const r = slider ? el("input", { type: "range", class: "leveling-range", min, max, step, value: typeof cur === "number" ? cur : min, "aria-label": `${label} (شريط)` }) : null;
+    n.addEventListener("input", () => { lvSet(path, n.value === "" ? "" : Number(n.value)); if (r && n.value !== "") r.value = n.value; });
+    r?.addEventListener("input", () => { n.value = r.value; lvSet(path, Number(r.value)); });
+    return lvField(label, r ? el("div", { class: "leveling-numslider" }, n, r) : n, hint || `من ${min} إلى ${max}`);
+  }
+  function lvText(path, label, attrs = {}, hint) {
+    const n = el("input", { type: "text", maxlength: 300, dir: "auto", value: lvGet(path), ...attrs });
+    n.addEventListener("input", () => lvSet(path, n.value));
+    return lvField(label, n, hint);
+  }
+  function lvArea(path, label, hint) {
+    const n = el("textarea", { rows: 3, maxlength: 500, dir: "auto" });
+    n.value = lvGet(path);
+    n.addEventListener("input", () => lvSet(path, n.value));
+    return lvField(label, n, hint);
+  }
+  function lvSelect(path, label, opts, hint, onChange) {
+    const n = el("select", {});
+    opts.forEach(([v, t]) => n.append(el("option", { value: v, text: t })));
+    n.value = lvGet(path);
+    n.addEventListener("change", () => { lvSet(path, n.value); onChange?.(); });
+    return lvField(label, n, hint);
+  }
+  const lvAssignable = (r) => r && !r.managed && r.assignable !== false && String(r.id) !== String(state.guild?.id);
+  const lvRoleOpts = (empty) => [["", empty], ...(state.meta?.roles || []).filter(lvAssignable).map((r) => [String(r.id), r.name])];
+  const lvChanOpts = (empty) => [["", empty], ...(state.meta?.channels || []).map((c) => [String(c.id), `#${c.name}`])];
+  function lvPicker(path, label, kind) {
+    const list = kind === "role" ? state.meta?.roles : state.meta?.channels;
+    if (!list?.length) return el("div", { class: "leveling-unavail" }, el("b", { text: label }), el("small", { text: "غير متاح: لم تصل قائمة الرتب أو القنوات من بيانات السيرفر." }));
+    const wrap = el("div", { class: "leveling-field" });
+    const render = () => {
+      const cur = lvGet(path);
+      const sel = el("select", { "aria-label": `إضافة إلى ${label}` });
+      sel.append(el("option", { value: "", text: "اختر للإضافة" }));
+      list.filter((x) => !cur.includes(String(x.id))).forEach((x) => sel.append(el("option", { value: String(x.id), text: kind === "role" ? x.name : `#${x.name}` })));
+      sel.addEventListener("change", () => { if (sel.value) { lvSet(path, [...cur, sel.value]); render(); } });
+      wrap.replaceChildren(el("label", { text: label }), sel, el("div", { class: "leveling-chips" }, ...cur.map((id) => {
+        const item = list.find((x) => String(x.id) === id);
+        return el("button", { type: "button", class: "leveling-chip", "aria-label": `إزالة ${item?.name || "عنصر غير معروف"}`, onClick: () => { lvSet(path, cur.filter((x) => x !== id)); render(); } }, `${kind === "role" ? "" : "#"}${item?.name || "غير معروف"}  ×`);
+      })));
+    };
+    render();
+    return wrap;
+  }
+  function lvUsers(path, label) {
+    const wrap = el("div", { class: "leveling-field" });
+    const render = () => {
+      const cur = lvGet(path);
+      const inp = el("input", { type: "text", inputmode: "numeric", maxlength: 20, placeholder: "معرّف العضو (أرقام)", "aria-label": label });
+      const add = el("button", { type: "button", class: "leveling-btn", text: "إضافة", onClick: () => {
+        const v = inp.value.trim();
+        if (!/^\d{15,20}$/.test(v) || cur.includes(v)) { inp.setAttribute("aria-invalid", "true"); return; }
+        lvSet(path, [...cur, v]); render();
+      } });
+      wrap.replaceChildren(el("label", { text: label }), el("div", { class: "leveling-inline" }, inp, add), el("div", { class: "leveling-chips" }, ...cur.map((id) => el("button", { type: "button", class: "leveling-chip", "aria-label": `إزالة ${id}`, onClick: () => { lvSet(path, cur.filter((x) => x !== id)); render(); } }, `${id}  ×`))));
+    };
+    render();
+    return wrap;
+  }
+  function lvMultList(path, label, kind) {
+    const wrap = el("div", { class: "leveling-field" });
+    const render = () => {
+      const cur = lvGet(path);
+      const opts = kind === "role" ? lvRoleOpts("اختر رتبة") : lvChanOpts("اختر قناة");
+      const rows = cur.map((r, i) => {
+        const s = el("select", { "aria-label": kind === "role" ? "الرتبة" : "القناة" });
+        opts.forEach(([v, t]) => s.append(el("option", { value: v, text: t })));
+        s.value = r.id;
+        s.addEventListener("change", () => { r.id = s.value; lvTouch(); });
+        const m = el("input", { type: "number", min: 0, max: 10, step: 0.1, value: r.mult, "aria-label": "المضاعف" });
+        m.addEventListener("input", () => { r.mult = m.value === "" ? "" : Number(m.value); lvTouch(); });
+        return el("div", { class: "leveling-inline" }, s, m, el("button", { type: "button", class: "leveling-btn ghost", text: "حذف", onClick: () => { cur.splice(i, 1); lvTouch(); render(); } }));
+      });
+      const disabled = opts.length < 2;
+      wrap.replaceChildren(el("label", { text: label }), ...rows, disabled ? el("small", { text: "غير متاح: قائمة الرتب أو القنوات غير محملة." }) : null,
+        el("button", { type: "button", class: "leveling-btn", disabled, text: "إضافة مضاعف", onClick: () => { cur.push({ id: "", mult: 1.5 }); lvTouch(); render(); } }));
+    };
+    render();
+    return wrap;
+  }
+  function lvBoosts() {
+    const wrap = el("div", { class: "leveling-field" });
+    const render = () => {
+      const cur = lvGet(["points", "boosts"]);
+      const rows = cur.map((b, i) => {
+        const n = el("input", { type: "text", maxlength: 40, value: b.label, "aria-label": "اسم التعزيز", dir: "auto" });
+        n.addEventListener("input", () => { b.label = n.value; lvTouch(); });
+        const m = el("input", { type: "number", min: 1, max: 10, step: 0.1, value: b.mult, "aria-label": "المضاعف" });
+        m.addEventListener("input", () => { b.mult = m.value === "" ? "" : Number(m.value); lvTouch(); });
+        const h = el("input", { type: "number", min: 1, max: 168, step: 1, value: b.hours, "aria-label": "المدة بالساعات" });
+        h.addEventListener("input", () => { b.hours = h.value === "" ? "" : Number(h.value); lvTouch(); });
+        return el("div", { class: "leveling-inline" }, n, m, h, el("button", { type: "button", class: "leveling-btn ghost", text: "حذف", onClick: () => { cur.splice(i, 1); lvTouch(); render(); } }));
+      });
+      wrap.replaceChildren(el("label", { text: "تعزيزات مؤقتة (الاسم / المضاعف / الساعات)" }), ...rows,
+        el("button", { type: "button", class: "leveling-btn", text: "إضافة تعزيز", onClick: () => { cur.push({ label: "تعزيز نهاية الأسبوع", mult: 2, hours: 24 }); lvTouch(); render(); } }));
+    };
+    render();
+    return wrap;
+  }
+  const lvCard = (title, sub, ...kids) => el("section", { class: "leveling-card" }, el("header", {}, el("h3", { text: title }), sub ? el("small", { text: sub }) : null), ...kids);
+  const lvGrid = (...k) => el("div", { class: "leveling-grid" }, ...k);
+  const lvDemoTag = (t = "بيانات توضيحية") => el("span", { class: "leveling-demo", text: t });
+  const lvFmt = (n) => new Intl.NumberFormat("ar-EG").format(n);
+  const LV_WEEK = [["س", 320], ["ح", 410], ["ن", 380], ["ث", 520], ["ر", 470], ["خ", 640], ["ج", 590]];
+  function lvChart(rows, label) {
+    const NS = "http://www.w3.org/2000/svg", W = 420, H = 150, pad = 18, mx = Math.max(...rows.map((r) => r[1]));
+    const mk = (t, a) => { const n = document.createElementNS(NS, t); Object.entries(a).forEach(([k, v]) => n.setAttribute(k, v)); return n; };
+    const svg = mk("svg", { viewBox: `0 0 ${W} ${H + 20}`, class: "leveling-chart", role: "img", "aria-label": label, preserveAspectRatio: "xMidYMid meet" });
+    const gid = lvId();
+    const defs = mk("defs", {}), lg = mk("linearGradient", { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
+    [["0", "#22d3ee", .55], ["1", "#6366f1", .04]].forEach(([o, c, op]) => lg.append(mk("stop", { offset: o, "stop-color": c, "stop-opacity": op })));
+    const sg = mk("linearGradient", { id: `${gid}s`, x1: 0, y1: 0, x2: 1, y2: 0 });
+    [["0", "#22d3ee"], ["0.55", "#6366f1"], ["1", "#a855f7"]].forEach(([o, c]) => sg.append(mk("stop", { offset: o, "stop-color": c })));
+    defs.append(lg, sg); svg.append(defs);
+    const pts = rows.map((r, i) => [pad + i * (W - 2 * pad) / (rows.length - 1), H - pad - (r[1] / mx) * (H - 2 * pad)]);
+    const line = pts.map((q, i) => `${i ? "L" : "M"}${q[0].toFixed(1)} ${q[1].toFixed(1)}`).join(" ");
+    svg.append(mk("path", { d: `${line} L${pts[pts.length - 1][0]} ${H - pad} L${pts[0][0]} ${H - pad} Z`, fill: `url(#${gid})` }), mk("path", { d: line, fill: "none", stroke: `url(#${gid}s)`, "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    pts.forEach((q, i) => { svg.append(mk("circle", { cx: q[0], cy: q[1], r: 4, fill: "#030712", stroke: "#22d3ee", "stroke-width": 2 })); const t = mk("text", { x: q[0], y: H + 12, "text-anchor": "middle", fill: "#8aa4c8", "font-size": 11 }); t.textContent = rows[i][0]; svg.append(t); });
+    return el("div", { class: "leveling-chart-wrap" }, svg);
+  }
+  const lvLegend = () => el("p", { class: "leveling-legend", text: "قيم توضيحية: الأعلى 640 رسالة والأدنى 320. لا تمثل نشاط السيرفر الفعلي." });
+  function lvDist() {
+    const mx = Math.max(...LV_DEMO.map((r) => r[4]));
+    return el("div", { class: "leveling-dist" }, ...LV_DEMO.map((r) => el("div", { class: "leveling-dist-row" }, el("span", { text: r[0] }),
+      el("div", { class: "leveling-meter", role: "img", "aria-label": `${r[0]}: ${lvFmt(r[4])} نقطة (توضيحي)` }, el("i", { style: `width:${(r[4] / mx * 100).toFixed(1)}%` })), el("b", { text: lvFmt(r[4]) }))));
+  }
+  function lvIdentity() {
+    const name = state.session?.username, av = state.session?.avatar;
+    return el("div", { class: "leveling-avatar-status", role: "status" }, avatar(av, name || "?"),
+      el("small", { text: name ? `المعاينة تستخدم حسابك الحقيقي المسجّل: ${name}${av ? "" : " (بدون صورة، تظهر صورة افتراضية)"}.` : "لا يوجد حساب مسجّل: تُستخدم هوية عضو تجريبي." }));
+  }
+  function lvPreviews() {
+    const d = lvState().draft, me = state.session?.username || "عضو تجريبي";
+    const vars = { user: me, level: "12", server: state.guild?.name || "السيرفر", passer: me, passed: "ياسر", rank: "3" };
+    document.querySelectorAll(".leveling-msg-preview").forEach((box) => {
+      const m = d.messages[box.dataset.msgKey];
+      if (!m) return;
+      const ch = (state.meta?.channels || []).find((c) => String(c.id) === m.channel);
+      const text = String(m.tpl).replace(/\{(\w+)\}/g, (all, k) => (k in vars ? vars[k] : all));
+      box.replaceChildren(
+        el("small", { class: "leveling-mock-tag", text: "معاينة وهمية محلية، لا تُرسل إلى ديسكورد" }),
+        el("div", { class: `leveling-discord${m.on ? "" : " is-off"}` }, avatar(state.session?.avatar, "P"),
+          el("div", {}, el("div", { class: "leveling-discord-head" }, el("b", { text: "PRIME" }), el("span", { text: "BOT" }), el("small", { text: ch ? `#${ch.name}` : "القناة الحالية" })),
+            el("p", { text: m.on ? text : "هذا الإشعار معطل حالياً." }))));
+    });
+  }
+  function lvTabGeneral() {
+    const st = state.stats || {};
+    const members = [st.guild?.members, state.meta?.guild?.members, state.guild?.members].find((v) => typeof v === "number" ? Number.isFinite(v) : (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))));
+    const cell = (l, v) => el("div", { class: "leveling-stat" }, el("small", { text: l }), el("b", { text: v }));
+    return el("div", { class: "leveling-stack" },
+      lvCard("بيانات السيرفر الحقيقية", "من بيانات لوحة التحكم الحالية",
+        lvGrid(cell("السيرفر", state.guild?.name || "غير متاح"), cell("الأعضاء", members != null ? lvFmt(Number(members)) : "غير متاح"),
+          cell("القنوات", state.meta?.channels ? lvFmt(state.meta.channels.length) : "غير متاح"), cell("الرتب", state.meta?.roles ? lvFmt(state.meta.roles.length) : "غير متاح"))),
+      lvCard("حالة الأنظمة", "قيم المسودة المحلية (توضيحية)", lvDemoTag(),
+        lvSwitch(["general", "enabled"], "تفعيل نظام المستويات"), lvSwitch(["general", "text"], "نقاط الرسائل"),
+        lvSwitch(["voice", "enabled"], "نقاط الصوت"), lvSwitch(["general", "reaction"], "نقاط التفاعلات"), lvSwitch(["general", "streak"], "مكافأة التواصل اليومي")),
+      lvCard("إعدادات سريعة", "تُحفظ في المسودة نفسها وتظهر في بقية التبويبات",
+        lvGrid(lvNum(["points", "minXp"], "أقل نقاط للرسالة", 0, 1000, "", true), lvNum(["points", "maxXp"], "أعلى نقاط للرسالة", 0, 1000, "", true), lvNum(["points", "cooldown"], "فترة التهدئة بالثواني", 0, 3600))),
+      lvCard("نظرة على النشاط", "رسوم توضيحية ثابتة، ليست إحصاءات السيرفر", lvDemoTag("عرض توضيحي"), lvChart(LV_WEEK, "نشاط الرسائل خلال أسبوع (توضيحي)"), lvLegend()));
+  }
+  function lvTabPoints() {
+    return el("div", { class: "leveling-stack" },
+      lvCard("نقاط الرسائل", "مسودة محلية توضيحية", lvDemoTag(), lvGrid(lvNum(["points", "minXp"], "أقل نقاط", 0, 1000, "", true), lvNum(["points", "maxXp"], "أعلى نقاط", 0, 1000, "", true), lvNum(["points", "cooldown"], "التهدئة (ثانية)", 0, 3600)),
+        lvSwitch(["general", "text"], "تفعيل نقاط الرسائل")),
+      lvCard("المضاعفات", "عام وللرتب والقنوات", lvNum(["points", "xpMultiplier"], "المضاعف العام (xp_multiplier)", 0, 10, "من 0 إلى 10، الافتراضي 1 (يقبل كسوراً)", true), lvMultList(["points", "roleMult"], "مضاعفات الرتب", "role"), lvMultList(["points", "chanMult"], "مضاعفات القنوات", "channel"), lvBoosts()),
+      lvCard("القنوات المسموحة", "اتركها فارغة للسماح بكل القنوات. عند التحديد تُحتسب النقاط في هذه القنوات فقط", lvPicker(["points", "allowedChannels"], "قنوات مسموحة", "channel")),
+      lvCard("القائمة السوداء", "عناصر لا تكسب نقاطاً (منفصلة عن القنوات المسموحة)", lvGrid(lvPicker(["points", "bl", "channels"], "قنوات محظورة", "channel"), lvPicker(["points", "bl", "roles"], "رتب محظورة", "role"), lvUsers(["points", "bl", "users"], "أعضاء محظورون"))));
+  }
+  function lvTabVoice() {
+    return el("div", { class: "leveling-stack" },
+      lvCard("نقاط الصوت", "مسودة محلية توضيحية", lvDemoTag(), lvSwitch(["voice", "enabled"], "تفعيل نقاط الصوت"), lvSwitch(["voice", "separate"], "مستويات صوتية منفصلة", "مستوى الصوت مستقل عن مستوى الرسائل"),
+        lvGrid(lvNum(["voice", "xpPerMin"], "نقاط في الدقيقة", 0, 500), lvNum(["voice", "minMembers"], "أقل عدد أعضاء بالغرفة", 1, 99))),
+      lvCard("الحماية", "", lvSwitch(["voice", "muteBlock"], "منع النقاط عند الكتم"), lvSwitch(["voice", "deafBlock"], "منع النقاط عند الصمم")),
+      lvCard("تناقص العائد", "تقليل النقاط بعد مدة طويلة", lvSwitch(["voice", "dimEnabled"], "تفعيل تناقص العائد"), lvGrid(lvNum(["voice", "dimThreshold"], "العتبة بالدقائق", 0, 1440), lvNum(["voice", "dimRate"], "نسبة النقاط بعد العتبة %", 0, 100))));
+  }
+  function lvTabRewards() {
+    const wrap = el("div", { class: "leveling-stack" });
+    const body = el("div", { class: "leveling-reward-list" });
+    const render = () => {
+      const cur = lvGet(["rewards", "list"]);
+      body.replaceChildren(...cur.map((r, i) => {
+        const lv = el("input", { type: "number", min: 1, max: 1000, value: r.level, "aria-label": "المستوى" });
+        lv.addEventListener("input", () => { r.level = lv.value === "" ? "" : Number(lv.value); lvTouch(); });
+        const role = el("select", { "aria-label": "الرتبة" });
+        lvRoleOpts("اختر رتبة").forEach(([v, t]) => role.append(el("option", { value: v, text: t })));
+        role.value = r.role;
+        role.addEventListener("change", () => { r.role = role.value; lvTouch(); });
+        const type = el("select", { "aria-label": "النوع" });
+        [["text", "نصي"], ["voice", "صوتي"]].forEach(([v, t]) => type.append(el("option", { value: v, text: t })));
+        type.value = r.type;
+        type.addEventListener("change", () => { r.type = type.value; lvTouch(); });
+        return el("div", { class: "leveling-reward" }, el("span", { class: "leveling-lvl", text: `المستوى` }), lv, role, type, el("button", { type: "button", class: "leveling-btn ghost", text: "حذف", onClick: () => { cur.splice(i, 1); lvTouch(); render(); } }));
+      }));
+      if (!cur.length) body.append(el("p", { class: "leveling-empty", text: "لا توجد مكافآت بعد. أضف أول مكافأة." }));
+    };
+    render();
+    wrap.append(lvCard("مكافآت المستويات", "محرر مسودة محلية", lvDemoTag(), lvSwitch(["rewards", "highestOnly"], "الاحتفاظ بأعلى رتبة فقط", "تُزال الرتب الأقل عند الوصول لرتبة أعلى"),
+      body, el("button", { type: "button", class: "leveling-btn", text: "إضافة مكافأة", onClick: () => { lvGet(["rewards", "list"]).push({ level: 5, role: "", type: "text" }); lvTouch(); render(); } })));
+    if (!state.meta?.roles?.length) wrap.append(el("p", { class: "leveling-unavail", text: "قائمة الرتب غير متاحة حالياً، لذلك لا يمكن اختيار رتبة للمكافأة." }));
+    return wrap;
+  }
+  const lvBgOk = (v) => { if (!v) return true; try { const u = new URL(v); return u.protocol === "https:" && v.length <= 400; } catch (_) { return false; } };
+  function lvTabCard() {
+    const cv = el("canvas", { class: "leveling-canvas", role: "img", "aria-label": "معاينة بطاقة المستوى التوضيحية" });
+    const color = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(lvGet(["card", "color"])) ? lvGet(["card", "color"]) : "#38bdf8" });
+    color.addEventListener("input", () => lvSet(["card", "color"], color.value));
+    const bg = lvText(["card", "bg"], "رابط الخلفية (HTTPS فقط)", { type: "text", dir: "ltr", placeholder: "https://" }, "اختياري. يُحمَّل في معاينة هذا المتصفح فقط.");
+    bg.querySelector("input").addEventListener("input", (e) => e.target.setAttribute("aria-invalid", String(!lvBgOk(e.target.value.trim()))));
+    return el("div", { class: "leveling-split" },
+      el("div", { class: "leveling-stack" },
+        lvCard("تصميم البطاقة", "مسودة محلية", lvSelect(["card", "layout"], "القالب", Object.entries(LV_LAYOUTS).map(([k, v]) => [k, v[2]])),
+          lvSelect(["card", "particles"], "الجزيئات", Object.entries(LV_PARTS)), lvField("لون التمييز", color), bg, lvSwitch(["card", "animated"], "شريط تقدم لامع"), lvSwitch(["card", "showStats"], "عرض الإحصاءات في البطاقة", "يعمل مع القالبين العمودي والإحصائيات فقط، وبقية القوالب لا تعرض بلوك الإحصاءات"), lvIdentity(), el("p", { class: "leveling-bg-status", role: "status", "aria-live": "polite" }))),
+      lvCard("معاينة مباشرة", "بطاقة Phase 5 الأصلية بهوية حسابك • أرقام XP توضيحية فقط", lvDemoTag("هوية حقيقية / نقاط توضيحية"), el("div", { class: "leveling-canvas-wrap" }, cv),
+        el("p", { class: "leveling-render-status", role: "status", "aria-live": "polite", text: "جارٍ تحميل بطاقة PRIME…" })));
+  }
+  let lvBgImg = { url: "", img: null, failed: false };
+  function lvBgStatus() {
+    const n = $(".leveling-bg-status");
+    if (!n) return;
+    const u = String(lvState().draft.card.bg || "").trim();
+    let t = "", warn = false;
+    if (!u) t = "لا توجد خلفية مخصصة.";
+    else if (!lvBgOk(u)) { t = "تحذير: الرابط غير صالح، يلزم رابط https://."; warn = true; }
+    else if (lvBgImg.url === u && lvBgImg.failed) { t = "تحذير: تعذر تحميل الصورة، تظهر المعاينة بدون خلفية."; warn = true; }
+    else if (lvBgImg.url === u && lvBgImg.img) t = "تم تحميل الخلفية في المعاينة.";
+    else t = "جارٍ تحميل الخلفية...";
+    n.textContent = t;
+    n.classList.toggle("is-warn", warn);
+  }
+  // Artwork is generated offline by the original Phase 5 Pillow renderer.
+  // Embedded base/mask assets avoid adding a preview endpoint in Phase 7.
+  const LV_GEOMETRY = {
+    vertical: { avatar: [164, 110, 232], name: [280, 372, 30, 475, "center"], handle: [280, 417, 465], bar: [56, 579, 448, 12], stats: [[30, 657, 242, 94], [288, 657, 242, 94], [30, 763, 242, 94]] },
+    stats: { avatar: [45, 85, 190], name: [276, 75, 32, 470, "left"], handle: [278, 122, 430], bar: [278, 252, 685, 14], stats: [[32, 302, 302, 94], [349, 302, 302, 94], [666, 302, 302, 94]] },
+    minimal: { avatar: [36, 48, 128], name: [195, 33, 26, 445, "left"], bar: [196, 164, 655, 10] },
+    ring: { avatar: [185, 94, 250], name: [310, 401, 30, 530, "center"], handle: [310, 447, 530] },
+    classic: { avatar: [58, 85, 165], name: [260, 89, 31, 490, "left"], handle: [261, 135, 455], bar: [262, 251, 675, 17] },
+  };
+  const lvImageCache = new Map();
+  let lvDrawToken = 0, lvAnimation = 0;
+  let lvAvatarImage = { url: "", image: null, failed: false };
+  function lvAsset(cv, key) {
+    const raw = getComputedStyle(cv).getPropertyValue(`--prime-card-${key}`).trim();
+    const match = /^url\(["']?(data:image\/png;base64,[A-Za-z0-9+/=]+)["']?\)$/.exec(raw);
+    if (!match) return Promise.reject(new Error(`Missing Phase 5 artwork: ${key}`));
+    if (!lvImageCache.has(key)) {
+      const promise = new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("Unable to decode Phase 5 artwork"));
+        image.src = match[1];
+      });
+      lvImageCache.set(key, promise);
+      // Bound decoded-image memory on phones; the embedded URLs stay in CSS.
+      while (lvImageCache.size > 12) lvImageCache.delete(lvImageCache.keys().next().value);
+    }
+    return lvImageCache.get(key);
+  }
+  function lvPixels(image, width, height) {
+    const canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0, width, height);
+    return context.getImageData(0, 0, width, height);
+  }
+  function lvLoadIdentity() {
+    const raw = state.session?.avatar;
+    let url = "";
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol === "https:" && ["cdn.discordapp.com", "media.discordapp.net", "cdn.discordapp.net"].includes(parsed.hostname)) url = parsed.href;
+    } catch (_) { /* A missing Discord avatar is reported below. */ }
+    if (url && lvAvatarImage.url !== url) {
+      const image = new Image();
+      lvAvatarImage = { url, image: null, failed: false };
+      image.crossOrigin = "anonymous";
+      image.referrerPolicy = "no-referrer";
+      image.onload = () => { if (lvAvatarImage.url === url) { lvAvatarImage.image = image; drawLvCard(); } };
+      image.onerror = () => { if (lvAvatarImage.url === url) { lvAvatarImage.failed = true; drawLvCard(); } };
+      image.src = url;
+    }
+    const status = $(".leveling-avatar-status small");
+    if (status) {
+      const name = state.session?.username || "الحساب";
+      status.textContent = url && lvAvatarImage.image ? `تُستخدم صورة Discord الفعلية لحساب ${name}.`
+        : url && !lvAvatarImage.failed ? "جارٍ تحميل صورة حساب Discord الفعلية…"
+        : `صورة Discord غير متاحة لحساب ${name}؛ تُعرض صورة مولد Phase 5 الافتراضية، وليست صورة عضو وهمي.`;
+    }
+    return url && lvAvatarImage.url === url ? lvAvatarImage.image : null;
+  }
+  async function drawLvCard() {
+    cancelAnimationFrame(lvAnimation);
+    const cv = $(".leveling-canvas");
+    if (!cv) return;
+    const token = ++lvDrawToken, d = { ...lvState().draft.card };
+    const layout = LV_LAYOUTS[d.layout] ? d.layout : "vertical";
+    const mode = LV_PARTS[d.particles] ? d.particles : "none";
+    const [W, H] = LV_LAYOUTS[layout], geometry = LV_GEOMETRY[layout];
+    const color = /^#[0-9a-f]{6}$/i.test(d.color) ? d.color : "#38bdf8";
+    const rgb = [1, 3, 5].map((i) => parseInt(color.slice(i, i + 2), 16));
+    const avatarImage = lvLoadIdentity();
+    const bgUrl = String(d.bg || "").trim();
+    if (bgUrl && lvBgOk(bgUrl) && lvBgImg.url !== bgUrl) {
+      const image = new Image();
+      lvBgImg = { url: bgUrl, img: null, failed: false };
+      image.referrerPolicy = "no-referrer";
+      image.onload = () => { if (lvBgImg.url === bgUrl) { lvBgImg.img = image; drawLvCard(); } };
+      image.onerror = () => { if (lvBgImg.url === bgUrl) { lvBgImg.failed = true; lvBgStatus(); } };
+      image.src = bgUrl;
+    }
+    lvBgStatus();
+    cv.dataset.ready = "false";
+    try {
+      const hidden = !d.showStats && geometry.stats;
+      const sources = await Promise.all([
+        lvAsset(cv, `${layout}-${mode}-base`), lvAsset(cv, `${layout}-${mode}-mask`),
+        hidden ? lvAsset(cv, `${layout}-hidden-base`) : null,
+        hidden ? lvAsset(cv, `${layout}-hidden-mask`) : null,
+        bgUrl && lvBgImg.img && lvBgImg.url === bgUrl ? lvAsset(cv, `${layout}-background`) : null,
+      ]);
+      if (token !== lvDrawToken || !cv.isConnected) return;
+      const base = lvPixels(sources[0], W, H), mask = lvPixels(sources[1], W, H);
+      if (hidden) {
+        const bare = lvPixels(sources[2], W, H), bareMask = lvPixels(sources[3], W, H);
+        geometry.stats.forEach(([x, y, w, h]) => {
+          for (let row = y; row < y + h; row++) {
+            const start = (row * W + x) * 4, end = start + w * 4;
+            base.data.set(bare.data.subarray(start, end), start);
+            mask.data.set(bareMask.data.subarray(start, end), start);
+          }
+        });
+      }
+      // Reconstruct the original generator's accent pixels, not a new card design.
+      for (let i = 0; i < base.data.length; i += 4) {
+        for (let channel = 0; channel < 3; channel++) base.data[i + channel] += mask.data[i + channel] * rgb[channel] / 255;
+      }
+      const scene = document.createElement("canvas");
+      scene.width = W; scene.height = H;
+      const c = scene.getContext("2d");
+      c.putImageData(base, 0, 0);
+      if (sources[4]) {
+        const matte = lvPixels(sources[4], W, H);
+        for (let i = 0; i < matte.data.length; i += 4) {
+          matte.data[i + 3] = Math.max(matte.data[i], matte.data[i + 1], matte.data[i + 2]);
+          matte.data[i] = matte.data[i + 1] = matte.data[i + 2] = 255;
+        }
+        const alpha = document.createElement("canvas"), photo = document.createElement("canvas");
+        alpha.width = photo.width = W; alpha.height = photo.height = H;
+        alpha.getContext("2d").putImageData(matte, 0, 0);
+        const pc = photo.getContext("2d"), image = lvBgImg.img;
+        const scale = Math.max(W / image.width, H / image.height);
+        pc.filter = "blur(8px) saturate(0.65)";
+        pc.drawImage(image, (W - image.width * scale) / 2, (H - image.height * scale) / 2, image.width * scale, image.height * scale);
+        pc.filter = "none"; pc.globalCompositeOperation = "destination-in"; pc.drawImage(alpha, 0, 0);
+        c.drawImage(photo, 0, 0);
+      }
+      if (avatarImage) {
+        const [x, y, diameter] = geometry.avatar;
+        const crop = Math.min(avatarImage.width, avatarImage.height);
+        c.save(); c.beginPath(); c.arc(x + diameter / 2, y + diameter / 2, diameter / 2, 0, Math.PI * 2); c.clip();
+        c.drawImage(avatarImage, (avatarImage.width - crop) / 2, (avatarImage.height - crop) / 2, crop, crop, x, y, diameter, diameter); c.restore();
+      }
+      const [x, y, size, maxWidth, align] = geometry.name;
+      c.direction = "ltr"; c.textAlign = align; c.textBaseline = "top";
+      c.font = `700 ${size}px "DejaVu Sans", system-ui, sans-serif`; c.fillStyle = "#f8f5fc";
+      c.fillText(String(state.session?.username || "حساب غير متاح").replace(/[\r\n]/g, " ").slice(0, 80), x, y, maxWidth);
+      if (geometry.handle) {
+        c.font = '15px "DejaVu Sans", system-ui, sans-serif'; c.fillStyle = "#aaa5ba";
+        c.fillText(`@${String(state.session?.username || "member").replace(/[\r\n]/g, " ").slice(0, 80)}`, geometry.handle[0], geometry.handle[1], geometry.handle[2]);
+      }
+      cv.width = W; cv.height = H;
+      const context = cv.getContext("2d");
+      let lastFrame = -Infinity;
+      const animate = Boolean(d.animated && geometry.bar && !matchMedia("(prefers-reduced-motion: reduce)").matches);
+      const paint = (time) => {
+        if (token !== lvDrawToken || !cv.isConnected) return;
+        if (time - lastFrame >= 40) {
+          context.clearRect(0, 0, W, H); context.drawImage(scene, 0, 0); lastFrame = time;
+          if (animate) {
+            const [bx, by, bw, bh] = geometry.bar, fill = bw * 640 / 1420;
+            const offset = ((time % 2200) / 2200) * (fill + 70) - 35;
+            context.save(); context.beginPath(); context.roundRect(bx, by, fill, bh, bh / 2); context.clip();
+            context.fillStyle = "#fff0fb55"; context.beginPath();
+            context.moveTo(bx + offset, by); context.lineTo(bx + offset + 22, by);
+            context.lineTo(bx + offset + 5, by + bh); context.lineTo(bx + offset - 17, by + bh); context.fill(); context.restore();
+          }
+        }
+        if (animate) lvAnimation = requestAnimationFrame(paint);
+      };
+      paint(performance.now());
+      cv.dataset.renderer = "phase5"; cv.dataset.layout = layout; cv.dataset.particles = mode;
+      cv.dataset.statistics = String(d.showStats); cv.dataset.ready = "true";
+      const status = $(".leveling-render-status");
+      if (status) status.textContent = "تم تحميل تصميم مولد PRIME Phase 5 الأصلي. الهوية من Discord، والنقاط والترتيب بيانات توضيحية.";
+    } catch (error) {
+      if (token !== lvDrawToken || !cv.isConnected) return;
+      const status = $(".leveling-render-status");
+      if (status) status.textContent = "تعذر تحميل أصول بطاقة Phase 5. حدّث الصفحة وحاول مجدداً؛ لم يُستخدم تصميم بديل.";
+      cv.dataset.ready = "error";
+    }
+  }
+  function lvTabMessages() {
+    const mk = (key, title, vars) => lvCard(title, `المتغيرات: ${vars}`, lvSwitch(["messages", key, "on"], "تفعيل الإشعار"),
+      lvSelect(["messages", key, "channel"], "القناة", lvChanOpts("القناة الحالية / غير محددة"), state.meta?.channels?.length ? "" : "غير متاح: قائمة القنوات لم تصل.", lvPreviews),
+      lvArea(["messages", key, "tpl"], "القالب", "الحد الأقصى 500 حرف"),
+      el("div", { class: "leveling-msg-preview", "data-msg-key": key }));
+    return el("div", { class: "leveling-stack" }, lvDemoTag("قوالب توضيحية محلية"), mk("levelup", "رسالة رفع المستوى", "{user} {level} {server}"), mk("milestone", "رسالة الإنجاز (توضيحية محلية فقط)", "{user} {level}"), mk("overtake", "رسالة التجاوز", "{passer} {passed} {rank}"));
+  }
+  const LV_DEMO = [["لينا", 31, 18420, 9210, 27630, 5120, 6720], ["ياسر", 27, 14100, 7300, 21400, 4410, 5880], ["ريم", 22, 9800, 3100, 12900, 3350, 2460], ["سلطان", 15, 4300, 2500, 6800, 1990, 2220], ["نورة", 9, 1800, 640, 2440, 870, 720]];
+  const lvMin = (m) => `${lvFmt(Math.floor(m / 60))} س ${lvFmt(m % 60)} د`;
+  function lvTabData() {
+    const rows = LV_DEMO.map((r, i) => el("tr", {}, el("td", { text: lvFmt(i + 1) }), el("th", { scope: "row", text: r[0] }), el("td", { text: lvFmt(r[1]) }), el("td", { text: lvFmt(r[2]) }), el("td", { text: lvFmt(r[3]) }), el("td", { text: lvFmt(r[4]) }), el("td", { text: lvFmt(r[5]) }), el("td", { text: lvMin(r[6]) })));
+    const head = ["#", "العضو", "المستوى", "نقاط الرسائل", "نقاط الصوت", "المجموع", "الرسائل", "وقت الصوت"];
+    const sum = (i) => LV_DEMO.reduce((a, r) => a + r[i], 0);
+    const top = LV_DEMO.reduce((a, r) => (r[1] > a[1] ? r : a), LV_DEMO[0]);
+    const act = LV_DEMO.reduce((a, r) => (r[5] > a[5] ? r : a), LV_DEMO[0]);
+    return el("div", { class: "leveling-stack" },
+      lvCard("أبرز الأعضاء", "أسماء وأرقام توضيحية ولا تمثل السيرفر الحقيقي", lvDemoTag("عرض توضيحي"),
+        el("div", { class: "leveling-table-wrap", tabindex: "0", role: "region", "aria-label": "جدول الأعضاء التوضيحي" }, el("table", { class: "leveling-table" }, el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { scope: "col", text: h })))), el("tbody", {}, ...rows)))),
+      lvCard("ملخص النشاط (توضيحي)", "", lvDemoTag("عرض توضيحي"), lvGrid(...[["أعضاء لديهم نقاط", lvFmt(LV_DEMO.length)], ["إجمالي النقاط", lvFmt(sum(4))], ["نقاط الرسائل", lvFmt(sum(2))], ["نقاط الصوت", lvFmt(sum(3))], ["إجمالي وقت الصوت", lvMin(sum(6))], ["إجمالي الرسائل", lvFmt(sum(5))], ["أعلى مستوى", `${lvFmt(top[1])} - ${top[0]}`], ["الأكثر نشاطاً", `${act[0]} (${lvFmt(act[5])} رسالة)`]].map(([l, v]) => el("div", { class: "leveling-stat" }, el("small", { text: l }), el("b", { text: v }))))),
+      lvCard("توزيع النقاط (توضيحي)", "", lvDemoTag("عرض توضيحي"), lvDist()),
+      lvCard("النشاط الأخير (توضيحي)", "", lvDemoTag("عرض توضيحي"), lvChart(LV_WEEK, "رسائل آخر 7 أيام (توضيحي)"), lvLegend(),
+        el("ul", { class: "leveling-recent" }, ...["لينا وصلت إلى المستوى 31", "ياسر تجاوز ريم في الترتيب", "نورة أكملت 12 ساعة صوتية"].map((t) => el("li", { text: t })))),
+      el("p", { class: "leveling-unavail", text: "الإحصاءات الحقيقية للمستويات غير متاحة: لا توجد واجهة برمجية للمستويات في لوحة التحكم الحالية." }));
+  }
+  function lvValidate() {
+    const d = lvState().draft, e = [];
+    const int = (v, a, b) => typeof v === "number" && Number.isInteger(v) && v >= a && v <= b;
+    const fin = (v, a, b) => typeof v === "number" && Number.isFinite(v) && v >= a && v <= b;
+    if (!fin(d.points.xpMultiplier, 0, 10)) e.push("المضاعف العام يجب أن يكون رقماً بين 0 و10.");
+    if (!int(d.points.minXp, 0, 1000) || !int(d.points.maxXp, 0, 1000)) e.push("نقاط الرسائل يجب أن تكون أعداداً صحيحة بين 0 و1000.");
+    else if (d.points.minXp > d.points.maxXp) e.push("أقل نقاط للرسالة أكبر من الأعلى.");
+    if (d.points.allowedChannels.some((c) => d.points.bl.channels.includes(c))) e.push("قناة موجودة في المسموحة وفي القائمة السوداء معاً.");
+    if (!int(d.points.cooldown, 0, 3600)) e.push("فترة التهدئة بين 0 و3600 ثانية.");
+    [...d.points.roleMult, ...d.points.chanMult].forEach((m) => { if (!m.id || !fin(m.mult, 0, 10)) e.push("كل مضاعف يحتاج عنصراً ومضاعفاً رقمياً بين 0 و10."); });
+    d.points.boosts.forEach((b) => { if (!String(b.label).trim() || !fin(b.mult, 1, 10) || !int(b.hours, 1, 168)) e.push("التعزيز يحتاج اسماً ومضاعفاً 1-10 ومدة 1-168 ساعة."); });
+    if (!int(d.voice.xpPerMin, 0, 500) || !int(d.voice.minMembers, 1, 99) || !int(d.voice.dimThreshold, 0, 1440) || !int(d.voice.dimRate, 0, 100)) e.push("قيم الصوت خارج النطاق المسموح.");
+    const roles = state.meta?.roles || [];
+    const seen = new Set();
+    d.rewards.list.forEach((r) => {
+      if (!int(r.level, 1, 1000)) e.push("مستوى المكافأة بين 1 و1000.");
+      if (r.type !== "text" && r.type !== "voice") e.push("نوع المكافأة يجب أن يكون نصي أو صوتي.");
+      if (!r.role || !lvAssignable(roles.find((x) => String(x.id) === r.role))) e.push("كل مكافأة تحتاج رتبة معروفة وقابلة للإسناد.");
+      const k = `${r.level}:${r.type}`;
+      if (seen.has(k)) e.push("لا يمكن تكرار المستوى والنوع نفسهما."); seen.add(k);
+    });
+    if (!/^#[0-9a-f]{6}$/i.test(d.card.color)) e.push("لون البطاقة غير صالح.");
+    if (!lvBgOk(String(d.card.bg).trim())) e.push("رابط الخلفية يجب أن يبدأ بـ https://.");
+    const allowed = { levelup: ["user", "level", "server"], milestone: ["user", "level"], overtake: ["passer", "passed", "rank"] };
+    Object.entries(d.messages).forEach(([k, m]) => {
+      if (!String(m.tpl).trim() || m.tpl.length > 500) e.push("قوالب الرسائل مطلوبة وبحد أقصى 500 حرف.");
+      (String(m.tpl).match(/\{[^{}]*\}/g) || []).forEach((t) => { if (!allowed[k].includes(t.slice(1, -1))) e.push(`متغير غير مدعوم ${t} في قالب ${k}.`); });
+    });
+    return [...new Set(e)];
+  }
+  function lvActions() {
+    const box = el("div", { class: "leveling-errors", role: "alert" });
+    const show = (errs) => box.replaceChildren(...errs.map((x) => el("p", { text: x })));
+    return el("div", { class: "leveling-actions" },
+      el("button", { type: "button", class: "leveling-btn gold", text: "حفظ المسودة في هذا المتصفح", onClick: () => {
+        const errs = lvValidate(); show(errs);
+        if (errs.length) return toast("أصلح الأخطاء قبل حفظ المسودة المحلية", "warn");
+        const s = lvState();
+        s.draft.card.bg = String(s.draft.card.bg).trim();
+        if (!lvStore("saved", s.draft)) return toast("تعذر الحفظ المحلي في هذا المتصفح", "error");
+        s.saved = clone(s.draft); s.hasSaved = true; lvStore("work", s.draft); lvStatus();
+        toast("تم حفظ المسودة في هذا المتصفح فقط. لم يتم إرسالها إلى البوت.", "info");
+      } }),
+      el("button", { type: "button", class: "leveling-btn", text: "إعادة ضبط", onClick: () => {
+        const s = lvState();
+        s.draft = clone(s.saved); lvStore("work", s.draft); show([]); lvRender();
+        toast("أُعيدت المسودة إلى آخر نسخة محفوظة محلياً", "info");
+      } }), box);
+  }
+  const LV_PANELS = { general: lvTabGeneral, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, data: lvTabData };
+  function lvRender() {
+    const root = $(".leveling-view");
+    if (!root) return;
+    const s = lvState();
+    const tabs = $(".leveling-tabs", root), panel = $(".leveling-panel", root);
+    [...tabs.children].forEach((b) => { const on = b.dataset.tab === s.tab; b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1; });
+    panel.setAttribute("aria-labelledby", `leveling-tab-${s.tab}`);
+    panel.replaceChildren(LV_PANELS[s.tab]());
+    lvStatus();
+    lvPreviews();
+    drawLvCard();
+  }
+  function levelingView() {
+    const s = lvState();
+    const tabs = el("div", { class: "leveling-tabs", role: "tablist", "aria-label": "أقسام المستويات" }, ...LV_TABS.map(([k, t]) => el("button", {
+      type: "button", role: "tab", id: `leveling-tab-${k}`, "data-tab": k, "data-leveling-tab": k, "aria-controls": "leveling-panel", "aria-selected": "false", tabindex: "-1", text: t,
+      onClick: () => { s.tab = k; sessionStorage.setItem("leveling-tab", k); lvRender(); },
+      onKeydown: (ev) => {
+        const i = LV_TABS.findIndex((x) => x[0] === k), dir = ev.key === "ArrowLeft" ? 1 : ev.key === "ArrowRight" ? -1 : 0;
+        if (!dir && ev.key !== "Home" && ev.key !== "End") return;
+        ev.preventDefault();
+        const n = ev.key === "Home" ? 0 : ev.key === "End" ? LV_TABS.length - 1 : (i + dir + LV_TABS.length) % LV_TABS.length;
+        s.tab = LV_TABS[n][0]; sessionStorage.setItem("leveling-tab", s.tab); lvRender(); $(`#leveling-tab-${s.tab}`)?.focus();
+      },
+    })));
+    const root = el("div", { class: "leveling-view" },
+      el("header", { class: "leveling-hero" },
+        el("div", {}, el("span", { class: "leveling-kicker", text: "PRIME / LEVELS" }), el("h1", { text: "المستويات" }), el("p", { text: `إدارة المستويات لسيرفر ${state.guild?.name || ""}. باقي أقسام البوت متاحة من القائمة الجانبية.` })),
+        el("span", { class: "leveling-state-pill" })),
+      el("div", { class: "leveling-notice", role: "note", text: "وضع المعاينة: الأرقام والإعدادات هنا مسودة توضيحية تُحفظ في هذا المتصفح فقط، ولا تُرسل إلى البوت ولا تغيّر نظام النقاط الفعلي." }),
+      tabs, el("div", { class: "leveling-panel", role: "tabpanel", id: "leveling-panel" }), lvActions());
+    queueMicrotask(lvRender);
+    return root;
+  }
   function renderPage() {
     const main = $("#main");
     main.replaceChildren();
@@ -6626,6 +7234,7 @@
       main.append(n);
     }
     const view = state.activeView;
+    document.body.classList.toggle("leveling-route", view === "leveling");
     if (view === "overview") main.append(enhancedOverviewView());
     else if (view === "tickets") main.append(ticketsViewNextGen());
     else if (view === "commands") main.append(commandsView());
@@ -6636,6 +7245,7 @@
     else if (view === "security") main.append(securityView());
     else if (view === "analytics") main.append(analyticsView());
     else if (view === "economy") main.append(economyView());
+    else if (view === "leveling") main.append(levelingView());
     else if (["moderation", "community", "ai", "system"].includes(view)) main.append(operationsView(view));
     else main.append(settingsView());
     renderDock();

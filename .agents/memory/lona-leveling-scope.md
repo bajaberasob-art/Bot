@@ -7,4 +7,4 @@ Implement the PRIME leveling system in exactly ten separate phases. Stop after e
 
 **Why:** The user requires separate authorization for each phase and preservation of unrelated bot systems and existing data.
 
-**How to apply:** Phase 1 is the additive SQLite foundation; Phase 2 is text XP; Phase 3 is voice XP; Phase 4 is reactions, streaks, and internal overtake events; Phase 5 is the rank-card generator; Phase 6 authorizes Discord /rank, shared rank aliases, and /top with TEXT/VOICE navigation only. It does not authorize dashboard changes, REST APIs, a public leaderboard, XP changes, or a final overhaul. Wait for the user's explicit instruction "START PHASE 7" before beginning the next phase.
+**How to apply:** Phases 1–6 cover the SQLite foundation, text/voice/reaction XP, streaks, overtake events, the Phase 5 rank-card generator, and Discord `/rank`/`/top` commands. Phase 7 has been separately authorized and completed as a dashboard-only milestone. Do not start Phase 8 or later, add leveling REST endpoints, or change backend settings until explicitly authorized; wait for the exact instruction "START PHASE 8".

@@ -845,10 +845,11 @@ def pwa_svg() -> str:
 
 
 def service_worker_source() -> str:
-    return """const CACHE = "prime-dashboard-shell-v7";
+    return """const CACHE = "prime-dashboard-shell-v8";
 const STATIC = [
   "./",
   "./static/app.css",
+  "./static/leveling-card-assets.css?v=phase7",
   "./static/app.js",
   "./manifest.json",
   "./icon.svg",
@@ -4383,6 +4384,7 @@ async def static_asset(req):
     name = req.match_info["name"]
     types = {
         "app.css": "text/css",
+        "leveling-card-assets.css": "text/css",
         "app.js": "application/javascript",
         "login-hero-clean.png": "image/png",
     }
