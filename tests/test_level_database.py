@@ -146,13 +146,15 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         blacklist = await database.add_level_blacklist(703, "channel", 9200)
         await database.add_level_blacklist(703, "role", 9201)
-        self.assertEqual(len(await database.get_level_blacklist(703)), 2)
-        with self.assertRaises(ValueError):
-            await database.add_level_blacklist(703, "user", 9202)
+        await database.add_level_blacklist(703, "user", 9202)
+        self.assertEqual(
+            {row["target_type"] for row in await database.get_level_blacklist(703)},
+            {"channel", "role", "user"},
+        )
         self.assertTrue(
             await database.delete_level_blacklist(703, blacklist["id"])
         )
-        self.assertEqual(len(await database.get_level_blacklist(703)), 1)
+        self.assertEqual(len(await database.get_level_blacklist(703)), 2)
 
         wallet = await database.get_or_create_user(42, 703)
         self.assertEqual(wallet["balance"], 100)

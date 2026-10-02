@@ -1,8 +1,9 @@
 import json
 import os
 import time
+from io import BytesIO
 import unittest
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from aiohttp.streams import StreamReader
 from aiohttp.test_utils import make_mocked_request
@@ -120,6 +121,14 @@ async def call(handler, req):
     except ws.web.HTTPException as error:
         response = error
     return response.status, json.loads(response.text)
+
+
+def leveling_handler(method, suffix):
+    path = f"/api/guild/{{guild_id}}/leveling/{suffix}"
+    return next(
+        route.handler for route in ws.routes._items
+        if route.method == method and route.path == path
+    )
 
 
 class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
