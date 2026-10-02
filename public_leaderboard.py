@@ -83,11 +83,6 @@ async def _build_public_page(guild, mode, page):
         ),
         database.get_public_level_summary(guild.id),
     )
-    rows = []
-    for row in leaderboard["rows"]:
-        member = guild.get_member(int(row["user_id"]))
-        rows.append(_serialize_ranked_member(row, member))
-
     icon = getattr(guild, "icon", None)
     icon_url = str(icon.url) if icon and getattr(icon, "url", None) else None
     return {
@@ -96,7 +91,10 @@ async def _build_public_page(guild, mode, page):
         "page": page,
         "pageSize": PAGE_SIZE,
         "total": int(leaderboard["total"]),
-        "totalPages": max(1, (int(leaderboard["total"]) + PAGE_SIZE - 1) // PAGE_SIZE),
+        "totalPages": min(
+            MAX_PAGE,
+            max(1, (int(leaderboard["total"]) + PAGE_SIZE - 1) // PAGE_SIZE),
+        ),
         "server": {
             "name": str(getattr(guild, "name", "PRIME")),
             "iconUrl": icon_url,
@@ -111,7 +109,9 @@ async def _build_public_page(guild, mode, page):
             "totalXp": int(summary["total_xp"]),
             "lastUpdated": datetime.now(timezone.utc).isoformat(),
         },
-        "rows": rows,
+        # Keep raw IDs only in this short-lived server-side cache. They are
+        # resolved against the live guild cache for every public response.
+        "rows": leaderboard["rows"],
     }
 
 
@@ -232,6 +232,13 @@ def register_public_leaderboard_routes(routes, *, bot_getter, logger):
             page = int(raw_page)
             payload = dict(await _cached_public_page(guild, mode, page))
             payload["slug"] = slug
+            payload["rows"] = [
+                _serialize_ranked_member(
+                    row,
+                    guild.get_member(int(row["user_id"])),
+                )
+                for row in payload["rows"]
+            ]
             payload["viewerRank"] = None
             if user_id is not None:
                 member = guild.get_member(user_id)
