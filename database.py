@@ -564,6 +564,26 @@ async def init_db() -> None:
                     "ALTER TABLE level_settings ADD COLUMN "
                     "message_cooldown_seconds INTEGER DEFAULT 60"
                 )
+            level_additive_columns = {
+                "revision": "INTEGER NOT NULL DEFAULT 0",
+                "text_xp_enabled": "BOOLEAN DEFAULT 1",
+                "text_xp_min": "INTEGER DEFAULT 15",
+                "text_xp_max": "INTEGER DEFAULT 25",
+                "text_allowed_channels": "TEXT DEFAULT '[]'",
+                "reaction_xp_enabled": "BOOLEAN DEFAULT 1",
+                "timed_xp_boosts": "TEXT DEFAULT '[]'",
+                "card_show_stats": "BOOLEAN DEFAULT 1",
+                "levelup_enabled": "BOOLEAN DEFAULT 1",
+                "milestone_alert_enabled": "BOOLEAN DEFAULT 1",
+                "milestone_channel_id": "INTEGER DEFAULT NULL",
+                "milestone_template": "TEXT DEFAULT '{user} حقق إنجازاً جديداً عند المستوى {level}.'",
+                "overtake_channel_id": "INTEGER DEFAULT NULL",
+            }
+            for column, declaration in level_additive_columns.items():
+                if column not in level_columns:
+                    await db.execute(
+                        f"ALTER TABLE level_settings ADD COLUMN {column} {declaration}"
+                    )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS user_levels (
                     guild_id INTEGER NOT NULL,
@@ -627,6 +647,14 @@ async def init_db() -> None:
                     target_id INTEGER NOT NULL
                 );
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_user_blacklist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    target_id INTEGER NOT NULL,
+                    UNIQUE (guild_id, target_id)
+                );
+            """)
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_levels_text "
                 "ON user_levels (guild_id, text_xp DESC);"
@@ -634,6 +662,10 @@ async def init_db() -> None:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_levels_voice "
                 "ON user_levels (guild_id, voice_xp DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_levels_activity "
+                "ON user_levels (guild_id, last_message_at DESC);"
             )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_level_role_rewards_guild "
@@ -1750,6 +1782,8 @@ _LEVEL_SETTINGS_JSON_FIELDS = {
     "command_top_channels",
     "command_top_aliases",
     "reaction_allowed_channels",
+    "text_allowed_channels",
+    "timed_xp_boosts",
 }
 _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "is_enabled",
@@ -1763,6 +1797,12 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "web_slug",
     "xp_multiplier",
     "message_cooldown_seconds",
+    "text_xp_enabled",
+    "text_xp_min",
+    "text_xp_max",
+    "text_allowed_channels",
+    "reaction_xp_enabled",
+    "timed_xp_boosts",
     "boost_multiplier",
     "boost_expires_at",
     "streak_enabled",
@@ -1793,7 +1833,9 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "card_animated_bar",
     "card_color",
     "card_bg_url",
+    "card_show_stats",
     "levelup_channel_id",
+    "levelup_enabled",
     "levelup_channel_type",
     "levelup_format",
     "levelup_title",
@@ -1802,7 +1844,11 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "levelup_voice_channel_id",
     "levelup_voice_template",
     "overtake_alert_enabled",
+    "overtake_channel_id",
     "overtake_template",
+    "milestone_alert_enabled",
+    "milestone_channel_id",
+    "milestone_template",
     "bot_embed_color",
 }
 _USER_LEVEL_MUTABLE_FIELDS = {
@@ -1890,6 +1936,10 @@ async def update_level_settings(
                     f"UPDATE level_settings SET {new_col} = ? WHERE guild_id = ?",
                     (_encode_level_setting(new_col, value), int(guild_id)),
                 )
+            await db.execute(
+                "UPDATE level_settings SET revision = revision + 1 WHERE guild_id = ?",
+                (int(guild_id),),
+            )
             await db.commit()
         except BaseException:
             await db.rollback()
