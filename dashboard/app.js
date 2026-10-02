@@ -6625,7 +6625,6 @@
       overtake: { on: false, channel: "", tpl: "{passer} تجاوز {passed} وأصبح في المركز {rank}." },
     },
   });
-  const lvKey = (suffix) => `prime-leveling:${state.guild?.id || "none"}:${suffix}`;
   const lvMerge = (base, src) => {
     if (Array.isArray(base)) return Array.isArray(src) ? src : base;
     if (base && typeof base === "object") {
@@ -6641,36 +6640,95 @@
     const p = d.points;
     p.roleMult = lvObjs(p.roleMult, (m) => ({ id: String(m.id ?? ""), mult: typeof m.mult === "number" ? m.mult : "" }));
     p.chanMult = lvObjs(p.chanMult, (m) => ({ id: String(m.id ?? ""), mult: typeof m.mult === "number" ? m.mult : "" }));
-    p.boosts = lvObjs(p.boosts, (b) => ({ label: String(b.label ?? ""), mult: typeof b.mult === "number" ? b.mult : "", hours: typeof b.hours === "number" ? b.hours : "" }));
+    p.boosts = lvObjs(p.boosts, (b) => ({
+      id: typeof b.id === "string" ? b.id : "",
+      label: String(b.label ?? ""),
+      mult: typeof b.mult === "number" ? b.mult : "",
+      hours: typeof b.hours === "number" ? b.hours : "",
+      expiresAt: typeof b.expiresAt === "string" ? b.expiresAt : "",
+    }));
     ["channels", "users", "roles"].forEach((k) => { p.bl[k] = lvStrs(p.bl[k]); });
     p.allowedChannels = lvStrs(p.allowedChannels);
     d.rewards.list = lvObjs(d.rewards.list, (r) => ({ level: typeof r.level === "number" ? r.level : "", role: String(r.role ?? ""), type: r.type === "voice" ? "voice" : "text" }));
     return d;
   };
-  const lvLoad = (suffix) => {
-    try {
-      const raw = localStorage.getItem(lvKey(suffix));
-      return raw ? lvSan(lvMerge(lvDefaults(), JSON.parse(raw))) : null;
-    } catch (_) { return null; }
-  };
-  const lvStore = (suffix, v) => { try { localStorage.setItem(lvKey(suffix), JSON.stringify(v)); return true; } catch (_) { return false; } };
   function lvState() {
     const gid = state.guild?.id || "none";
     if (!state.leveling || state.leveling.gid !== gid) {
-      const saved = lvLoad("saved");
+      const defaults = lvDefaults();
       state.leveling = {
-        gid, saved: saved || lvDefaults(), hasSaved: Boolean(saved),
-        draft: lvLoad("work") || (saved ? clone(saved) : lvDefaults()),
+        gid, saved: clone(defaults), draft: clone(defaults), revision: 0,
+        configured: false, loaded: false, loadError: false, analytics: null,
+        leaderboard: null, dataMode: "text",
         tab: sessionStorage.getItem("leveling-tab") || "general", errors: [],
       };
       if (!LV_TABS.some((t) => t[0] === state.leveling.tab)) state.leveling.tab = "general";
     }
     return state.leveling;
   }
+  async function loadLevelingData(gid) {
+    const previous = state.leveling?.gid === gid ? state.leveling : null;
+    const tab = previous?.tab || sessionStorage.getItem("leveling-tab") || "general";
+    try {
+      const prefix = `api/guild/${gid}/leveling`;
+      const [settingsResponse, analyticsResponse, leaderboardResponse] = await Promise.all([
+        api(`${prefix}/settings`),
+        api(`${prefix}/analytics`),
+        api(`${prefix}/leaderboard?mode=text&limit=20&offset=0`),
+      ]);
+      const snapshot = await readJson(settingsResponse, null);
+      if (!settingsResponse.ok || !snapshot?.draft) throw Error("settings");
+      const analytics = await readJson(analyticsResponse, null);
+      const leaderboard = await readJson(leaderboardResponse, null);
+      if (state.guild?.id !== gid) return false;
+      const saved = lvSan(lvMerge(lvDefaults(), snapshot.draft));
+      state.leveling = {
+        gid, saved, draft: clone(saved), revision: snapshot.revision || 0,
+        configured: Boolean(snapshot.configured), loaded: true, loadError: false,
+        analytics: analyticsResponse.ok ? analytics : null,
+        analyticsError: !analyticsResponse.ok,
+        leaderboard: leaderboardResponse.ok ? leaderboard : null,
+        leaderboardError: !leaderboardResponse.ok,
+        dataMode: previous?.dataMode || "text", tab, errors: [],
+      };
+      return true;
+    } catch (error) {
+      if (error.message === "unauth") throw error;
+      if (state.guild?.id !== gid) return false;
+      const defaults = lvDefaults();
+      state.leveling = {
+        gid, saved: clone(defaults), draft: clone(defaults), revision: 0,
+        configured: false, loaded: false, loadError: true,
+        analytics: null, leaderboard: null, dataMode: "text", tab, errors: [],
+      };
+      return false;
+    }
+  }
+  async function lvLoadBoard(mode, offset = 0, append = false) {
+    const s = lvState();
+    if (mode !== "text" && mode !== "voice") return;
+    s.dataMode = mode;
+    try {
+      const response = await api(
+        `api/guild/${s.gid}/leveling/leaderboard?mode=${mode}&limit=20&offset=${offset}`,
+      );
+      const data = await readJson(response, null);
+      if (!response.ok || !data) throw Error("leaderboard");
+      if (append && s.leaderboard?.mode === mode) {
+        data.rows = [...(s.leaderboard.rows || []), ...(data.rows || [])];
+      }
+      s.leaderboard = data;
+      s.leaderboardError = false;
+    } catch (error) {
+      if (error.message === "unauth") throw error;
+      s.leaderboardError = true;
+      if (!append) s.leaderboard = null;
+    }
+    if ($(".leveling-view")) lvRender();
+  }
   const lvDirty = () => { const s = lvState(); return JSON.stringify(s.draft) !== JSON.stringify(s.saved); };
   function lvTouch() {
     const s = lvState();
-    lvStore("work", s.draft);
     lvStatus();
     lvPreviews();
     drawLvCard();
@@ -6679,7 +6737,10 @@
     const n = $(".leveling-state-pill");
     if (!n) return;
     const dirtyNow = lvDirty();
-    n.textContent = dirtyNow ? "تعديلات غير محفوظة (مسودة محلية في هذا المتصفح)" : lvState().hasSaved ? "مسودة محفوظة محلياً في هذا المتصفح" : "القيم الافتراضية التجريبية";
+    n.textContent = lvState().loadError
+      ? "تعذر تحميل إعدادات نظام المستويات من السيرفر"
+      : dirtyNow ? "تعديلات غير محفوظة على السيرفر"
+        : lvState().configured ? "الإعدادات متزامنة مع السيرفر" : "إعدادات السيرفر الافتراضية";
     n.classList.toggle("is-dirty", dirtyNow);
   }
   const lvGet = (path) => path.reduce((o, k) => o?.[k], lvState().draft);
