@@ -1853,14 +1853,20 @@ async def update_level_settings(
         if current is None:
             raise RuntimeError("level settings row disappeared after creation")
         return current
-    assignments = ", ".join(f"{key} = ?" for key in data)
-    values = [_encode_level_setting(key, value) for key, value in data.items()]
     async with connect(aiosqlite.Row) as db:
-        await db.execute(
-            f"UPDATE level_settings SET {assignments} WHERE guild_id = ?",
-            (*values, int(guild_id)),
-        )
-        await db.commit()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            for new_col, value in data.items():
+                # new_col comes only from _LEVEL_SETTINGS_MUTABLE_FIELDS;
+                # all user-provided values remain bound SQL parameters.
+                await db.execute(
+                    f"UPDATE level_settings SET {new_col} = ? WHERE guild_id = ?",
+                    (_encode_level_setting(new_col, value), int(guild_id)),
+                )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         async with db.execute(
             "SELECT * FROM level_settings WHERE guild_id = ?",
             (int(guild_id),),
@@ -1917,14 +1923,20 @@ async def update_user_level(
         raise ValueError(f"unknown user level field: {sorted(unknown)[0]}")
     await create_user_level(guild_id, user_id)
     if data:
-        assignments = ", ".join(f"{key} = ?" for key in data)
         async with connect() as db:
-            await db.execute(
-                f"UPDATE user_levels SET {assignments} "
-                "WHERE guild_id = ? AND user_id = ?",
-                (*data.values(), int(guild_id), int(user_id)),
-            )
-            await db.commit()
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                for new_col, value in data.items():
+                    # new_col is checked against _USER_LEVEL_MUTABLE_FIELDS.
+                    await db.execute(
+                        f"UPDATE user_levels SET {new_col} = ? "
+                        "WHERE guild_id = ? AND user_id = ?",
+                        (value, int(guild_id), int(user_id)),
+                    )
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
     result = await get_user_level(guild_id, user_id)
     if result is None:
         raise RuntimeError("user level row disappeared after update")
@@ -2098,15 +2110,17 @@ async def _get_level_leaderboard(
         "voice_level",
     }:
         raise ValueError("invalid leaderboard column")
+    col = xp_column
+    level_col = level_column
     limit = max(1, min(int(limit), 100))
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
             f"""
-            SELECT guild_id, user_id, {xp_column}, {level_column},
+            SELECT guild_id, user_id, {col}, {level_col},
                    total_messages, total_voice_seconds, current_streak
             FROM user_levels
             WHERE guild_id = ?
-            ORDER BY {xp_column} DESC, user_id ASC
+            ORDER BY {col} DESC, user_id ASC
             LIMIT ?
             """,
             (int(guild_id), limit),
