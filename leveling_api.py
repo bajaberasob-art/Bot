@@ -230,7 +230,10 @@ async def _dashboard_snapshot(guild_id):
             "streak": _level_value(settings, "streak_enabled", True),
         },
         "public": {
-            "enabled": _level_value(settings, "web_leaderboard_enabled", True),
+            "enabled": (
+                _level_value(settings, "web_leaderboard_enabled", False)
+                and bool(settings.get("web_slug"))
+            ),
             "slug": str(settings.get("web_slug") or ""),
         },
         "points": {
@@ -310,6 +313,15 @@ def _validate_draft(guild, draft, current_settings):
         raise ValueError("draft must be an object")
     general = draft.get("general")
     public = draft.get("public")
+    if public is None:
+        legacy_slug = str(current_settings.get("web_slug") or "")
+        public = {
+            "enabled": (
+                _level_value(current_settings, "web_leaderboard_enabled", False)
+                and bool(legacy_slug)
+            ),
+            "slug": legacy_slug,
+        }
     points = draft.get("points")
     voice = draft.get("voice")
     rewards_section = draft.get("rewards")
@@ -327,6 +339,8 @@ def _validate_draft(guild, draft, current_settings):
     public_slug = public_slug.strip().lower()
     if public_slug and not PUBLIC_SLUG_RE.fullmatch(public_slug):
         raise ValueError("public.slug must be 3–40 lowercase letters, numbers, or single hyphens")
+    if public_enabled and not public_slug:
+        raise ValueError("public.slug is required when the public leaderboard is enabled")
 
     settings = {
         "is_enabled": int(_bool(general.get("enabled"), "enabled")),
@@ -513,6 +527,11 @@ def register_leveling_routes(routes, *, authorize, json_error, read_json_body, l
             result = await _dashboard_snapshot(guild.id)
         except database.LevelingConflict as conflict:
             return json_error(409, "conflict", currentRevision=conflict.current_revision)
+        except database.LevelingSlugConflict:
+            return json_error(
+                409, "slug_conflict",
+                fields={"public.slug": "هذا المعرّف مستخدم في سيرفر آخر."},
+            )
         except sqlite3.IntegrityError as error:
             if "level_settings.web_slug" in str(error):
                 return json_error(

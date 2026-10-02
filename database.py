@@ -684,8 +684,12 @@ async def init_db() -> None:
                 "ON user_levels (guild_id, voice_xp DESC, user_id ASC) "
                 "WHERE voice_xp > 0;"
             )
+            # Older deployments may already contain duplicate slugs. Keep a
+            # non-unique lookup index and enforce uniqueness inside the
+            # serialized settings write transaction instead of failing startup.
+            await db.execute("DROP INDEX IF EXISTS idx_level_settings_web_slug")
             await db.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_level_settings_web_slug "
+                "CREATE INDEX IF NOT EXISTS idx_level_settings_web_slug_lookup "
                 "ON level_settings (web_slug) "
                 "WHERE web_slug IS NOT NULL AND web_slug <> '';"
             )
@@ -1962,6 +1966,13 @@ async def update_level_settings(
     async with connect(aiosqlite.Row) as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
+            if data.get("web_slug"):
+                async with db.execute(
+                    "SELECT 1 FROM level_settings WHERE web_slug = ? AND guild_id <> ? LIMIT 1",
+                    (str(data["web_slug"]), int(guild_id)),
+                ) as cur:
+                    if await cur.fetchone():
+                        raise LevelingSlugConflict()
             for new_col, value in data.items():
                 # new_col comes only from _LEVEL_SETTINGS_MUTABLE_FIELDS;
                 # all user-provided values remain bound SQL parameters.
@@ -1994,6 +2005,10 @@ class LevelingConflict(Exception):
     def __init__(self, current_revision: int):
         self.current_revision = int(current_revision)
         super().__init__("leveling settings changed since they were loaded")
+
+
+class LevelingSlugConflict(Exception):
+    """Raised when a public leaderboard slug is already assigned elsewhere."""
 
 
 async def replace_level_dashboard_config(
@@ -2031,6 +2046,14 @@ async def replace_level_dashboard_config(
             if revision != int(expected_revision):
                 await db.rollback()
                 raise LevelingConflict(revision)
+            public_slug = settings.get("web_slug")
+            if public_slug:
+                async with db.execute(
+                    "SELECT 1 FROM level_settings WHERE web_slug = ? AND guild_id <> ? LIMIT 1",
+                    (str(public_slug), guild_id),
+                ) as cur:
+                    if await cur.fetchone():
+                        raise LevelingSlugConflict()
             for column, value in encoded.items():
                 await db.execute(
                     f"UPDATE level_settings SET {column} = ? WHERE guild_id = ?",
