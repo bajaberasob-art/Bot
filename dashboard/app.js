@@ -7384,7 +7384,14 @@
       el("header", { class: "leveling-hero" },
         el("div", {}, el("span", { class: "leveling-kicker", text: "PRIME / LEVELS" }), el("h1", { text: "المستويات" }), el("p", { text: `إدارة المستويات لسيرفر ${state.guild?.name || ""}. باقي أقسام البوت متاحة من القائمة الجانبية.` })),
         el("span", { class: "leveling-state-pill" })),
-      el("div", { class: "leveling-notice", role: "note", text: "وضع المعاينة: الأرقام والإعدادات هنا مسودة توضيحية تُحفظ في هذا المتصفح فقط، ولا تُرسل إلى البوت ولا تغيّر نظام النقاط الفعلي." }),
+      s.loadError
+        ? el("div", { class: "leveling-notice", role: "alert" },
+          "تعذر تحميل إعدادات المستويات من السيرفر. لن تُعرض بيانات تجريبية مكانها. ",
+          el("button", { type: "button", class: "leveling-btn", text: "إعادة المحاولة", onClick: async () => {
+            await loadLevelingData(s.gid);
+            renderPage();
+          } }))
+        : el("div", { class: "leveling-notice", role: "note", text: "تُحمّل الإعدادات والتحليلات من بيانات السيرفر، وتحفظ التغييرات إلى قاعدة البيانات مباشرةً." }),
       tabs, el("div", { class: "leveling-panel", role: "tabpanel", id: "leveling-panel" }), lvActions());
     queueMicrotask(lvRender);
     return root;
