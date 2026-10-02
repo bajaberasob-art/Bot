@@ -449,6 +449,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         draft["points"]["allowedChannels"] = [str(CHANNELS[1].id)]
         draft["points"]["roleMult"] = [{"id": str(ROLES[1].id), "mult": 2.5}]
         draft["points"]["bl"]["users"] = ["100000000000000050"]
+        draft["points"]["bl"]["roles"] = [str(ROLES[2].id)]
         draft["points"]["boosts"] = [{
             "label": "اختبار", "mult": 1.5, "hours": 2,
         }]
