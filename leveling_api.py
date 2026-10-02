@@ -2,6 +2,7 @@
 import math
 import re
 import secrets
+import sqlite3
 import string
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,7 @@ from level_progression import text_progress, xp_required
 
 
 SNOWFLAKE_RE = re.compile(r"^\d{15,22}$")
+PUBLIC_SLUG_RE = re.compile(r"^(?=.{3,40}$)[a-z0-9]+(?:-[a-z0-9]+)*$")
 LAYOUTS = {"vertical", "stats", "minimal", "ring", "classic"}
 PARTICLES = {"none", "sparks", "shine", "embers", "snow", "petals", "neon"}
 TEMPLATE_FIELDS = {
@@ -227,6 +229,10 @@ async def _dashboard_snapshot(guild_id):
             "reaction": _level_value(settings, "reaction_xp_enabled", True),
             "streak": _level_value(settings, "streak_enabled", True),
         },
+        "public": {
+            "enabled": _level_value(settings, "web_leaderboard_enabled", True),
+            "slug": str(settings.get("web_slug") or ""),
+        },
         "points": {
             "xpMultiplier": float(settings.get("xp_multiplier", 1) or 0),
             "minXp": int(settings.get("text_xp_min", 15) or 0),
@@ -303,21 +309,32 @@ def _validate_draft(guild, draft, current_settings):
     if not isinstance(draft, dict):
         raise ValueError("draft must be an object")
     general = draft.get("general")
+    public = draft.get("public")
     points = draft.get("points")
     voice = draft.get("voice")
     rewards_section = draft.get("rewards")
     card = draft.get("card")
     messages = draft.get("messages")
     if not all(isinstance(value, dict) for value in (
-        general, points, voice, rewards_section, card, messages,
+        general, public, points, voice, rewards_section, card, messages,
     )):
         raise ValueError("all leveling settings sections are required")
+
+    public_enabled = _bool(public.get("enabled"), "public.enabled")
+    public_slug = public.get("slug", "")
+    if not isinstance(public_slug, str):
+        raise ValueError("public.slug must be text")
+    public_slug = public_slug.strip().lower()
+    if public_slug and not PUBLIC_SLUG_RE.fullmatch(public_slug):
+        raise ValueError("public.slug must be 3–40 lowercase letters, numbers, or single hyphens")
 
     settings = {
         "is_enabled": int(_bool(general.get("enabled"), "enabled")),
         "text_xp_enabled": int(_bool(general.get("text"), "text")),
         "reaction_xp_enabled": int(_bool(general.get("reaction"), "reaction")),
         "streak_enabled": int(_bool(general.get("streak"), "streak")),
+        "web_leaderboard_enabled": int(public_enabled),
+        "web_slug": public_slug or None,
         "text_xp_min": _integer(points.get("minXp"), "minXp", 0, 1000),
         "text_xp_max": _integer(points.get("maxXp"), "maxXp", 0, 1000),
         "xp_multiplier": _number(points.get("xpMultiplier"), "xpMultiplier", 0, 10),
@@ -496,6 +513,15 @@ def register_leveling_routes(routes, *, authorize, json_error, read_json_body, l
             result = await _dashboard_snapshot(guild.id)
         except database.LevelingConflict as conflict:
             return json_error(409, "conflict", currentRevision=conflict.current_revision)
+        except sqlite3.IntegrityError as error:
+            if "level_settings.web_slug" in str(error):
+                return json_error(
+                    409, "slug_conflict",
+                    fields={"public.slug": "هذا المعرّف مستخدم في سيرفر آخر."},
+                )
+            logger.exception("Leveling dashboard integrity failure guild=%s user=%s",
+                             guild.id, session.get("id"))
+            return json_error(500, "leveling_unavailable")
         except Exception:
             logger.exception("Leveling settings save failed guild=%s user=%s",
                              guild.id, session.get("id"))
