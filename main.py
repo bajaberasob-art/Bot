@@ -310,6 +310,7 @@ class EnterpriseBot(commands.Bot):
             "cogs.engagement",
             "cogs.economy",
             "cogs.levels",
+            "cogs.rank_commands",
             "cogs.utilities",
             "cogs.tournaments",
             "cogs.gaming",
@@ -357,6 +358,9 @@ class EnterpriseBot(commands.Bot):
                 logger.error("⚠️ فشل مزامنة أوامر Slash: %s", error)
         else:
             logger.info("⏭️ تم تخطي مزامنة أوامر Slash؛ فعّل SYNC_COMMANDS=true عند الحاجة.")
+            from cogs.rank_commands import publish_rank_commands
+
+            await publish_rank_commands(self, guild=self.sync_guild)
 
         self.rotate_status.start()
         self._is_initialized = True

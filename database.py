@@ -2558,6 +2558,65 @@ async def get_voice_leaderboard(
     )
 
 
+async def get_command_rank_snapshot(
+    guild_id: int, user_id: int, human_ids: List[int],
+) -> Dict[str, Any]:
+    """Read-only card snapshot; rank excludes bots/departed members.
+
+    Discord supplies current human IDs. One JSON parameter avoids SQLite's
+    bound-parameter limit on large guilds. Legacy XP/rank helpers are unchanged.
+    """
+    eligible = json.dumps(sorted({int(value) for value in human_ids}))
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT u.*,
+                CASE WHEN u.text_xp > 0 THEN 1 + (
+                    SELECT COUNT(*) FROM user_levels p
+                    WHERE p.guild_id = u.guild_id AND p.text_xp > 0
+                      AND p.user_id IN (SELECT value FROM json_each(?))
+                      AND (p.text_xp > u.text_xp OR
+                           (p.text_xp = u.text_xp AND p.user_id < u.user_id))
+                ) ELSE NULL END AS rank
+            FROM user_levels u WHERE u.guild_id = ? AND u.user_id = ?
+            """,
+            (eligible, int(guild_id), int(user_id)),
+        ) as cur:
+            row = await cur.fetchone()
+    result = dict(row) if row else {
+        "text_level": 0, "text_xp": 0, "rank": None, "total_messages": 0,
+        "total_voice_seconds": 0, "current_streak": 0,
+    }
+    result["total_members"] = len(set(human_ids))
+    return result
+
+
+async def get_command_level_leaderboard(
+    guild_id: int, human_ids: List[int], mode: str = "text",
+) -> List[Dict[str, Any]]:
+    """Indexed, read-only top ten current humans with positive XP."""
+    queries = {
+        "text": """SELECT user_id, text_level AS level, text_xp AS xp FROM user_levels
+                   WHERE guild_id = ? AND text_xp > 0
+                     AND user_id IN (SELECT value FROM json_each(?))
+                   ORDER BY text_xp DESC, user_id ASC LIMIT 10""",
+        "voice": """SELECT user_id, voice_level AS level, voice_xp AS xp FROM user_levels
+                    WHERE guild_id = ? AND voice_xp > 0
+                      AND user_id IN (SELECT value FROM json_each(?))
+                    ORDER BY voice_xp DESC, user_id ASC LIMIT 10""",
+    }
+    if mode not in queries:
+        raise ValueError("leaderboard mode must be text or voice")
+    if not human_ids:
+        return []
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            queries[mode],
+            (int(guild_id), json.dumps(sorted({int(value) for value in human_ids}))),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
 # -------------------------------------------------------------
 # إعدادات السيرفر (Guild Settings API) مع كاش LRU/TTL
 # -------------------------------------------------------------

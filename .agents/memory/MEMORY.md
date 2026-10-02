@@ -26,6 +26,8 @@
 - [Dashboard preview safety](dashboard-preview-safety.md) — visual previews use isolated mockup data and never weaken production OAuth or guild permissions.
 - [Overview telemetry boundaries](overview-telemetry-boundaries.md) — the index view must consume optional live metrics without inventing data or adding backend routes.
 - [Ticket CRM control settings](ticket-crm-control-settings.md) — additive ticket settings support partial updates; permission saves must not reset close/archive behavior.
-- [Lona leveling scope](lona-leveling-scope.md) — ten separately authorized phases; rank-card generation does not authorize commands or dashboard work.
+- [PRIME leveling scope](lona-leveling-scope.md) — separately authorized phases; Discord rank/top commands do not authorize dashboard/API work or Phase 7.
 - [Lona streak dates](lona-streak-dates.md) — daily reward eligibility uses a single UTC calendar; future claim entry points must preserve that contract.
 - [Rank-card text portability](rank-card-text-portability.md) — Pillow may lack RAQM; preserve portable Arabic shaping and bundled fonts.
+- [Scoped Slash publication](discord-command-publication.md) — disabled broad sync is not permission to replace unrelated remote registrations.
+- [Discord member fixtures](discord-member-test-types.md) — native MemberConverter checks real types; duck-typed cached fixtures can trigger unintended network lookups.
