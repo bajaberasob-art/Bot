@@ -71,7 +71,7 @@ class EngagementXP:
                 settings = await database.get_level_settings(guild.id)
                 if settings is None:
                     settings = await database.create_default_level_settings(guild.id)
-                if not settings["is_enabled"] or not (
+                if not settings["is_enabled"] or not settings.get("reaction_xp_enabled", True) or not (
                     settings["reaction_xp_reactor"] or settings["reaction_xp_author"]
                 ):
                     return
@@ -94,7 +94,7 @@ class EngagementXP:
 
                 blacklist = await database.get_level_blacklist(guild.id)
                 reactor_roles = {role.id for role in reactor.roles}
-                if is_blacklisted(blacklist, reactor_roles, channel_ids):
+                if is_blacklisted(blacklist, reactor_roles, channel_ids, reactor.id):
                     return
                 members = {}
                 if settings["reaction_xp_reactor"]:
@@ -116,7 +116,7 @@ class EngagementXP:
                 awards = {}
                 for user_id, member in members.items():
                     roles = {role.id for role in member.roles}
-                    if is_blacklisted(blacklist, roles, channel_ids):
+                    if is_blacklisted(blacklist, roles, channel_ids, user_id):
                         continue
                     xp = int(base * resolve_multiplier(settings, multipliers, roles, channel_ids, now))
                     if xp > 0:

@@ -513,17 +513,37 @@ class Levels(EngagementXP, commands.Cog):
         settings, multipliers, _ = self._voice_configs[key[0]]
         if session.eligible and elapsed:
             credit = self._voice_pending.setdefault(key, VoiceCredit())
-            # Split at the known boost expiry; never extend it to the tick end.
-            pieces = [elapsed]
-            try:
-                expiry = datetime.fromisoformat(str(settings["boost_expires_at"]).replace("Z", "+00:00"))
-                if expiry.tzinfo is None:
-                    expiry = expiry.replace(tzinfo=timezone.utc)
-                until_expiry = (expiry - session.last_wall).total_seconds()
-                if 0 < until_expiry < elapsed:
-                    pieces = [until_expiry, elapsed - until_expiry]
-            except (TypeError, ValueError):
-                pass
+            # Split at every timed multiplier boundary so voice XP uses only
+            # the portion of each tick during which that boost was active.
+            boundaries = set()
+            interval_end = session.last_wall + timedelta(seconds=elapsed)
+            for field in ("boost_expires_at",):
+                try:
+                    boundary = datetime.fromisoformat(
+                        str(settings.get(field) or "").replace("Z", "+00:00")
+                    )
+                    if boundary.tzinfo is None:
+                        boundary = boundary.replace(tzinfo=timezone.utc)
+                    if session.last_wall < boundary < interval_end:
+                        boundaries.add((boundary - session.last_wall).total_seconds())
+                except (TypeError, ValueError):
+                    pass
+            for boost in settings.get("timed_xp_boosts", []):
+                if not isinstance(boost, dict):
+                    continue
+                for field in ("starts_at", "expires_at"):
+                    try:
+                        boundary = datetime.fromisoformat(
+                            str(boost.get(field) or "").replace("Z", "+00:00")
+                        )
+                        if boundary.tzinfo is None:
+                            boundary = boundary.replace(tzinfo=timezone.utc)
+                        if session.last_wall < boundary < interval_end:
+                            boundaries.add((boundary - session.last_wall).total_seconds())
+                    except (TypeError, ValueError):
+                        continue
+            points = [0.0, *sorted(boundaries), elapsed]
+            pieces = [end - start for start, end in zip(points, points[1:]) if end > start]
             offset = 0.0
             for seconds in pieces:
                 factor = resolve_multiplier(
