@@ -50,6 +50,15 @@ function proxyDashboard(
   req.pipe(proxyRequest);
 }
 
+function proxyPublicLeaderboard(
+  req: express.Request,
+  res: express.Response,
+): void {
+  const suffix = req.url || "/";
+  req.url = `/lb${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
+  proxyDashboard(req, res);
+}
+
 app.use(
   pinoHttp({
     logger,
@@ -81,6 +90,10 @@ app.get("/api", (_req, res) => {
   res.redirect(302, "/api/dashboard/");
 });
 app.use("/api/dashboard", proxyDashboard);
+// Keep the public board available both at the domain root and under the API
+// artifact's public /api mount. The Python app owns slug resolution and data.
+app.use("/lb", proxyPublicLeaderboard);
+app.use("/api/lb", proxyPublicLeaderboard);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
