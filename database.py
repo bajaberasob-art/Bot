@@ -1963,6 +1963,65 @@ async def award_text_xp(
     }
 
 
+async def award_voice_xp(
+    guild_id: int, user_id: int, voice_xp: int, text_xp: int,
+    eligible_seconds: int,
+) -> Dict[str, Any]:
+    """Commit one batched voice credit, preserving chat counts/timestamps.
+
+    Separate and combined credits may coexist after a mid-session mode change.
+    The transaction serializes with the chat award transaction.
+    """
+    from level_progression import level_from_xp
+
+    voice_xp, text_xp, eligible_seconds = map(int, (voice_xp, text_xp, eligible_seconds))
+    if min(voice_xp, text_xp, eligible_seconds) < 0:
+        raise ValueError("voice credits cannot be negative")
+    if not (voice_xp or text_xp or eligible_seconds):
+        raise ValueError("empty voice credit")
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT * FROM user_levels WHERE guild_id = ? AND user_id = ?",
+                (int(guild_id), int(user_id)),
+            ) as cur:
+                row = await cur.fetchone()
+            old_voice_xp = int(row["voice_xp"] or 0) if row else 0
+            old_text_xp = int(row["text_xp"] or 0) if row else 0
+            old_voice_level = int(row["voice_level"] or 0) if row else 0
+            old_text_level = int(row["text_level"] or 0) if row else 0
+            new_voice_xp, new_text_xp = old_voice_xp + voice_xp, old_text_xp + text_xp
+            new_voice_level = level_from_xp(new_voice_xp) if voice_xp else old_voice_level
+            new_text_level = level_from_xp(new_text_xp) if text_xp else old_text_level
+            await db.execute(
+                """
+                INSERT INTO user_levels
+                    (guild_id, user_id, voice_xp, voice_level, text_xp,
+                     text_level, total_voice_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    voice_xp = excluded.voice_xp,
+                    voice_level = excluded.voice_level,
+                    text_xp = excluded.text_xp,
+                    text_level = excluded.text_level,
+                    total_voice_seconds =
+                        COALESCE(user_levels.total_voice_seconds, 0) + excluded.total_voice_seconds
+                """,
+                (int(guild_id), int(user_id), new_voice_xp, new_voice_level,
+                 new_text_xp, new_text_level, eligible_seconds),
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return {
+        "old_voice_level": old_voice_level, "voice_level": new_voice_level,
+        "old_text_level": old_text_level, "text_level": new_text_level,
+        "voice_xp": new_voice_xp, "text_xp": new_text_xp,
+    }
+
+
 async def get_text_rank(guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
     """On-demand rank among stored positive-XP participants, including ties.
 

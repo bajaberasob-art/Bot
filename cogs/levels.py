@@ -1,4 +1,4 @@
-"""Phase 2: text XP only. No commands, voice listeners or announcement UI."""
+"""Lona text/voice XP engines. No commands or announcement UI."""
 import asyncio
 import logging
 import math
@@ -6,11 +6,11 @@ import random
 from time import monotonic
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import database
 from level_progression import text_progress
@@ -18,6 +18,51 @@ from level_progression import text_progress
 logger = logging.getLogger("LonaLevels")
 MAX_MULTIPLIER = 100.0
 MAX_COOLDOWN = 86400
+VOICE_DEFAULTS = {
+    "is_enabled": 1, "voice_xp_enabled": 1, "voice_xp_per_minute": 20,
+    "voice_mute_no_xp": 1, "voice_deafen_no_xp": 1, "voice_min_two_members": 1,
+    "voice_diminishing_enabled": 0, "voice_diminishing_mins": 60,
+    "voice_diminishing_rate": 0.5, "voice_separate_levels": 1,
+    "xp_multiplier": 1, "boost_multiplier": 1, "boost_expires_at": None,
+    "rewards_single_highest": 1,
+}
+
+
+@dataclass(frozen=True)
+class VoiceLevelUp:
+    guild: Any
+    member: Any
+    old_level: int
+    new_level: int
+    current_xp: int
+
+
+@dataclass
+class VoiceSession:
+    channel_id: int
+    session_start: float
+    last_processed: float
+    last_wall: datetime
+    role_ids: frozenset
+    muted: bool
+    deafened: bool
+    eligible: bool = False
+    eligible_duration: float = 0.0
+
+
+@dataclass
+class VoiceCredit:
+    voice_xp: float = 0.0
+    text_xp: float = 0.0
+    seconds: float = 0.0
+
+
+def is_blacklisted(blacklist: list, role_ids: set, channel_ids: set) -> bool:
+    return any(
+        row["target_type"] == "role" and row["target_id"] in role_ids
+        or row["target_type"] == "channel" and row["target_id"] in channel_ids
+        for row in blacklist
+    )
 
 
 @dataclass(frozen=True)
@@ -91,6 +136,12 @@ class Levels(commands.Cog):
         self._cooldown_capacity = 50000
         # Fixed stripes avoid a growing lock object per member.
         self._locks = [asyncio.Lock() for _ in range(256)]
+        self.voice_sessions: dict[tuple[int, int], VoiceSession] = {}
+        self._voice_pending: dict[tuple[int, int], VoiceCredit] = {}
+        self._voice_configs: dict[int, tuple] = {}
+        self._voice_lock = asyncio.Lock()
+        self._voice_online = False
+        self._voice_invalid: dict[tuple[int, str], str] = {}
 
     @staticmethod
     def cooldown_seconds(settings: dict) -> int:
@@ -129,11 +180,7 @@ class Levels(commands.Cog):
         if parent_id:
             channel_ids.add(parent_id)
         blacklist = await database.get_level_blacklist(key[0])
-        if any(
-            row["target_type"] == "role" and row["target_id"] in role_ids
-            or row["target_type"] == "channel" and row["target_id"] in channel_ids
-            for row in blacklist
-        ):
+        if is_blacklisted(blacklist, role_ids, channel_ids):
             return
         now = datetime.now(timezone.utc)
         multipliers = await database.get_level_multipliers(key[0])
@@ -191,9 +238,19 @@ class Levels(commands.Cog):
             logger.exception("Text reward failure guild=%s member=%s", member.guild.id, member.id)
 
     async def _apply_text_rewards(self, member: discord.Member, level: int, settings: dict):
+        await self._apply_level_rewards(member, level, settings, "text")
+
+    async def apply_voice_rewards(self, member: discord.Member, level: int, settings: dict):
+        try:
+            await self._apply_level_rewards(member, level, settings, "voice")
+        except Exception:
+            logger.exception("Voice reward failure guild=%s member=%s", member.guild.id, member.id)
+
+    async def _apply_level_rewards(self, member, level, settings, reward_type):
+        all_rewards = await database.get_level_rewards(member.guild.id)
         rewards = [
-            row for row in await database.get_level_rewards(member.guild.id)
-            if row["reward_type"] == "text" and row["level_required"] <= level
+            row for row in all_rewards
+            if row["reward_type"] == reward_type and row["level_required"] <= level
         ]
         if not rewards:
             return
@@ -205,20 +262,20 @@ class Levels(commands.Cog):
         for reward in selected:
             role = member.guild.get_role(reward["role_id"])
             if role is None:
-                logger.warning("Deleted text reward role %s in guild %s", reward["role_id"], member.guild.id)
+                logger.warning("Deleted %s reward role %s in guild %s", reward_type, reward["role_id"], member.guild.id)
                 continue
             if role.id in held:
                 highest_granted = True
                 continue
             if not self._manageable(member.guild, role):
-                logger.warning("Cannot manage text reward role %s in guild %s", role.id, member.guild.id)
+                logger.warning("Cannot manage %s reward role %s in guild %s", reward_type, role.id, member.guild.id)
                 continue
             try:
-                await member.add_roles(role, reason="Lona text level reward")
+                await member.add_roles(role, reason=f"Lona {reward_type} level reward")
                 held.add(role.id)
                 highest_granted = True
             except discord.HTTPException:
-                logger.warning("Cannot grant text reward role %s", role.id, exc_info=True)
+                logger.warning("Cannot grant %s reward role %s", reward_type, role.id, exc_info=True)
         # Never strip old rewards if granting the replacement failed.
         if single and highest_granted:
             selected_id = selected[0]["role_id"]
@@ -227,18 +284,329 @@ class Levels(commands.Cog):
                 if row["level_required"] < selected[0]["level_required"]
                 and row["role_id"] != selected_id
             }
-            # Preserve any role also configured as a voice reward.
-            voice_ids = {
-                row["role_id"] for row in await database.get_level_rewards(member.guild.id)
-                if row["reward_type"] == "voice"
+            # Preserve any role also configured for the other XP track.
+            other_ids = {
+                row["role_id"] for row in all_rewards
+                if row["reward_type"] != reward_type
             }
-            for role_id in sorted(lower_ids - voice_ids):
+            for role_id in sorted(lower_ids - other_ids):
                 role = member.guild.get_role(role_id)
                 if role and role_id in held and self._manageable(member.guild, role):
                     try:
-                        await member.remove_roles(role, reason="Lona highest text reward")
+                        await member.remove_roles(role, reason=f"Lona highest {reward_type} reward")
                     except discord.HTTPException:
-                        logger.warning("Cannot remove text reward role %s", role_id, exc_info=True)
+                        logger.warning("Cannot remove %s reward role %s", reward_type, role_id, exc_info=True)
+
+    async def cog_load(self):
+        if not self.voice_xp_worker.is_running():
+            self.voice_xp_worker.start()
+            logger.info("Voice XP worker started")
+
+    def cog_unload(self):
+        self.voice_xp_worker.cancel()
+        self._voice_online = False
+        self.voice_sessions.clear()
+        self._voice_pending.clear()
+        logger.info("Voice XP worker stopped")
+
+    def _voice_number(self, guild_id, settings, field, default, maximum):
+        raw = settings.get(field, default)
+        try:
+            number = float(raw)
+            if not math.isfinite(number) or number < 0 or number > maximum:
+                raise ValueError("out of range")
+            self._voice_invalid.pop((guild_id, field), None)
+            return number
+        except (ValueError, TypeError, OverflowError):
+            if self._voice_invalid.get((guild_id, field)) != repr(raw):
+                logger.warning("Invalid voice setting guild=%s %s=%r; using %s",
+                               guild_id, field, raw, default)
+                self._voice_invalid[(guild_id, field)] = repr(raw)
+            return default
+
+    async def _load_voice_config(self, guild_id):
+        stored = await database.get_level_settings(guild_id)
+        settings = {key: (stored or {}).get(key, value) for key, value in VOICE_DEFAULTS.items()}
+        settings["voice_xp_per_minute"] = self._voice_number(
+            guild_id, settings, "voice_xp_per_minute", 20, 10000)
+        settings["voice_diminishing_mins"] = self._voice_number(
+            guild_id, settings, "voice_diminishing_mins", 60, 1000000)
+        settings["voice_diminishing_rate"] = self._voice_number(
+            guild_id, settings, "voice_diminishing_rate", 0.5, 1)
+        return (settings, await database.get_level_multipliers(guild_id),
+                await database.get_level_blacklist(guild_id))
+
+    def _refresh_voice_config(self, guild_id, config, tick, wall):
+        old = self._voice_configs.get(guild_id)
+        if old is not None and old != config:
+            # The DB does not timestamp configuration changes. Fail closed for
+            # the unobserved interval instead of granting retroactive XP.
+            for key, session in self.voice_sessions.items():
+                if key[0] == guild_id:
+                    session.last_processed = max(session.last_processed, tick)
+                    session.last_wall = wall
+        self._voice_configs[guild_id] = config
+
+    @staticmethod
+    def _voice_flags(state):
+        return (bool(state.self_mute or state.mute),
+                bool(state.self_deaf or state.deaf))
+
+    def _new_voice_session(self, member, state, tick, wall):
+        muted, deafened = self._voice_flags(state)
+        return VoiceSession(state.channel.id, tick, tick, wall,
+                            frozenset(role.id for role in member.roles), muted, deafened)
+
+    def _voice_eligible(self, key, session, counts):
+        settings, _, blacklist = self._voice_configs[key[0]]
+        return bool(
+            settings["is_enabled"] and settings["voice_xp_enabled"]
+            and not (settings["voice_mute_no_xp"] and session.muted)
+            and not (settings["voice_deafen_no_xp"] and session.deafened)
+            and not (settings["voice_min_two_members"] and counts.get(session.channel_id, 0) < 2)
+            and not is_blacklisted(blacklist, session.role_ids, {session.channel_id})
+        )
+
+    def _recheck_voice_eligibility(self, guild_id, tick, wall, discard_changes=False):
+        sessions = [(key, s) for key, s in self.voice_sessions.items() if key[0] == guild_id]
+        counts: dict[int, int] = {}
+        for _, session in sessions:
+            counts[session.channel_id] = counts.get(session.channel_id, 0) + 1
+        for key, session in sessions:
+            eligible = self._voice_eligible(key, session, counts)
+            if discard_changes and eligible != session.eligible:
+                session.last_processed, session.last_wall = tick, wall
+            session.eligible = eligible
+
+    def _accrue_voice(self, key, session, tick, wall):
+        elapsed = max(0.0, tick - session.last_processed)
+        settings, multipliers, _ = self._voice_configs[key[0]]
+        if session.eligible and elapsed:
+            credit = self._voice_pending.setdefault(key, VoiceCredit())
+            # Split at the known boost expiry; never extend it to the tick end.
+            pieces = [elapsed]
+            try:
+                expiry = datetime.fromisoformat(str(settings["boost_expires_at"]).replace("Z", "+00:00"))
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                until_expiry = (expiry - session.last_wall).total_seconds()
+                if 0 < until_expiry < elapsed:
+                    pieces = [until_expiry, elapsed - until_expiry]
+            except (TypeError, ValueError):
+                pass
+            offset = 0.0
+            for seconds in pieces:
+                factor = resolve_multiplier(
+                    settings, multipliers, session.role_ids, {session.channel_id},
+                    session.last_wall + timedelta(seconds=offset + seconds / 2))
+                weighted = seconds
+                if settings["voice_diminishing_enabled"]:
+                    threshold = settings["voice_diminishing_mins"] * 60
+                    full = min(seconds, max(0, threshold - session.eligible_duration))
+                    weighted = full + (seconds - full) * settings["voice_diminishing_rate"]
+                xp = weighted / 60 * settings["voice_xp_per_minute"] * factor
+                if settings["voice_separate_levels"]:
+                    credit.voice_xp += xp
+                else:
+                    credit.text_xp += xp
+                session.eligible_duration += seconds
+                credit.seconds += seconds
+                offset += seconds
+        session.last_processed = max(session.last_processed, tick)
+        session.last_wall = wall
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        if member.bot or not self._voice_online:
+            return
+        tick, wall = monotonic(), datetime.now(timezone.utc)
+        guild_id, key = member.guild.id, (member.guild.id, member.id)
+        async with self._voice_lock:
+            if not self._voice_online:
+                return
+            try:
+                config = await self._load_voice_config(guild_id)
+                self._refresh_voice_config(guild_id, config, tick, wall)
+                affected = {state.channel.id for state in (before, after) if state.channel}
+                for other_key, session in list(self.voice_sessions.items()):
+                    if other_key[0] == guild_id and session.channel_id in affected:
+                        self._accrue_voice(other_key, session, tick, wall)
+                session = self.voice_sessions.get(key)
+                if after.channel is None:
+                    self.voice_sessions.pop(key, None)
+                elif session is None:
+                    self.voice_sessions[key] = self._new_voice_session(member, after, tick, wall)
+                else:
+                    session.channel_id = after.channel.id
+                    session.role_ids = frozenset(role.id for role in member.roles)
+                    session.muted, session.deafened = self._voice_flags(after)
+                self._recheck_voice_eligibility(guild_id, tick, wall)
+            except Exception:
+                # Resume only from a new validated snapshot on the next tick.
+                for other_key, session in self.voice_sessions.items():
+                    if other_key[0] == guild_id:
+                        session.eligible = False
+                        session.last_processed, session.last_wall = tick, wall
+                logger.exception("Voice state tracking failed guild=%s member=%s", *key)
+
+    async def rebuild_voice_sessions(self):
+        async with self._voice_lock:
+            self._voice_online = False
+            self.voice_sessions.clear()
+            self._voice_pending.clear()
+            self._voice_configs.clear()
+            for guild in self.bot.guilds:
+                if guild.unavailable:
+                    continue
+                try:
+                    self._voice_configs[guild.id] = await self._load_voice_config(guild.id)
+                    tick, wall = monotonic(), datetime.now(timezone.utc)
+                    for user_id, state in guild.voice_states.items():
+                        member = guild.get_member(user_id)
+                        if member and not member.bot and state.channel:
+                            self.voice_sessions[(guild.id, user_id)] = self._new_voice_session(member, state, tick, wall)
+                    self._recheck_voice_eligibility(guild.id, tick, wall)
+                except Exception:
+                    logger.exception("Voice recovery failed guild=%s", guild.id)
+            self._voice_online = True
+            logger.info("Voice tracking resumed: %s active sessions", len(self.voice_sessions))
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if not self._voice_online:
+            await self.rebuild_voice_sessions()
+
+    @commands.Cog.listener()
+    async def on_resumed(self):
+        if not self._voice_online:
+            await self.rebuild_voice_sessions()
+
+    @commands.Cog.listener()
+    async def on_disconnect(self):
+        # Stop eligibility immediately, even if the worker currently holds its lock.
+        self._voice_online = False
+        async with self._voice_lock:
+            self._voice_online = False
+            self.voice_sessions.clear()
+            self._voice_pending.clear()
+        logger.info("Voice tracking paused on gateway disconnect")
+
+    @tasks.loop(seconds=60)
+    async def voice_xp_worker(self):
+        await self.process_voice_tick()
+
+    @voice_xp_worker.before_loop
+    async def before_voice_xp_worker(self):
+        await self.bot.wait_until_ready()
+        if not self._voice_online:
+            await self.rebuild_voice_sessions()
+
+    @voice_xp_worker.error
+    async def voice_xp_worker_error(self, error):
+        logger.error("Voice XP worker stopped unexpectedly", exc_info=(type(error), error, error.__traceback__))
+
+    async def process_voice_tick(self):
+        async with self._voice_lock:
+            if not self._voice_online:
+                return
+            guild_ids = {key[0] for key in self.voice_sessions} | {key[0] for key in self._voice_pending}
+            for guild_id in guild_ids:
+                try:
+                    await self._process_voice_guild(guild_id)
+                except Exception:
+                    # Unknown eligibility must not be backfilled on recovery.
+                    tick, wall = monotonic(), datetime.now(timezone.utc)
+                    for key, session in self.voice_sessions.items():
+                        if key[0] == guild_id:
+                            session.last_processed, session.last_wall = tick, wall
+                            session.eligible = False
+                    logger.exception("Voice XP guild processing failed guild=%s", guild_id)
+            live_guilds = {key[0] for key in self.voice_sessions} | {key[0] for key in self._voice_pending}
+            for guild_id in set(self._voice_configs) - live_guilds:
+                self._voice_configs.pop(guild_id, None)
+
+    async def _process_voice_guild(self, guild_id):
+        guild = self.bot.get_guild(guild_id)
+        if guild is None or guild.unavailable:
+            for key in set(self.voice_sessions) | set(self._voice_pending):
+                if key[0] == guild_id:
+                    self.voice_sessions.pop(key, None)
+                    self._voice_pending.pop(key, None)
+            return
+        config = await self._load_voice_config(guild_id)
+        if not self._voice_online:
+            return
+        tick, wall = monotonic(), datetime.now(timezone.utc)
+        self._refresh_voice_config(guild_id, config, tick, wall)
+        # Reconcile all current states before counting humans or accruing time.
+        for key, session in list(self.voice_sessions.items()):
+            if key[0] != guild_id:
+                continue
+            try:
+                member = guild.get_member(key[1])
+                state = guild.voice_states.get(key[1])
+                if not member or member.bot or not state or not state.channel or not guild.get_channel(state.channel.id):
+                    self.voice_sessions.pop(key, None)
+                    continue
+                flags = self._voice_flags(state)
+                roles = frozenset(role.id for role in member.roles)
+                if (session.channel_id, session.muted, session.deafened, session.role_ids) != (state.channel.id, *flags, roles):
+                    session.channel_id, session.muted, session.deafened, session.role_ids = state.channel.id, *flags, roles
+                    session.last_processed, session.last_wall = tick, wall
+            except Exception:
+                self.voice_sessions.pop(key, None)
+                logger.exception("Voice validation failed guild=%s member=%s", *key)
+        for user_id, state in guild.voice_states.items():
+            key = (guild_id, user_id)
+            if key in self.voice_sessions:
+                continue
+            try:
+                member = guild.get_member(user_id)
+                if member and not member.bot and state.channel and guild.get_channel(state.channel.id):
+                    self.voice_sessions[key] = self._new_voice_session(member, state, tick, wall)
+            except Exception:
+                logger.exception("Voice recovery validation failed guild=%s member=%s", *key)
+        self._recheck_voice_eligibility(guild_id, tick, wall, discard_changes=True)
+        for key, session in list(self.voice_sessions.items()):
+            if key[0] == guild_id:
+                try:
+                    self._accrue_voice(key, session, tick, wall)
+                except Exception:
+                    session.last_processed, session.last_wall = tick, wall
+                    logger.exception("Voice accrual failed guild=%s member=%s", *key)
+        for key in list(self._voice_pending):
+            if not self._voice_online:
+                return
+            if key[0] == guild_id:
+                try:
+                    await self._flush_voice_credit(guild, key, config[0])
+                except Exception:
+                    logger.exception("Voice credit failed guild=%s member=%s", *key)
+
+    async def _flush_voice_credit(self, guild, key, settings):
+        credit = self._voice_pending[key]
+        voice_xp, text_xp, seconds = (int(value + 1e-9) for value in
+                                     (credit.voice_xp, credit.text_xp, credit.seconds))
+        if voice_xp or text_xp or seconds:
+            award = await database.award_voice_xp(*key, voice_xp, text_xp, seconds)
+            # Subtract only after commit; failures retain a retryable credit.
+            credit.voice_xp = max(0, credit.voice_xp - voice_xp)
+            credit.text_xp = max(0, credit.text_xp - text_xp)
+            credit.seconds = max(0, credit.seconds - seconds)
+            member = guild.get_member(key[1])
+            if member:
+                if award["voice_level"] > award["old_voice_level"]:
+                    await self.apply_voice_rewards(member, award["voice_level"], settings)
+                    self.bot.dispatch("lona_voice_level_up", VoiceLevelUp(
+                        guild, member, award["old_voice_level"], award["voice_level"], award["voice_xp"]))
+                if award["text_level"] > award["old_text_level"]:
+                    await self.apply_text_rewards(member, award["text_level"], settings)
+                    progress = text_progress(award["text_xp"])
+                    self.emit_level_up(TextLevelUp(
+                        guild, member, award["old_text_level"], award["text_level"],
+                        award["text_xp"], progress["xp_required"], progress["next_level_total_xp"]))
+        if key not in self.voice_sessions:
+            self._voice_pending.pop(key, None)
 
     @staticmethod
     def _manageable(guild: discord.Guild, role: discord.Role) -> bool:
