@@ -8083,6 +8083,7 @@
           : state.ticketCategories.map((item) => ({ ...item })),
       };
       await fetchGuildAnalytics(id, state.analyticsRange, false);
+      await loadLevelingData(id);
       renderPage();
       await loadAndHydratePermissions(id);
       openSSE(id);
