@@ -261,4 +261,4 @@ def register_public_leaderboard_routes(routes, *, bot_getter, logger):
                 content_type="text/plain",
                 headers={"Cache-Control": "no-store"},
             )
-        raise web.HTTPPermanentRedirect(location=f"/lb/{slug}")
+        raise web.HTTPPermanentRedirect(location=req.path.rstrip("/"))

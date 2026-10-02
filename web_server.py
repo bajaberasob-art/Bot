@@ -90,6 +90,7 @@ from cogs.command_meta import (
 )
 from cogs.community import PersistentDropdownTicketView, normalize_ticket_categories
 from leveling_api import register_leveling_routes
+from public_leaderboard import register_public_leaderboard_routes
 
 routes = web.RouteTableDef()
 PROJECT_DIR = Path(__file__).parent.resolve()
@@ -5008,6 +5009,11 @@ register_leveling_routes(
     authorize=authorize,
     json_error=json_error,
     read_json_body=read_json_body,
+    logger=logger,
+)
+register_public_leaderboard_routes(
+    routes,
+    bot_getter=request_bot,
     logger=logger,
 )
 
