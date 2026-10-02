@@ -2,7 +2,7 @@
   "use strict";
   // DOM helpers
   const $ = (s, p = document) => p.querySelector(s);
-  const urlMountPrefix = location.pathname.startsWith("/api/") ? "/api" : "";
+  const urlMountPrefix = location.pathname === "/api" || location.pathname.startsWith("/api/") ? "/api" : "";
   const PUBLIC_SLUG_RE = /^(?=.{3,40}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
   const el = (tag, props = {}, ...children) => {
     const n = document.createElement(tag);
@@ -307,7 +307,6 @@
   }
   const redirect = () => location.assign("login");
   const app = $("#app");
-  const urlMountPrefix = location.pathname === "/api" || location.pathname.startsWith("/api/") ? "/api" : "";
   // API and feedback
   function toast(message, type = "error", life = 4000) {
     const old = $(".toast");

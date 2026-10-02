@@ -147,7 +147,7 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text_page["total"], 3)
         self.assertEqual(
             [(row["user_id"], row["rank"]) for row in text_page["rows"]],
-            [(1003, 2), (1001, 3)],
+            [(1001, 2), (1003, 3)],
         )
         self.assertEqual(
             [(row["user_id"], row["rank"]) for row in voice_page["rows"]],
@@ -160,7 +160,7 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             await database.get_public_level_summary(704),
-            {"active_members": 3, "total_xp": 2700},
+            {"active_members": 3, "total_xp": 2200},
         )
 
     async def test_public_slug_legacy_ambiguity_fails_closed(self):

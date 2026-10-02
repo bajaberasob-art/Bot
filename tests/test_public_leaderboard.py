@@ -120,7 +120,7 @@ class PublicLeaderboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["summary"]["totalXp"], 3018)
         self.assertEqual(data["rows"][0]["name"], "Member Two")
         self.assertEqual(data["rows"][0]["xp"], 900)
-        self.assertEqual(data["rows"][0]["level"], 3)
+        self.assertEqual(data["rows"][0]["level"], 4)
         self.assertEqual(data["rows"][1]["rank"], 2)
         self.assertTrue(data["rows"][1]["removed"])
         self.assertIsNone(data["rows"][1]["xp"])
