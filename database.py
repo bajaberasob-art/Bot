@@ -1955,6 +1955,133 @@ async def update_level_settings(
     return result
 
 
+class LevelingConflict(Exception):
+    """Raised when a dashboard save was based on an older settings revision."""
+
+    def __init__(self, current_revision: int):
+        self.current_revision = int(current_revision)
+        super().__init__("leveling settings changed since they were loaded")
+
+
+async def replace_level_dashboard_config(
+    guild_id: int,
+    expected_revision: int,
+    settings: Dict[str, Any],
+    rewards: List[Dict[str, Any]],
+    multipliers: List[Dict[str, Any]],
+    blacklist: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Commit one validated dashboard snapshot and its child rows atomically."""
+    if not isinstance(settings, dict):
+        raise ValueError("level settings data must be a mapping")
+    unknown = set(settings) - _LEVEL_SETTINGS_MUTABLE_FIELDS
+    if unknown:
+        raise ValueError(f"unknown level setting: {sorted(unknown)[0]}")
+    encoded = {
+        key: _encode_level_setting(key, value)
+        for key, value in settings.items()
+    }
+    guild_id = int(guild_id)
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO level_settings (guild_id) VALUES (?)",
+                (guild_id,),
+            )
+            async with db.execute(
+                "SELECT revision FROM level_settings WHERE guild_id = ?",
+                (guild_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            revision = int(row["revision"] or 0) if row else 0
+            if revision != int(expected_revision):
+                await db.rollback()
+                raise LevelingConflict(revision)
+            for column, value in encoded.items():
+                await db.execute(
+                    f"UPDATE level_settings SET {column} = ? WHERE guild_id = ?",
+                    (value, guild_id),
+                )
+            await db.execute(
+                "UPDATE level_settings SET revision = revision + 1 WHERE guild_id = ?",
+                (guild_id,),
+            )
+            await db.execute(
+                "DELETE FROM level_role_rewards WHERE guild_id = ?", (guild_id,)
+            )
+            await db.executemany(
+                """
+                INSERT INTO level_role_rewards
+                    (guild_id, reward_type, level_required, role_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (
+                        guild_id, item["reward_type"], int(item["level_required"]),
+                        int(item["role_id"]),
+                    )
+                    for item in rewards
+                ],
+            )
+            await db.execute(
+                "DELETE FROM level_multipliers WHERE guild_id = ?", (guild_id,)
+            )
+            await db.executemany(
+                """
+                INSERT INTO level_multipliers
+                    (guild_id, target_type, target_id, multiplier)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (
+                        guild_id, item["target_type"], int(item["target_id"]),
+                        float(item["multiplier"]),
+                    )
+                    for item in multipliers
+                ],
+            )
+            await db.execute(
+                "DELETE FROM level_blacklist WHERE guild_id = ?", (guild_id,)
+            )
+            await db.execute(
+                "DELETE FROM level_user_blacklist WHERE guild_id = ?", (guild_id,)
+            )
+            await db.executemany(
+                """
+                INSERT INTO level_blacklist (guild_id, target_type, target_id)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    (guild_id, item["target_type"], int(item["target_id"]))
+                    for item in blacklist if item["target_type"] != "user"
+                ],
+            )
+            await db.executemany(
+                """
+                INSERT INTO level_user_blacklist (guild_id, target_id)
+                VALUES (?, ?)
+                """,
+                [
+                    (guild_id, int(item["target_id"]))
+                    for item in blacklist if item["target_type"] == "user"
+                ],
+            )
+            await db.commit()
+        except BaseException:
+            if db.in_transaction:
+                await db.rollback()
+            raise
+        async with db.execute(
+            "SELECT * FROM level_settings WHERE guild_id = ?", (guild_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    result = _decode_level_settings(row)
+    if result is None:
+        raise RuntimeError("level settings row disappeared after dashboard save")
+    return result
+
+
 async def get_user_level(
     guild_id: int,
     user_id: int,
@@ -2606,6 +2733,97 @@ async def get_voice_leaderboard(
     return await _get_level_leaderboard(
         guild_id, limit, "voice_xp", "voice_level"
     )
+
+
+async def get_level_leaderboard_page(
+    guild_id: int,
+    mode: str = "text",
+    limit: int = 20,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    """Return one bounded, indexed text or voice leaderboard page."""
+    columns = {
+        "text": ("text_xp", "text_level", "total_messages"),
+        "voice": ("voice_xp", "voice_level", "total_voice_seconds"),
+    }
+    if mode not in columns:
+        raise ValueError("mode must be 'text' or 'voice'")
+    xp_column, level_column, total_column = columns[mode]
+    limit = max(1, min(100, int(limit)))
+    offset = max(0, min(10000, int(offset)))
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            f"SELECT COUNT(*) FROM user_levels WHERE guild_id = ? AND {xp_column} > 0",
+            (int(guild_id),),
+        ) as cur:
+            count_row = await cur.fetchone()
+        async with db.execute(
+            f"""
+            SELECT user_id, {xp_column} AS xp, {level_column} AS level,
+                   {total_column} AS activity_total, total_messages,
+                   total_voice_seconds, current_streak, last_message_at
+            FROM user_levels
+            WHERE guild_id = ? AND {xp_column} > 0
+            ORDER BY {xp_column} DESC, user_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (int(guild_id), limit, offset),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+    for index, row in enumerate(rows):
+        row["rank"] = offset + index + 1
+    return {
+        "mode": mode,
+        "limit": limit,
+        "offset": offset,
+        "total": int(count_row[0] or 0) if count_row else 0,
+        "rows": rows,
+    }
+
+
+async def get_level_dashboard_analytics(guild_id: int) -> Dict[str, Any]:
+    """Return live aggregates only; no daily history is synthesized."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS participants,
+                   COALESCE(SUM(text_xp), 0) AS text_xp,
+                   COALESCE(SUM(voice_xp), 0) AS voice_xp,
+                   COALESCE(SUM(total_messages), 0) AS total_messages,
+                   COALESCE(SUM(total_voice_seconds), 0) AS total_voice_seconds,
+                   COALESCE(MAX(text_level), 0) AS highest_text_level,
+                   COALESCE(MAX(voice_level), 0) AS highest_voice_level,
+                   SUM(CASE WHEN last_message_at >= ? THEN 1 ELSE 0 END)
+                       AS active_members_7d
+            FROM user_levels
+            WHERE guild_id = ? AND (text_xp > 0 OR voice_xp > 0)
+            """,
+            (cutoff, int(guild_id)),
+        ) as cur:
+            row = await cur.fetchone()
+        async with db.execute(
+            """
+            SELECT text_level AS level, COUNT(*) AS members
+            FROM user_levels
+            WHERE guild_id = ? AND text_xp > 0
+            GROUP BY text_level
+            ORDER BY text_level DESC
+            LIMIT 20
+            """,
+            (int(guild_id),),
+        ) as cur:
+            distribution = [dict(item) for item in await cur.fetchall()]
+    return {
+        "totals": dict(row) if row else {
+            "participants": 0, "text_xp": 0, "voice_xp": 0,
+            "total_messages": 0, "total_voice_seconds": 0,
+            "highest_text_level": 0, "highest_voice_level": 0,
+            "active_members_7d": 0,
+        },
+        "distribution": distribution,
+        "history_available": False,
+    }
 
 
 async def get_command_rank_snapshot(
