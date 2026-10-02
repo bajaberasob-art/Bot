@@ -547,15 +547,17 @@ def register_leveling_routes(routes, *, authorize, json_error, read_json_body, l
             logger.exception("Leveling leaderboard read failed guild=%s", guild.id)
             return json_error(500, "leveling_unavailable")
 
-    @routes.post("/api/guild/{guild_id}/leveling/card-preview")
+    @routes.get("/api/guild/{guild_id}/leveling/card-preview")
     async def api_leveling_card_preview(req):
-        session, guild = await authorize(req, write=True)
-        try:
-            body = await read_json_body(req)
-        except (ValueError, UnicodeDecodeError):
-            return json_error(400, "invalid_json")
-        if not isinstance(body, dict):
-            return json_error(400, "validation", fields={"_": "card settings required"})
+        session, guild = await authorize(req)
+        body = {
+            "layout": req.query.get("layout", "vertical"),
+            "particles": req.query.get("particles", "none"),
+            "color": req.query.get("color", "#1E293B"),
+            "bg": req.query.get("bg", ""),
+            "animated": req.query.get("animated", "true").lower() == "true",
+            "showStats": req.query.get("showStats", "true").lower() == "true",
+        }
         try:
             layout = body.get("layout", "vertical")
             particles = body.get("particles", "none")
