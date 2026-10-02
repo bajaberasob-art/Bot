@@ -700,13 +700,22 @@ class Levels(EngagementXP, commands.Cog):
             return
         tick, wall = monotonic(), datetime.now(timezone.utc)
         self._refresh_voice_config(guild_id, config, tick, wall)
+        voice_states = getattr(guild, "voice_states", None)
+        if voice_states is None:
+            voice_states = {
+                member.id: state
+                for channel in getattr(guild, "voice_channels", ())
+                for member in getattr(channel, "members", ())
+                if (state := getattr(member, "voice", None))
+                and getattr(state, "channel", None)
+            }
         # Reconcile all current states before counting humans or accruing time.
         for key, session in list(self.voice_sessions.items()):
             if key[0] != guild_id:
                 continue
             try:
                 member = guild.get_member(key[1])
-                state = guild.voice_states.get(key[1])
+                state = voice_states.get(key[1])
                 if not member or member.bot or not state or not state.channel or not guild.get_channel(state.channel.id):
                     self.voice_sessions.pop(key, None)
                     continue
@@ -718,7 +727,7 @@ class Levels(EngagementXP, commands.Cog):
             except Exception:
                 self.voice_sessions.pop(key, None)
                 logger.exception("Voice validation failed guild=%s member=%s", *key)
-        for user_id, state in guild.voice_states.items():
+        for user_id, state in voice_states.items():
             key = (guild_id, user_id)
             if key in self.voice_sessions:
                 continue
