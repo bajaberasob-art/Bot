@@ -25,6 +25,7 @@ VOICE_DEFAULTS = {
     "voice_diminishing_enabled": 0, "voice_diminishing_mins": 60,
     "voice_diminishing_rate": 0.5, "voice_separate_levels": 1,
     "xp_multiplier": 1, "boost_multiplier": 1, "boost_expires_at": None,
+    "timed_xp_boosts": [], "voice_min_members": 2,
     "rewards_single_highest": 1,
     "overtake_alert_enabled": 1,
 }
@@ -493,7 +494,7 @@ class Levels(EngagementXP, commands.Cog):
             settings["is_enabled"] and settings["voice_xp_enabled"]
             and not (settings["voice_mute_no_xp"] and session.muted)
             and not (settings["voice_deafen_no_xp"] and session.deafened)
-            and not (settings["voice_min_two_members"] and counts.get(session.channel_id, 0) < 2)
+            and counts.get(session.channel_id, 0) < settings["voice_min_members"]
             and not is_blacklisted(blacklist, session.role_ids, {session.channel_id})
         )
 

@@ -572,6 +572,7 @@ async def init_db() -> None:
                 "text_allowed_channels": "TEXT DEFAULT '[]'",
                 "reaction_xp_enabled": "BOOLEAN DEFAULT 1",
                 "timed_xp_boosts": "TEXT DEFAULT '[]'",
+                "voice_min_members": "INTEGER DEFAULT 2",
                 "card_show_stats": "BOOLEAN DEFAULT 1",
                 "levelup_enabled": "BOOLEAN DEFAULT 1",
                 "milestone_alert_enabled": "BOOLEAN DEFAULT 1",
@@ -584,6 +585,15 @@ async def init_db() -> None:
                     await db.execute(
                         f"ALTER TABLE level_settings ADD COLUMN {column} {declaration}"
                     )
+            if "voice_min_members" not in level_columns:
+                await db.execute(
+                    """
+                    UPDATE level_settings
+                    SET voice_min_members = CASE
+                        WHEN voice_min_two_members THEN 2 ELSE 1
+                    END
+                    """
+                )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS user_levels (
                     guild_id INTEGER NOT NULL,
@@ -1818,6 +1828,7 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "voice_mute_no_xp",
     "voice_deafen_no_xp",
     "voice_min_two_members",
+    "voice_min_members",
     "voice_diminishing_enabled",
     "voice_diminishing_mins",
     "voice_diminishing_rate",
