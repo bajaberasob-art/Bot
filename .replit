@@ -41,7 +41,7 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
-packages = ["libsodium"]
+packages = ["freetype", "lcms2", "libimagequant", "libjpeg", "libsodium", "libtiff", "libwebp", "libxcrypt", "openjpeg", "tcl", "tk", "zlib"]
 
 [userenv]
 
