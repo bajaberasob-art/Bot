@@ -13,6 +13,7 @@ import discord
 from discord.ext import commands, tasks
 
 import database
+from level_engagement import EngagementXP
 from level_progression import text_progress
 
 logger = logging.getLogger("LonaLevels")
@@ -25,6 +26,7 @@ VOICE_DEFAULTS = {
     "voice_diminishing_rate": 0.5, "voice_separate_levels": 1,
     "xp_multiplier": 1, "boost_multiplier": 1, "boost_expires_at": None,
     "rewards_single_highest": 1,
+    "overtake_alert_enabled": 1,
 }
 
 
@@ -88,6 +90,16 @@ class TextMilestone:
     next_level_total_xp: int
 
 
+@dataclass(frozen=True)
+class OvertakeEvent:
+    passer: Any
+    passed: Any
+    new_rank: int
+    guild: Any
+    xp: int
+    previous_rank: int
+
+
 def bounded_multiplier(value: Any) -> float:
     try:
         value = float(value)
@@ -128,7 +140,7 @@ def resolve_multiplier(settings: dict, multipliers: list, role_ids: set,
     return min(math.prod(factors), MAX_MULTIPLIER)
 
 
-class Levels(commands.Cog):
+class Levels(EngagementXP, commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Bounded LRU: eviction never bypasses the persisted cooldown guard.
@@ -142,6 +154,15 @@ class Levels(commands.Cog):
         self._voice_lock = asyncio.Lock()
         self._voice_online = False
         self._voice_invalid: dict[tuple[int, str], str] = {}
+        self._init_engagement_xp()
+
+    @staticmethod
+    def _xp_now():
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _xp_tick():
+        return monotonic()
 
     @staticmethod
     def cooldown_seconds(settings: dict) -> int:
@@ -189,7 +210,9 @@ class Levels(commands.Cog):
         if xp <= 0:
             return
         cooldown = self.cooldown_seconds(settings)
-        award = await database.award_text_xp(*key, xp, now, cooldown)
+        award = await database.award_text_xp(
+            *key, xp, now, cooldown,
+            detect_overtakes=bool(settings.get("overtake_alert_enabled", True)))
         if award is None:
             # Restart/LRU miss: recover the actual remaining cooldown once.
             row = await database.get_user_level(*key)
@@ -200,22 +223,33 @@ class Levels(commands.Cog):
             self._remember_cooldown(key, monotonic() + remaining)
             return
         self._remember_cooldown(key, monotonic() + cooldown)
+        await self._handle_text_award(message.author, settings, award)
+
+    async def _handle_text_award(self, member, settings, award, milestones=True):
+        """Common post-commit text rewards/events for every XP source."""
         progress = text_progress(award["text_xp"])
         if award["text_level"] > award["old_level"]:
-            await self.apply_text_rewards(message.author, award["text_level"], settings)
+            await self.apply_text_rewards(member, award["text_level"], settings)
             self.emit_level_up(TextLevelUp(
-                message.guild, message.author, award["old_level"], award["text_level"],
+                member.guild, member, award["old_level"], award["text_level"],
                 award["text_xp"], progress["xp_required"], progress["next_level_total_xp"],
             ))
-        elif progress["percentage"] >= 90:
+        elif milestones and progress["percentage"] >= 90:
             # One notification on crossing 90%, not every following message.
             previous = text_progress(award["old_xp"])
             if previous["level"] == progress["level"] and previous["percentage"] < 90:
                 self.emit_milestone(TextMilestone(
-                    message.guild, message.author, award["text_level"], award["text_xp"],
+                    member.guild, member, award["text_level"], award["text_xp"],
                     award["text_level"] + 1, progress["xp_required"],
                     progress["percentage"], progress["next_level_total_xp"],
                 ))
+        if settings.get("overtake_alert_enabled", True):
+            get_member = getattr(member.guild, "get_member", lambda user_id: None)
+            for crossing in award.get("overtakes", []):
+                passed = get_member(crossing["passed_id"]) or discord.Object(id=crossing["passed_id"])
+                self.bot.dispatch("lona_text_overtake", OvertakeEvent(
+                    member, passed, crossing["new_rank"], member.guild,
+                    award["text_xp"], crossing["previous_rank"]))
 
     def _remember_cooldown(self, key: tuple, deadline: float):
         # Lazily purge old entries; the map is hard bounded even when idle.
@@ -307,6 +341,8 @@ class Levels(commands.Cog):
         self._voice_online = False
         self.voice_sessions.clear()
         self._voice_pending.clear()
+        self._reaction_seen.clear()
+        self._reaction_cooldowns.clear()
         logger.info("Voice XP worker stopped")
 
     def _voice_number(self, guild_id, settings, field, default, maximum):
@@ -588,7 +624,9 @@ class Levels(commands.Cog):
         voice_xp, text_xp, seconds = (int(value + 1e-9) for value in
                                      (credit.voice_xp, credit.text_xp, credit.seconds))
         if voice_xp or text_xp or seconds:
-            award = await database.award_voice_xp(*key, voice_xp, text_xp, seconds)
+            award = await database.award_voice_xp(
+                *key, voice_xp, text_xp, seconds,
+                detect_overtakes=bool(settings.get("overtake_alert_enabled", True)))
             # Subtract only after commit; failures retain a retryable credit.
             credit.voice_xp = max(0, credit.voice_xp - voice_xp)
             credit.text_xp = max(0, credit.text_xp - text_xp)
@@ -599,12 +637,8 @@ class Levels(commands.Cog):
                     await self.apply_voice_rewards(member, award["voice_level"], settings)
                     self.bot.dispatch("lona_voice_level_up", VoiceLevelUp(
                         guild, member, award["old_voice_level"], award["voice_level"], award["voice_xp"]))
-                if award["text_level"] > award["old_text_level"]:
-                    await self.apply_text_rewards(member, award["text_level"], settings)
-                    progress = text_progress(award["text_xp"])
-                    self.emit_level_up(TextLevelUp(
-                        guild, member, award["old_text_level"], award["text_level"],
-                        award["text_xp"], progress["xp_required"], progress["next_level_total_xp"]))
+                if text_xp:
+                    await self._handle_text_award(member, settings, award, milestones=False)
         if key not in self.voice_sessions:
             self._voice_pending.pop(key, None)
 

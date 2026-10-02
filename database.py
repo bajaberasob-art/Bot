@@ -581,6 +581,24 @@ async def init_db() -> None:
                 );
             """)
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_reaction_awards (
+                    guild_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    reactor_id INTEGER NOT NULL,
+                    emoji_key TEXT NOT NULL,
+                    awarded_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, message_id, reactor_id, emoji_key)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_reaction_cooldowns (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    last_award_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, user_id)
+                );
+            """)
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS level_role_rewards (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     guild_id INTEGER NOT NULL,
@@ -1900,16 +1918,110 @@ async def get_user_level(
             return dict(row) if row else None
 
 
+def _level_text_values(guild_id, user_id, xp, row):
+    """Shared text progression for every leveling XP source."""
+    from level_progression import level_from_xp
+
+    old_xp = int(row["text_xp"] or 0) if row else 0
+    old_level = int(row["text_level"] or 0) if row else 0
+    new_xp = old_xp + int(xp)
+    return {
+        "guild_id": int(guild_id), "user_id": int(user_id),
+        "old_xp": old_xp, "old_level": old_level,
+        "text_xp": new_xp, "text_level": level_from_xp(new_xp),
+        "xp_awarded": int(xp),
+    }
+
+
+async def _level_text_overtakes(db, guild_id, user_id, old_xp, new_xp, enabled, projections=None):
+    """Indexed crossed-range query; no full leaderboard materialization.
+
+    New positive-XP participants enter without alerts. Ties follow the existing
+    leaderboard's user-ID ordering. All comparisons share the award transaction.
+    """
+    if not enabled or old_xp <= 0 or new_xp <= old_xp:
+        return []
+    async with db.execute(
+        """
+        SELECT user_id FROM user_levels
+        WHERE guild_id = ? AND user_id != ? AND text_xp > 0
+          AND text_xp BETWEEN ? AND ?
+          AND (text_xp > ? OR (text_xp = ? AND user_id < ?))
+          AND (text_xp < ? OR (text_xp = ? AND user_id > ?))
+        ORDER BY text_xp DESC, user_id ASC
+        """,
+        (int(guild_id), int(user_id), old_xp, new_xp,
+         old_xp, old_xp, int(user_id), new_xp, new_xp, int(user_id)),
+    ) as cur:
+        passed = await cur.fetchall()
+    if not passed:
+        return []
+    async with db.execute(
+        """
+        SELECT 1 + COUNT(*) FROM user_levels
+        WHERE guild_id = ? AND
+            (text_xp > ? OR (text_xp = ? AND user_id < ?))
+        """,
+        (int(guild_id), new_xp, new_xp, int(user_id)),
+    ) as cur:
+        new_rank = (await cur.fetchone())[0]
+    previous_rank = new_rank + len(passed)
+    if projections:
+        # A reaction can credit two people atomically. Compare their final
+        # positions, not temporary positions during sequential SQL updates.
+        passed = [
+            item for item in passed
+            if item[0] not in projections
+            or projections[item[0]][1] < new_xp
+            or (projections[item[0]][1] == new_xp and item[0] > user_id)
+        ]
+        for other_id, (previous_xp, final_xp) in projections.items():
+            if other_id != user_id:
+                before_ahead = previous_xp > new_xp or (previous_xp == new_xp and other_id < user_id)
+                after_ahead = final_xp > new_xp or (final_xp == new_xp and other_id < user_id)
+                new_rank += int(after_ahead) - int(before_ahead)
+    if new_rank >= previous_rank:
+        return []
+    return [
+        {"passed_id": item[0], "new_rank": new_rank,
+         "previous_rank": previous_rank}
+        for item in passed
+    ]
+
+
+async def _add_level_text_credit(db, guild_id, user_id, xp, row, detect_overtakes):
+    values = _level_text_values(guild_id, user_id, xp, row)
+    values["overtakes"] = await _level_text_overtakes(
+        db, guild_id, user_id, values["old_xp"], values["text_xp"], detect_overtakes)
+    await db.execute(
+        """
+        INSERT INTO user_levels (guild_id, user_id, text_xp, text_level)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id) DO UPDATE SET
+            text_xp = excluded.text_xp, text_level = excluded.text_level
+        """,
+        (int(guild_id), int(user_id), values["text_xp"], values["text_level"]),
+    )
+    return values
+
+
+def _level_utc(value):
+    if not isinstance(value, datetime):
+        value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 async def award_text_xp(
     guild_id: int, user_id: int, xp: int, awarded_at: datetime,
     cooldown_seconds: int = 60,
+    detect_overtakes: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Atomic text-only award; persisted cooldown protects restarts/races.
 
     None means cooldown suppression. No user record is created until an award.
     """
-    from level_progression import level_from_xp
-
     xp = int(xp)
     if xp <= 0:
         raise ValueError("text XP award must be positive")
@@ -1933,39 +2045,29 @@ async def award_text_xp(
                 if (awarded_at - last).total_seconds() < cooldown_seconds:
                     await db.rollback()
                     return None
-            old_xp = int(row["text_xp"] or 0) if row else 0
-            old_level = int(row["text_level"] or 0) if row else 0
-            new_xp = old_xp + xp
-            new_level = level_from_xp(new_xp)
+            result = await _add_level_text_credit(db, guild_id, user_id, xp, row, detect_overtakes)
             await db.execute(
                 """
-                INSERT INTO user_levels
-                    (guild_id, user_id, text_xp, text_level, total_messages, last_message_at)
-                VALUES (?, ?, ?, ?, 1, ?)
-                ON CONFLICT(guild_id, user_id) DO UPDATE SET
-                    text_xp = excluded.text_xp,
-                    text_level = excluded.text_level,
+                UPDATE user_levels SET
                     total_messages = COALESCE(user_levels.total_messages, 0) + 1,
-                    last_message_at = excluded.last_message_at
+                    last_message_at = ?
+                WHERE guild_id = ? AND user_id = ?
                 """,
-                (int(guild_id), int(user_id), new_xp, new_level, awarded_at.isoformat()),
+                (awarded_at.isoformat(), int(guild_id), int(user_id)),
             )
             await db.commit()
         except BaseException:
             await db.rollback()
             raise
-    return {
-        "guild_id": int(guild_id), "user_id": int(user_id),
-        "old_xp": old_xp, "old_level": old_level,
-        "text_xp": new_xp, "text_level": new_level,
-        "total_messages": (int(row["total_messages"] or 0) if row else 0) + 1,
-        "last_message_at": awarded_at.isoformat(),
-    }
+    result["total_messages"] = (int(row["total_messages"] or 0) if row else 0) + 1
+    result["last_message_at"] = awarded_at.isoformat()
+    return result
 
 
 async def award_voice_xp(
     guild_id: int, user_id: int, voice_xp: int, text_xp: int,
     eligible_seconds: int,
+    detect_overtakes: bool = False,
 ) -> Dict[str, Any]:
     """Commit one batched voice credit, preserving chat counts/timestamps.
 
@@ -1993,7 +2095,10 @@ async def award_voice_xp(
             old_text_level = int(row["text_level"] or 0) if row else 0
             new_voice_xp, new_text_xp = old_voice_xp + voice_xp, old_text_xp + text_xp
             new_voice_level = level_from_xp(new_voice_xp) if voice_xp else old_voice_level
-            new_text_level = level_from_xp(new_text_xp) if text_xp else old_text_level
+            text_values = _level_text_values(guild_id, user_id, text_xp, row)
+            new_text_level = text_values["text_level"] if text_xp else old_text_level
+            overtakes = await _level_text_overtakes(
+                db, guild_id, user_id, old_text_xp, new_text_xp, detect_overtakes)
             await db.execute(
                 """
                 INSERT INTO user_levels
@@ -2019,7 +2124,149 @@ async def award_voice_xp(
         "old_voice_level": old_voice_level, "voice_level": new_voice_level,
         "old_text_level": old_text_level, "text_level": new_text_level,
         "voice_xp": new_voice_xp, "text_xp": new_text_xp,
+        "old_xp": old_text_xp, "old_level": old_text_level,
+        "overtakes": overtakes, "xp_awarded": text_xp,
     }
+
+
+async def award_reaction_xp(
+    guild_id: int, message_id: int, reactor_id: int, emoji_key: str,
+    awards: Dict[int, int], awarded_at: datetime, cooldown_seconds: int = 60,
+    detect_overtakes: bool = True,
+) -> Dict[str, Any]:
+    """Atomic reaction event ledger, cooldowns, recipient credits and ranks."""
+    awarded_at = _level_utc(awarded_at)
+    cooldown_seconds = max(0, int(cooldown_seconds))
+    recipients = {int(user_id): int(xp) for user_id, xp in awards.items() if int(xp) > 0}
+    if not recipients:
+        return {"status": "no_award", "awards": []}
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                """SELECT 1 FROM level_reaction_awards
+                   WHERE guild_id = ? AND message_id = ? AND reactor_id = ? AND emoji_key = ?""",
+                (int(guild_id), int(message_id), int(reactor_id), str(emoji_key)),
+            ) as cur:
+                if await cur.fetchone():
+                    await db.rollback()
+                    return {"status": "duplicate", "awards": []}
+            async with db.execute(
+                "SELECT last_award_at FROM level_reaction_cooldowns WHERE guild_id = ? AND user_id = ?",
+                (int(guild_id), int(reactor_id)),
+            ) as cur:
+                previous = await cur.fetchone()
+            if previous and (awarded_at - _level_utc(previous[0])).total_seconds() < cooldown_seconds:
+                await db.rollback()
+                remaining = cooldown_seconds - (awarded_at - _level_utc(previous[0])).total_seconds()
+                return {"status": "cooldown", "awards": [], "remaining_seconds": remaining}
+            eligible = []
+            for user_id, xp in sorted(recipients.items()):
+                async with db.execute(
+                    "SELECT last_award_at FROM level_reaction_cooldowns WHERE guild_id = ? AND user_id = ?",
+                    (int(guild_id), user_id),
+                ) as cur:
+                    previous = await cur.fetchone()
+                if previous and (awarded_at - _level_utc(previous[0])).total_seconds() < cooldown_seconds:
+                    continue
+                async with db.execute(
+                    "SELECT * FROM user_levels WHERE guild_id = ? AND user_id = ?",
+                    (int(guild_id), user_id),
+                ) as cur:
+                    row = await cur.fetchone()
+                eligible.append((user_id, xp, row))
+            if not eligible:
+                await db.rollback()
+                return {"status": "cooldown", "awards": []}
+            projections = {
+                user_id: (int(row["text_xp"] or 0) if row else 0,
+                          (int(row["text_xp"] or 0) if row else 0) + xp)
+                for user_id, xp, row in eligible
+            }
+            crossings = {
+                user_id: await _level_text_overtakes(
+                    db, guild_id, user_id, *projections[user_id], detect_overtakes, projections)
+                for user_id, _, _ in eligible
+            }
+            results = []
+            for user_id, xp, row in eligible:
+                result = await _add_level_text_credit(db, guild_id, user_id, xp, row, False)
+                result["overtakes"] = crossings[user_id]
+                results.append(result)
+            await db.execute(
+                """INSERT INTO level_reaction_awards
+                   (guild_id, message_id, reactor_id, emoji_key, awarded_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (int(guild_id), int(message_id), int(reactor_id), str(emoji_key), awarded_at.isoformat()),
+            )
+            # The initiating reactor is throttled even in author-only mode.
+            cooldown_ids = {int(reactor_id)} | {result["user_id"] for result in results}
+            for user_id in sorted(cooldown_ids):
+                await db.execute(
+                    """INSERT INTO level_reaction_cooldowns (guild_id, user_id, last_award_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(guild_id, user_id) DO UPDATE SET last_award_at = excluded.last_award_at""",
+                    (int(guild_id), user_id, awarded_at.isoformat()),
+                )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return {"status": "awarded", "awards": results, "cooldown_ids": sorted(cooldown_ids)}
+
+
+async def claim_level_streak(
+    guild_id: int, user_id: int, claimed_at: datetime,
+    multiplier: float = 1.0, detect_overtakes: bool = True,
+) -> Dict[str, Any]:
+    """Exactly one streak claim per UTC date, committed with its text XP.
+
+    Bonus = min(streak_daily_xp * consecutive_days * multiplier, streak_max_cap).
+    All gating and previous-claim comparisons happen under the write lock.
+    """
+    claimed_at = _level_utc(claimed_at)
+    multiplier = float(multiplier)
+    if not math.isfinite(multiplier) or multiplier < 0:
+        raise ValueError("invalid streak multiplier")
+    multiplier = min(multiplier, 100.0)
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute("SELECT * FROM level_settings WHERE guild_id = ?", (int(guild_id),)) as cur:
+                settings = await cur.fetchone()
+            if not settings or not settings["is_enabled"] or not settings["streak_enabled"]:
+                await db.rollback()
+                return {"status": "disabled"}
+            async with db.execute(
+                "SELECT * FROM user_levels WHERE guild_id = ? AND user_id = ?",
+                (int(guild_id), int(user_id)),
+            ) as cur:
+                row = await cur.fetchone()
+            previous_day = _level_utc(row["last_daily_claim"]).date() if row and row["last_daily_claim"] else None
+            today = claimed_at.date()
+            if previous_day and previous_day >= today:
+                await db.rollback()
+                return {"status": "already_claimed"}
+            consecutive = previous_day == today - timedelta(days=1)
+            streak = (max(0, int(row["current_streak"] or 0)) + 1) if row and consecutive else 1
+            base, cap = int(settings["streak_daily_xp"]), int(settings["streak_max_cap"])
+            if base < 0 or cap < 0:
+                raise ValueError("negative streak reward configuration")
+            xp = int(min(cap, base * streak * multiplier))
+            result = await _add_level_text_credit(
+                db, guild_id, user_id, xp, row,
+                detect_overtakes and bool(settings["overtake_alert_enabled"]))
+            await db.execute(
+                """UPDATE user_levels SET current_streak = ?, last_daily_claim = ?
+                   WHERE guild_id = ? AND user_id = ?""",
+                (streak, claimed_at.isoformat(), int(guild_id), int(user_id)),
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    result.update(status="claimed", current_streak=streak, last_daily_claim=claimed_at.isoformat())
+    return result
 
 
 async def get_text_rank(guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:

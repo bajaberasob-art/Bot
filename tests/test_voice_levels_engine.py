@@ -406,10 +406,10 @@ class VoiceEngineTests(unittest.IsolatedAsyncioTestCase):
         await self.move(124)
         real_award = database.award_voice_xp
 
-        async def fail_one(guild_id, user_id, *args):
+        async def fail_one(guild_id, user_id, *args, **kwargs):
             if user_id == 123:
                 raise RuntimeError("db unavailable")
-            return await real_award(guild_id, user_id, *args)
+            return await real_award(guild_id, user_id, *args, **kwargs)
 
         with patch("cogs.levels.database.award_voice_xp", side_effect=fail_one):
             await self.tick()
