@@ -7310,19 +7310,48 @@
     const box = el("div", { class: "leveling-errors", role: "alert" });
     const show = (errs) => box.replaceChildren(...errs.map((x) => el("p", { text: x })));
     return el("div", { class: "leveling-actions" },
-      el("button", { type: "button", class: "leveling-btn gold", text: "حفظ المسودة في هذا المتصفح", onClick: () => {
+      el("button", { type: "button", class: "leveling-btn gold", text: "حفظ إعدادات السيرفر", onClick: async (event) => {
         const errs = lvValidate(); show(errs);
-        if (errs.length) return toast("أصلح الأخطاء قبل حفظ المسودة المحلية", "warn");
+        if (errs.length) return toast("أصلح الأخطاء قبل حفظ إعدادات السيرفر", "warn");
         const s = lvState();
+        if (!s.loaded) return toast("تعذر الحفظ قبل تحميل إعدادات السيرفر", "error");
         s.draft.card.bg = String(s.draft.card.bg).trim();
-        if (!lvStore("saved", s.draft)) return toast("تعذر الحفظ المحلي في هذا المتصفح", "error");
-        s.saved = clone(s.draft); s.hasSaved = true; lvStore("work", s.draft); lvStatus();
-        toast("تم حفظ المسودة في هذا المتصفح فقط. لم يتم إرسالها إلى البوت.", "info");
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const response = await writeApi(
+            `api/guild/${s.gid}/leveling/settings`,
+            { revision: s.revision, draft: s.draft },
+          );
+          const data = await readJson(response, {});
+          if (response.status === 409) {
+            await loadLevelingData(s.gid);
+            toast("تغيّرت إعدادات المستويات على السيرفر. حُمّلت النسخة الأحدث؛ راجع تعديلاتك ثم احفظ مجدداً.", "warn", 6000);
+            lvRender();
+          } else if (!response.ok || !data.draft) {
+            toast(Object.values(data.fields || {})[0] || "تعذر حفظ إعدادات المستويات", "error");
+          } else {
+            s.revision = data.revision;
+            s.configured = data.configured;
+            s.saved = lvSan(lvMerge(lvDefaults(), data.draft));
+            s.draft = clone(s.saved);
+            s.loaded = true;
+            s.loadError = false;
+            lvStatus();
+            lvPreviews();
+            drawLvCard();
+            toast("تم حفظ إعدادات المستويات وتحديث النظام الفعلي.", "success");
+          }
+        } catch (error) {
+          if (error.message !== "unauth") toast("تعذر الاتصال بخادم إعدادات المستويات.", "error");
+        } finally {
+          button.disabled = false;
+        }
       } }),
       el("button", { type: "button", class: "leveling-btn", text: "إعادة ضبط", onClick: () => {
         const s = lvState();
-        s.draft = clone(s.saved); lvStore("work", s.draft); show([]); lvRender();
-        toast("أُعيدت المسودة إلى آخر نسخة محفوظة محلياً", "info");
+        s.draft = clone(s.saved); show([]); lvRender();
+        toast("أُعيدت التعديلات إلى آخر إعدادات محمّلة من السيرفر", "info");
       } }), box);
   }
   const LV_PANELS = { general: lvTabGeneral, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, data: lvTabData };
