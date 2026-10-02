@@ -6958,7 +6958,9 @@
       onClick: async () => {
         if (!pub.slug || !pub.enabled) return;
         try {
-          await navigator.clipboard.writeText(shareUrl);
+          await navigator.clipboard.writeText(
+            `${location.origin}${urlMountPrefix}/lb/${encodeURIComponent(pub.slug)}`,
+          );
           toast("تم نسخ رابط لوحة الترتيب.", "success");
         } catch (_) {
           toast("تعذر النسخ تلقائياً. انسخ الرابط الظاهر يدوياً.", "warn");
