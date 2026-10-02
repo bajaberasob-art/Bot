@@ -305,6 +305,7 @@
   }
   const redirect = () => location.assign("login");
   const app = $("#app");
+  const urlMountPrefix = location.pathname === "/api" || location.pathname.startsWith("/api/") ? "/api" : "";
   // API and feedback
   function toast(message, type = "error", life = 4000) {
     const old = $(".toast");
@@ -6608,12 +6609,13 @@
   }
   // ===== Leveling view (Phase 7): frontend-only, guild-scoped local drafts =====
   const LV_TABS = [
-    ["general", "عام"], ["points", "النقاط"], ["voice", "الصوت"], ["rewards", "المكافآت"],
+    ["general", "عام"], ["public", "اللوحة العامة"], ["points", "النقاط"], ["voice", "الصوت"], ["rewards", "المكافآت"],
     ["card", "البطاقة"], ["messages", "الرسائل"], ["data", "البيانات"],
   ];
   const LV_LAYOUTS = { vertical: [560, 900, "عمودية"], stats: [1000, 420, "إحصائيات"], minimal: [900, 230, "مصغرة"], ring: [620, 680, "حلقة"], classic: [1000, 340, "كلاسيكية"] };
   const LV_PARTS = { none: "بدون", sparks: "شرارات", shine: "لمعان", embers: "جمر", snow: "ثلج", petals: "بتلات", neon: "نيون" };
   const lvDefaults = () => ({
+    public: { enabled: false, slug: "" },
     general: { enabled: true, text: true, reaction: false, streak: true },
     points: { xpMultiplier: 1, minXp: 15, maxXp: 25, cooldown: 60, roleMult: [], chanMult: [], boosts: [], allowedChannels: [], bl: { channels: [], users: [], roles: [] } },
     voice: { enabled: true, xpPerMin: 20, muteBlock: true, deafBlock: true, minMembers: 2, dimEnabled: false, dimThreshold: 60, dimRate: 50, separate: true },
@@ -6637,6 +6639,10 @@
   const lvObjs = (a, fn) => (Array.isArray(a) ? a.filter((x) => x && typeof x === "object" && !Array.isArray(x)).map(fn) : []);
   const lvStrs = (a) => (Array.isArray(a) ? a.filter((x) => typeof x === "string" || typeof x === "number").map(String) : []);
   const lvSan = (d) => {
+    d.public = {
+      enabled: d.public?.enabled === true,
+      slug: typeof d.public?.slug === "string" ? d.public.slug.trim() : "",
+    };
     const p = d.points;
     p.roleMult = lvObjs(p.roleMult, (m) => ({ id: String(m.id ?? ""), mult: typeof m.mult === "number" ? m.mult : "" }));
     p.chanMult = lvObjs(p.chanMult, (m) => ({ id: String(m.id ?? ""), mult: typeof m.mult === "number" ? m.mult : "" }));
@@ -6940,6 +6946,46 @@
           cell("وقت الصوت المسجل", lvSeconds(totals.total_voice_seconds)),
           cell("نشطون خلال 7 أيام", lvFmt(Number(totals.active_members_7d) || 0)),
         ) : el("p", { class: "leveling-unavail", text: "حاول إعادة تحميل إعدادات هذا السيرفر." })));
+  }
+  function lvTabPublic() {
+    const pub = lvState().draft.public;
+    const shareUrl = pub.slug ? `${location.origin}${urlMountPrefix}/lb/${encodeURIComponent(pub.slug)}` : "";
+    const url = el("code", { class: "leveling-public-url", dir: "ltr", text: shareUrl || "أدخل معرّفاً لإنشاء رابط المشاركة" });
+    const copy = el("button", {
+      type: "button", class: "leveling-btn leveling-public-copy", disabled: !shareUrl, text: "نسخ الرابط",
+      onClick: async () => {
+        if (!pub.slug) return;
+        try {
+          await navigator.clipboard.writeText(`${location.origin}${urlMountPrefix}/lb/${pub.slug}`);
+          toast("تم نسخ رابط لوحة الترتيب.", "success");
+        } catch (_) {
+          toast("تعذر النسخ تلقائياً. انسخ الرابط الظاهر يدوياً.", "warn");
+        }
+      },
+    });
+    const slug = el("input", {
+      type: "text", dir: "ltr", autocomplete: "off", spellcheck: "false",
+      maxlength: "48", placeholder: "prime-arena", value: pub.slug,
+      "aria-label": "معرّف رابط لوحة الترتيب",
+      onInput: (event) => {
+        const clean = event.currentTarget.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+        if (clean !== event.currentTarget.value) event.currentTarget.value = clean;
+        pub.slug = clean;
+        url.textContent = clean ? `${location.origin}${urlMountPrefix}/lb/${clean}` : "أدخل معرّفاً لإنشاء رابط المشاركة";
+        copy.disabled = !clean;
+        lvTouch();
+      },
+    });
+    return el("div", { class: "leveling-stack" },
+      lvCard("لوحة PRIME العامة", "انشر ترتيب الأعضاء برابط مستقل قابل للمشاركة. لا يتطلب الزوار تسجيل الدخول.",
+        lvSwitch(["public", "enabled"], "إتاحة لوحة الترتيب للعامة", "يمكن للزوار مشاهدة ترتيب النص أو الصوت والملخص العام."),
+        el("label", { class: "leveling-field leveling-public-field" },
+          el("span", { class: "leveling-label", text: "معرّف الرابط" }),
+          slug,
+          el("small", { class: "leveling-hint", text: "أحرف إنجليزية صغيرة وأرقام وشرطة فقط، دون مسافات." })),
+        el("div", { class: "leveling-public-share" },
+          el("span", { class: "leveling-label", text: "رابط المشاركة" }), url, copy),
+        el("p", { class: "leveling-public-note", text: "سيظهر الرابط بعد حفظ الإعدادات. تعطيل اللوحة لا يمسح المعرّف." })));
   }
   function lvTabPoints() {
     return el("div", { class: "leveling-stack" },
@@ -7298,6 +7344,7 @@
       if (seen.has(k)) e.push("لا يمكن تكرار المستوى والنوع نفسهما."); seen.add(k);
     });
     if (!/^#[0-9a-f]{6}$/i.test(d.card.color)) e.push("لون البطاقة غير صالح.");
+    if (d.public.enabled && !/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(d.public.slug)) e.push("أدخل معرّف رابط صالحاً: أحرف إنجليزية صغيرة وأرقام وشرطة، دون شرطة في البداية أو النهاية.");
     if (!lvBgOk(String(d.card.bg).trim())) e.push("رابط الخلفية يجب أن يبدأ بـ https://.");
     const allowed = { levelup: ["user", "level", "server"], milestone: ["user", "level"], overtake: ["passer", "passed", "rank"] };
     Object.entries(d.messages).forEach(([k, m]) => {
@@ -7354,7 +7401,7 @@
         toast("أُعيدت التعديلات إلى آخر إعدادات محمّلة من السيرفر", "info");
       } }), box);
   }
-  const LV_PANELS = { general: lvTabGeneral, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, data: lvTabData };
+  const LV_PANELS = { general: lvTabGeneral, public: lvTabPublic, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, data: lvTabData };
   function lvRender() {
     const root = $(".leveling-view");
     if (!root) return;
@@ -8284,6 +8331,177 @@
         );
     }
   }
+  const publicLeaderboardPath = /^\/(?:api\/)?lb\/([^/]+)\/?$/.exec(location.pathname);
+  async function renderPublicLeaderboard() {
+    document.body.classList.add("public-lb-route");
+    const appRoot = $("#app");
+    const slug = publicLeaderboardPath ? decodeURIComponent(publicLeaderboardPath[1]) : "";
+    const view = { mode: "text", page: 1, userId: "", data: null, loading: true, error: "", request: 0 };
+    const fmt = (value) => Number.isFinite(Number(value)) ? new Intl.NumberFormat("ar").format(Number(value)) : "—";
+    const initials = (name) => String(name || "؟").trim().slice(0, 1) || "؟";
+    const safeDate = (value) => {
+      if (!value) return "غير متاح";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("ar", { dateStyle: "medium", timeStyle: "short" }).format(date);
+    };
+    const avatarNode = (url, name) => {
+      const fallback = el("span", { class: "public-lb-avatar-fallback", text: initials(name), "aria-hidden": "true" });
+      if (!url) return el("span", { class: "public-lb-avatar" }, fallback);
+      const img = el("img", { src: url, alt: "", loading: "lazy" });
+      img.addEventListener("error", () => img.replaceWith(fallback), { once: true });
+      return el("span", { class: "public-lb-avatar" }, img);
+    };
+    const heading = () => el("header", { class: "public-lb-top" },
+      el("a", { class: "public-lb-brand", href: "/", "aria-label": "PRIME" }, el("span", { class: "public-lb-mark", text: "P" }), el("span", { text: "PRIME" })),
+      el("span", { class: "public-lb-tag", text: "COMMUNITY RANKING" }));
+    const request = async () => {
+      const requestId = ++view.request;
+      view.loading = true;
+      view.error = "";
+      draw();
+      const query = new URLSearchParams({ mode: view.mode, page: String(view.page) });
+      if (view.userId) query.set("user_id", view.userId);
+      try {
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(slug)) throw Object.assign(new Error("invalid-slug"), { status: 400 });
+        const response = await fetch(`${urlMountPrefix}/lb/${encodeURIComponent(slug)}/data?${query}`, {
+          method: "GET", headers: { Accept: "application/json" }, credentials: "omit", cache: "no-store",
+        });
+        let data = null;
+        try { data = await response.json(); } catch (_) {}
+        if (!response.ok) throw Object.assign(new Error("unavailable"), { status: response.status, data });
+        if (!data || !Array.isArray(data.rows)) throw Object.assign(new Error("invalid-response"), { status: 502 });
+        if (requestId !== view.request) return;
+        view.data = data;
+      } catch (error) {
+        if (requestId !== view.request) return;
+        view.data = null;
+        view.error = error.status === 404 || error.status === 400 || error.message === "invalid-slug"
+          ? "تعذر العثور على لوحة عامة بهذا الرابط. قد يكون الرابط غير صالح أو أن اللوحة غير متاحة."
+          : "تعذر تحميل الترتيب الآن. تحقق من اتصالك وحاول مرة أخرى.";
+      } finally {
+        if (requestId === view.request) {
+          view.loading = false;
+          draw();
+        }
+      }
+    };
+    const draw = () => {
+      if (!appRoot) return;
+      const data = view.data;
+      const title = data?.server?.name || "لوحة الترتيب";
+      const icon = data?.server?.iconUrl
+        ? el("img", { src: data.server.iconUrl, alt: "", class: "public-lb-server-icon" })
+        : el("span", { class: "public-lb-server-icon public-lb-server-fallback", text: initials(title) });
+      const hero = el("section", { class: "public-lb-hero" },
+        el("div", { class: "public-lb-orbit public-lb-orbit-one", "aria-hidden": "true" }),
+        el("div", { class: "public-lb-orbit public-lb-orbit-two", "aria-hidden": "true" }),
+        el("div", { class: "public-lb-server" }, icon,
+          el("div", {}, el("span", { class: "public-lb-eyebrow", text: "PRIME / LEADERBOARD" }),
+            el("h1", { text: title }), el("p", { text: "الترتيب يُحسم بالنقاط. ابدأ التحدي." }))),
+        el("div", { class: "public-lb-hero-index" }, el("span", { text: "RANK" }), el("b", { text: "01—10" })));
+      const mode = el("div", { class: "public-lb-modes", role: "tablist", "aria-label": "نوع الترتيب" },
+        ...[["text", "النص"], ["voice", "الصوت"]].map(([value, label]) => el("button", {
+          type: "button", role: "tab", "aria-selected": String(view.mode === value),
+          class: view.mode === value ? "is-active" : "",
+          text: label,
+          onClick: () => { if (view.mode !== value) { view.mode = value; view.page = 1; request(); } },
+        })));
+      const summary = data ? el("section", { class: "public-lb-summary", "aria-label": "ملخص السيرفر" },
+        ...[
+          ["الأعضاء", fmt(data.server?.memberCount)],
+          ["نشطون", fmt(data.summary?.activeMembers)],
+          ["إجمالي XP", fmt(data.summary?.totalXp)],
+          ["آخر تحديث", safeDate(data.summary?.lastUpdated)],
+        ].map(([label, value], i) => el("div", { class: `public-lb-stat public-lb-stat-${i + 1}` },
+          el("span", { text: label }), el("b", { text: value })))) : null;
+      const controls = el("div", { class: "public-lb-controls" },
+        mode,
+        el("span", { class: "public-lb-page-caption", text: data ? `صفحة ${fmt(data.page)} من ${fmt(data.totalPages)}` : "أفضل اللاعبين" }));
+      const body = view.loading
+        ? el("div", { class: "public-lb-loading", role: "status", "aria-label": "جارٍ تحميل الترتيب" },
+          ...Array.from({ length: 5 }, (_, i) => el("div", { class: "public-lb-skeleton", style: `--row:${i}` })))
+        : view.error
+          ? el("div", { class: "public-lb-state public-lb-error", role: "alert" },
+            el("span", { class: "public-lb-state-mark", text: "!" }),
+            el("h2", { text: "الترتيب غير متاح" }),
+            el("p", { text: view.error }),
+            el("button", { type: "button", class: "public-lb-retry", text: "إعادة المحاولة", onClick: request }))
+          : !data?.rows?.length
+            ? el("div", { class: "public-lb-state", role: "status" },
+              el("span", { class: "public-lb-state-mark", text: "—" }),
+              el("h2", { text: "لا يوجد ترتيب بعد" }),
+              el("p", { text: "ستظهر هنا أسماء الأعضاء عند بدء اكتساب النقاط." }))
+            : el("div", { class: "public-lb-table-wrap" },
+              el("table", { class: "public-lb-table" },
+                el("thead", {}, el("tr", {},
+                  ...["المركز", "العضو", "المستوى", "XP", "التقدم", view.mode === "text" ? "الرسائل" : "وقت الصوت", "التواصل"].map((label) => el("th", { scope: "col", text: label })))),
+                el("tbody", {}, ...data.rows.map((row) => {
+                  const removed = row.removed === true;
+                  const userName = removed ? "عضو غير متاح" : (row.name || "عضو");
+                  const rankTone = Number(row.rank) <= 3 ? ` rank-${row.rank}` : "";
+                  const progress = row.progress || {};
+                  const percent = Math.max(0, Math.min(100, Number(progress.percentage) || 0));
+                  return el("tr", { class: `${removed ? "is-removed" : ""}${rankTone}` },
+                    el("td", {}, el("span", { class: "public-lb-rank", text: `#${fmt(row.rank)}` })),
+                    el("td", {}, el("div", { class: "public-lb-member" }, avatarNode(removed ? null : row.avatarUrl, userName),
+                      el("span", { class: "public-lb-member-name", text: userName }))),
+                    el("td", { class: "public-lb-level", "data-label": "المستوى" }, removed ? "—" : fmt(row.level)),
+                    el("td", { class: "public-lb-xp", "data-label": "XP" }, removed ? "—" : fmt(row.xp)),
+                    el("td", { class: "public-lb-progress-cell", "data-label": "التقدم" },
+                      removed ? "—" : el("div", { class: "public-lb-progress" },
+                        el("span", { class: "public-lb-progress-track" }, el("i", { style: `width:${percent}%` })),
+                        el("small", { text: `${fmt(progress.current)} / ${fmt(progress.required)}` }))),
+                    el("td", { class: "public-lb-activity", "data-label": view.mode === "text" ? "الرسائل" : "وقت الصوت" }, removed ? "—" : fmt(row.activityTotal)),
+                    el("td", { class: "public-lb-streak", "data-label": "التواصل" }, removed ? "—" : `${fmt(row.streak)} يوم`));
+                }))));
+      const pages = data && data.totalPages > 1 ? el("nav", { class: "public-lb-pagination", "aria-label": "صفحات الترتيب" },
+        el("button", { type: "button", disabled: view.page <= 1 || view.loading, text: "السابق", onClick: () => { view.page--; request(); } }),
+        el("span", { text: `${fmt(view.page)} / ${fmt(data.totalPages)}` }),
+        el("button", { type: "button", disabled: view.page >= data.totalPages || view.loading, text: "التالي", onClick: () => { view.page++; request(); } })) : null;
+      const viewer = el("form", {
+        class: "public-lb-lookup",
+        onSubmit: (event) => {
+          event.preventDefault();
+          const input = $("input", event.currentTarget);
+          const id = input.value.trim();
+          if (!/^\d{17,20}$/.test(id)) {
+            input.setAttribute("aria-invalid", "true");
+            $(".public-lb-lookup-message", event.currentTarget).textContent = "أدخل معرّف Discord رقميّاً صالحاً.";
+            return;
+          }
+          input.removeAttribute("aria-invalid");
+          $(".public-lb-lookup-message", event.currentTarget).textContent = "";
+          view.userId = id;
+          view.page = 1;
+          request();
+        },
+      },
+        el("div", {}, el("span", { class: "public-lb-eyebrow", text: "YOUR POSITION" }), el("h2", { text: "أين ترتيبك؟" }), el("p", { text: "أدخل معرّف Discord الخاص بك للبحث عن مركزك." })),
+        el("div", { class: "public-lb-lookup-input" },
+          el("input", { type: "text", inputmode: "numeric", dir: "ltr", autocomplete: "off", maxlength: "20", placeholder: "معرّف Discord", value: view.userId, "aria-label": "معرّف Discord الخاص بك" }),
+          el("button", { type: "submit", disabled: view.loading, text: "اعثر على ترتيبي" }),
+          el("small", { class: "public-lb-lookup-message", role: "status", "aria-live": "polite" })),
+        data?.viewerRank ? el("div", { class: "public-lb-viewer-result" },
+          avatarNode(data.viewerRank.avatarUrl, data.viewerRank.name),
+          el("span", { text: data.viewerRank.name || "عضو" }),
+          el("b", { text: `#${fmt(data.viewerRank.rank)}` }),
+          el("small", { text: `المستوى ${fmt(data.viewerRank.level)} · ${fmt(data.viewerRank.xp)} XP` })) : null,
+        view.userId && data && !data.viewerRank ? el("p", { class: "public-lb-lookup-message", text: "لم يظهر هذا الحساب في ترتيب السيرفر." }) : null);
+      appRoot.replaceChildren(el("main", { class: "public-lb-page", dir: "rtl" },
+        heading(),
+        hero,
+        summary,
+        el("section", { class: "public-lb-board" },
+          el("div", { class: "public-lb-board-heading" },
+            el("div", {}, el("span", { class: "public-lb-eyebrow", text: "THE LEADERS" }), el("h2", { text: "المتصدرون" })),
+            controls),
+          body,
+          pages),
+        viewer,
+        el("footer", { class: "public-lb-footer" }, el("span", {}, "PRIME", el("i", { text: " / " }), "الطموح يبدأ من هنا"), el("span", { text: "لوحة ترتيب مجتمعية" }))));
+    };
+    await request();
+  }
   addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
@@ -8319,7 +8537,16 @@
       e.returnValue = "";
     }
   });
-  setInterval(health, 15000);
-  setupPwa();
-  start();
+  if (publicLeaderboardPath) {
+    renderPublicLeaderboard().catch(() => {
+      document.body.classList.add("public-lb-route");
+      app?.replaceChildren(el("main", { class: "public-lb-page public-lb-state", role: "alert" },
+        el("h1", { text: "تعذر فتح لوحة الترتيب" }),
+        el("p", { text: "أعد تحميل الصفحة أو تحقق من الرابط." })));
+    });
+  } else {
+    setInterval(health, 15000);
+    setupPwa();
+    start();
+  }
 })();

@@ -674,6 +674,21 @@ async def init_db() -> None:
                 "ON user_levels (guild_id, voice_xp DESC);"
             )
             await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_levels_text_rank "
+                "ON user_levels (guild_id, text_xp DESC, user_id ASC) "
+                "WHERE text_xp > 0;"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_levels_voice_rank "
+                "ON user_levels (guild_id, voice_xp DESC, user_id ASC) "
+                "WHERE voice_xp > 0;"
+            )
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_level_settings_web_slug "
+                "ON level_settings (web_slug) "
+                "WHERE web_slug IS NOT NULL AND web_slug <> '';"
+            )
+            await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_levels_activity "
                 "ON user_levels (guild_id, last_message_at DESC);"
             )
