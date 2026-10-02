@@ -2105,24 +2105,31 @@ async def _get_level_leaderboard(
     xp_column: str,
     level_column: str,
 ) -> List[Dict[str, Any]]:
-    if xp_column not in {"text_xp", "voice_xp"} or level_column not in {
-        "text_level",
-        "voice_level",
-    }:
-        raise ValueError("invalid leaderboard column")
-    col = xp_column
-    level_col = level_column
-    limit = max(1, min(int(limit), 100))
-    async with connect(aiosqlite.Row) as db:
-        async with db.execute(
-            f"""
-            SELECT guild_id, user_id, {col}, {level_col},
+    queries = {
+        ("text_xp", "text_level"): """
+            SELECT guild_id, user_id, text_xp, text_level,
                    total_messages, total_voice_seconds, current_streak
             FROM user_levels
             WHERE guild_id = ?
-            ORDER BY {col} DESC, user_id ASC
+            ORDER BY text_xp DESC, user_id ASC
             LIMIT ?
-            """,
+        """,
+        ("voice_xp", "voice_level"): """
+            SELECT guild_id, user_id, voice_xp, voice_level,
+                   total_messages, total_voice_seconds, current_streak
+            FROM user_levels
+            WHERE guild_id = ?
+            ORDER BY voice_xp DESC, user_id ASC
+            LIMIT ?
+        """,
+    }
+    query = queries.get((xp_column, level_column))
+    if query is None:
+        raise ValueError("invalid leaderboard column")
+    limit = max(1, min(int(limit), 100))
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            query,
             (int(guild_id), limit),
         ) as cur:
             return [dict(row) for row in await cur.fetchall()]
