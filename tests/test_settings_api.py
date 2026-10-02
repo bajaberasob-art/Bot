@@ -422,6 +422,126 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(error)
         self.assertEqual(categories[0]["support_role_ids"], [])
 
+    async def test_leveling_snapshot_save_conflict_and_validation(self):
+        settings_get = leveling_handler("GET", "settings")
+        settings_save = leveling_handler("POST", "settings")
+        status, snapshot = await call(
+            settings_get, request("GET", f"/api/guild/{GID}/leveling/settings", "s10"),
+        )
+        self.assertEqual((status, snapshot["revision"], snapshot["configured"]), (200, 0, False))
+        self.assertIsNone(await database.get_level_settings(FakeGuild.id))
+
+        invalid = json.loads(json.dumps(snapshot["draft"]))
+        invalid["points"]["roleMult"] = [{"id": str(CHANNELS[0].id), "mult": 2}]
+        status, data = await call(
+            settings_save,
+            request("POST", "/api/guild/x/leveling/settings", "s10",
+                    {"revision": 0, "draft": invalid}, self.headers),
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("role", data["fields"]["_"])
+        self.assertIsNone(await database.get_level_settings(FakeGuild.id))
+
+        draft = json.loads(json.dumps(snapshot["draft"]))
+        draft["general"]["text"] = False
+        draft["voice"]["minMembers"] = 1
+        draft["points"]["allowedChannels"] = [str(CHANNELS[1].id)]
+        draft["points"]["roleMult"] = [{"id": str(ROLES[1].id), "mult": 2.5}]
+        draft["points"]["bl"]["users"] = ["100000000000000050"]
+        draft["points"]["boosts"] = [{
+            "label": "اختبار", "mult": 1.5, "hours": 2,
+        }]
+        draft["rewards"]["list"] = [{
+            "level": 5, "role": str(ROLES[1].id), "type": "text",
+        }]
+        draft["messages"]["levelup"]["channel"] = str(CHANNELS[0].id)
+        status, saved = await call(
+            settings_save,
+            request("POST", "/api/guild/x/leveling/settings", "s10",
+                    {"revision": 0, "draft": draft}, self.headers),
+        )
+        self.assertEqual((status, saved["revision"], saved["configured"]), (200, 1, True))
+        stored = await database.get_level_settings(FakeGuild.id)
+        self.assertEqual(stored["text_xp_enabled"], 0)
+        self.assertEqual(stored["voice_min_members"], 1)
+        self.assertEqual(stored["text_allowed_channels"], [str(CHANNELS[1].id)])
+        self.assertEqual(stored["timed_xp_boosts"][0]["label"], "اختبار")
+        self.assertEqual(
+            [row["target_type"] for row in await database.get_level_blacklist(FakeGuild.id)],
+            ["role", "user"],
+        )
+        self.assertEqual(len(await database.get_level_rewards(FakeGuild.id)), 1)
+        self.assertEqual(len(await database.get_level_multipliers(FakeGuild.id)), 1)
+
+        stale = json.loads(json.dumps(snapshot["draft"]))
+        stale["general"]["text"] = True
+        status, conflict = await call(
+            settings_save,
+            request("POST", "/api/guild/x/leveling/settings", "s10",
+                    {"revision": 0, "draft": stale}, self.headers),
+        )
+        self.assertEqual((status, conflict["error"], conflict["currentRevision"]), (409, "conflict", 1))
+        self.assertEqual((await database.get_level_settings(FakeGuild.id))["text_xp_enabled"], 0)
+
+    async def test_leveling_analytics_and_paginated_leaderboards_are_live(self):
+        for user_id, text_xp, voice_xp, messages, seconds in (
+            (101, 200, 80, 4, 120),
+            (102, 100, 150, 2, 600),
+            (103, 100, 300, 3, 900),
+        ):
+            await database.create_user_level(FakeGuild.id, user_id)
+            await database.update_user_level(FakeGuild.id, user_id, {
+                "text_xp": text_xp, "text_level": text_xp // 100,
+                "voice_xp": voice_xp, "voice_level": voice_xp // 100,
+                "total_messages": messages, "total_voice_seconds": seconds,
+            })
+
+        status, analytics = await call(
+            leveling_handler("GET", "analytics"),
+            request("GET", f"/api/guild/{GID}/leveling/analytics", "s10"),
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(analytics["totals"]["participants"], 3)
+        self.assertEqual(analytics["totals"]["text_xp"], 400)
+        self.assertEqual(analytics["totals"]["voice_xp"], 530)
+        self.assertEqual(analytics["totals"]["total_messages"], 9)
+        self.assertEqual(analytics["totals"]["total_voice_seconds"], 1620)
+        self.assertFalse(analytics["history_available"])
+        self.assertEqual(sum(row["members"] for row in analytics["distribution"]), 3)
+
+        text_status, text = await call(
+            leveling_handler("GET", "leaderboard"),
+            request("GET", f"/api/guild/{GID}/leveling/leaderboard?mode=text&limit=1&offset=1", "s10"),
+        )
+        voice_status, voice = await call(
+            leveling_handler("GET", "leaderboard"),
+            request("GET", f"/api/guild/{GID}/leveling/leaderboard?mode=voice&limit=1&offset=1", "s10"),
+        )
+        self.assertEqual((text_status, text["rows"][0]["user_id"], text["rows"][0]["rank"]), (200, "102", 2))
+        self.assertEqual((voice_status, voice["rows"][0]["user_id"], voice["rows"][0]["rank"]), (200, "102", 2))
+
+    async def test_rank_card_preview_uses_authenticated_identity_and_real_renderer(self):
+        sid = "card-admin"
+        user_id = "100000000000000010"
+        ws.SESSIONS[sid] = {
+            "id": user_id, "username": "admin", "avatar": "",
+            "csrf": "card-csrf", "guilds": [{"id": GID}],
+            "expires_at": time.time() + 60,
+        }
+        with patch("leveling_api.generate_rank_card", new_callable=AsyncMock) as renderer:
+            renderer.return_value = BytesIO(b"existing-rank-card")
+            response = await leveling_handler("GET", "card-preview")(
+                request(
+                    "GET",
+                    f"/api/guild/{GID}/leveling/card-preview?layout=stats&user_id=100000000000000099",
+                    sid,
+                )
+            )
+        self.assertEqual((response.status, response.content_type, response.body),
+                         (200, "image/png", b"existing-rank-card"))
+        renderer.assert_awaited_once()
+        self.assertEqual(renderer.await_args.args[0].id, int(user_id))
+
 
 if __name__ == "__main__":
     unittest.main()
