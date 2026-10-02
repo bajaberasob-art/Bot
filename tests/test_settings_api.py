@@ -444,6 +444,7 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await database.get_level_settings(FakeGuild.id))
 
         draft = json.loads(json.dumps(snapshot["draft"]))
+        draft["public"] = {"enabled": True, "slug": "phase-nine-board"}
         draft["general"]["text"] = False
         draft["voice"]["minMembers"] = 1
         draft["points"]["allowedChannels"] = [str(CHANNELS[1].id)]
@@ -471,7 +472,13 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
             else:
                 FakeGuild.me.guild_permissions = bot_permissions
         self.assertEqual((status, saved["revision"], saved["configured"]), (200, 1, True))
+        self.assertEqual(
+            saved["draft"]["public"],
+            {"enabled": True, "slug": "phase-nine-board"},
+        )
         stored = await database.get_level_settings(FakeGuild.id)
+        self.assertEqual(stored["web_leaderboard_enabled"], 1)
+        self.assertEqual(stored["web_slug"], "phase-nine-board")
         self.assertEqual(stored["text_xp_enabled"], 0)
         self.assertEqual(stored["voice_min_members"], 1)
         self.assertEqual(stored["text_allowed_channels"], [str(CHANNELS[1].id)])
@@ -492,6 +499,34 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((status, conflict["error"], conflict["currentRevision"]), (409, "conflict", 1))
         self.assertEqual((await database.get_level_settings(FakeGuild.id))["text_xp_enabled"], 0)
+
+    async def test_leveling_public_slug_conflict_is_reported_without_saving(self):
+        await database.update_level_settings(
+            FakeGuild.id + 1,
+            {"web_leaderboard_enabled": 1, "web_slug": "taken-board"},
+        )
+        settings_get = leveling_handler("GET", "settings")
+        settings_save = leveling_handler("POST", "settings")
+        status, snapshot = await call(
+            settings_get,
+            request("GET", f"/api/guild/{GID}/leveling/settings", "s10"),
+        )
+        self.assertEqual(status, 200)
+        draft = json.loads(json.dumps(snapshot["draft"]))
+        draft["public"] = {"enabled": True, "slug": "taken-board"}
+        status, result = await call(
+            settings_save,
+            request(
+                "POST",
+                f"/api/guild/{GID}/leveling/settings",
+                "s10",
+                {"revision": snapshot["revision"], "draft": draft},
+                self.headers,
+            ),
+        )
+        self.assertEqual((status, result["error"]), (409, "slug_conflict"))
+        self.assertIn("public.slug", result["fields"])
+        self.assertIsNone(await database.get_level_settings(FakeGuild.id))
 
     async def test_leveling_analytics_and_paginated_leaderboards_are_live(self):
         for user_id, text_xp, voice_xp, messages, seconds in (

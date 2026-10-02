@@ -111,6 +111,76 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await database.update_user_level(702, 1, {"guild_id": 999})
 
+    async def test_public_leaderboard_slug_pages_ranks_and_summary(self):
+        await database.update_level_settings(
+            704, {"web_leaderboard_enabled": 1, "web_slug": "prime-arena"}
+        )
+        self.assertEqual(
+            await database.get_public_level_settings_by_slug("prime-arena"),
+            {"guild_id": 704},
+        )
+        self.assertIsNone(await database.get_public_level_settings_by_slug("Prime-Arena"))
+        self.assertIsNone(await database.get_public_level_settings_by_slug("bad--slug"))
+        await database.update_level_settings(704, {"web_leaderboard_enabled": 0})
+        self.assertIsNone(await database.get_public_level_settings_by_slug("prime-arena"))
+        await database.update_level_settings(704, {"web_leaderboard_enabled": 1})
+
+        for user_id, text_xp, voice_xp, messages, voice_seconds in (
+            (1003, 100, 400, 4, 900),
+            (1001, 200, 400, 7, 600),
+            (1002, 300, 800, 9, 1200),
+        ):
+            await database.create_user_level(704, user_id)
+            await database.update_user_level(704, user_id, {
+                "text_xp": text_xp,
+                "voice_xp": voice_xp,
+                "total_messages": messages,
+                "total_voice_seconds": voice_seconds,
+            })
+
+        text_page = await database.get_level_leaderboard_page(
+            704, mode="text", limit=2, offset=1
+        )
+        voice_page = await database.get_level_leaderboard_page(
+            704, mode="voice", limit=2, offset=0
+        )
+        self.assertEqual(text_page["total"], 3)
+        self.assertEqual(
+            [(row["user_id"], row["rank"]) for row in text_page["rows"]],
+            [(1003, 2), (1001, 3)],
+        )
+        self.assertEqual(
+            [(row["user_id"], row["rank"]) for row in voice_page["rows"]],
+            [(1002, 1), (1001, 2)],
+        )
+        self.assertEqual(voice_page["rows"][1]["xp"], 400)
+        rank = await database.get_level_user_rank(704, 1001, mode="voice")
+        self.assertEqual((rank["user_id"], rank["rank"], rank["activity_total"]), (1001, 2, 600))
+        self.assertIsNone(await database.get_level_user_rank(704, 1001, mode="invalid"))
+
+        self.assertEqual(
+            await database.get_public_level_summary(704),
+            {"active_members": 3, "total_xp": 2700},
+        )
+
+    async def test_public_slug_legacy_ambiguity_fails_closed(self):
+        for guild_id in (705, 706):
+            await database.create_default_level_settings(guild_id)
+        async with database.connect() as db:
+            await db.execute(
+                "UPDATE level_settings SET web_slug = ?, web_leaderboard_enabled = 1 "
+                "WHERE guild_id IN (?, ?)",
+                ("legacy-prime", 705, 706),
+            )
+            await db.commit()
+        self.assertIsNone(
+            await database.get_public_level_settings_by_slug("legacy-prime")
+        )
+        with self.assertRaises(database.LevelingSlugConflict):
+            await database.update_level_settings(
+                707, {"web_leaderboard_enabled": 1, "web_slug": "legacy-prime"}
+            )
+
     async def test_rewards_multipliers_blacklist_and_unrelated_economy(self):
         text_reward = await database.add_level_reward(703, "text", 5, 9001)
         voice_reward = await database.add_level_reward(703, "voice", 3, 9002)
