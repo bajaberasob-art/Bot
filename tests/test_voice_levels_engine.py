@@ -462,6 +462,18 @@ class VoiceEngineTests(unittest.IsolatedAsyncioTestCase):
         await self.tick()
         self.assertEqual((await self.row())["total_voice_seconds"], 60)
 
+    async def test_restart_recovers_members_from_voice_channels_without_mapping(self):
+        await self.move()
+        self.channels[456].members = [self.members[123]]
+        self.guild.voice_channels = [self.channels[456]]
+        del self.guild.voice_states
+        self.advance(3600)
+        self.cog = Levels(self.bot)
+        await self.cog.on_ready()
+        self.assertEqual(set(self.cog.voice_sessions), {(888, 123)})
+        await self.tick()
+        self.assertEqual((await self.row())["total_voice_seconds"], 60)
+
     async def test_worker_start_guard_ready_repeats_and_shutdown(self):
         await self.cog.cog_load()
         task = self.cog.voice_xp_worker.get_task()

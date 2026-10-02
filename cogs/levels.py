@@ -612,7 +612,18 @@ class Levels(EngagementXP, commands.Cog):
                 try:
                     self._voice_configs[guild.id] = await self._load_voice_config(guild.id)
                     tick, wall = monotonic(), datetime.now(timezone.utc)
-                    for user_id, state in guild.voice_states.items():
+                    voice_states = getattr(guild, "voice_states", None)
+                    if voice_states is None:
+                        # Some Discord clients expose only the cached voice channels and
+                        # member.voice state, not a guild.voice_states mapping.
+                        voice_states = {
+                            member.id: state
+                            for channel in getattr(guild, "voice_channels", ())
+                            for member in getattr(channel, "members", ())
+                            if (state := getattr(member, "voice", None))
+                            and getattr(state, "channel", None)
+                        }
+                    for user_id, state in voice_states.items():
                         member = guild.get_member(user_id)
                         if member and not member.bot and state.channel:
                             self.voice_sessions[(guild.id, user_id)] = self._new_voice_session(member, state, tick, wall)
