@@ -156,7 +156,8 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(voice_page["rows"][1]["xp"], 400)
         rank = await database.get_level_user_rank(704, 1001, mode="voice")
         self.assertEqual((rank["user_id"], rank["rank"], rank["activity_total"]), (1001, 2, 600))
-        self.assertIsNone(await database.get_level_user_rank(704, 1001, mode="invalid"))
+        with self.assertRaises(ValueError):
+            await database.get_level_user_rank(704, 1001, mode="invalid")
 
         self.assertEqual(
             await database.get_public_level_summary(704),
