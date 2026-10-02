@@ -6899,7 +6899,7 @@
   function lvIdentity() {
     const name = state.session?.username, av = state.session?.avatar;
     return el("div", { class: "leveling-avatar-status", role: "status" }, avatar(av, name || "?"),
-      el("small", { text: name ? `المعاينة تستخدم حسابك الحقيقي المسجّل: ${name}${av ? "" : " (بدون صورة، تظهر صورة افتراضية)"}.` : "لا يوجد حساب مسجّل: تُستخدم هوية عضو تجريبي." }));
+      el("small", { text: name ? `المعاينة تستخدم حساب المسؤول المسجّل: ${name}${av ? "" : " (بدون صورة، تظهر صورة افتراضية)"}.` : "تتطلب معاينة البطاقة حساب مسؤول مصرحاً به في السيرفر." }));
   }
   function lvPreviews() {
     const d = lvState().draft, me = state.session?.username || "عضو تجريبي";
@@ -6951,7 +6951,7 @@
   }
   function lvTabVoice() {
     return el("div", { class: "leveling-stack" },
-      lvCard("نقاط الصوت", "مسودة محلية توضيحية", lvDemoTag(), lvSwitch(["voice", "enabled"], "تفعيل نقاط الصوت"), lvSwitch(["voice", "separate"], "مستويات صوتية منفصلة", "مستوى الصوت مستقل عن مستوى الرسائل"),
+      lvCard("نقاط الصوت", "إعدادات نظام الصوت الفعلية", lvSwitch(["voice", "enabled"], "تفعيل نقاط الصوت"), lvSwitch(["voice", "separate"], "مستويات صوتية منفصلة", "مستوى الصوت مستقل عن مستوى الرسائل"),
         lvGrid(lvNum(["voice", "xpPerMin"], "نقاط في الدقيقة", 0, 500), lvNum(["voice", "minMembers"], "أقل عدد أعضاء بالغرفة", 1, 99))),
       lvCard("الحماية", "", lvSwitch(["voice", "muteBlock"], "منع النقاط عند الكتم"), lvSwitch(["voice", "deafBlock"], "منع النقاط عند الصمم")),
       lvCard("تناقص العائد", "تقليل النقاط بعد مدة طويلة", lvSwitch(["voice", "dimEnabled"], "تفعيل تناقص العائد"), lvGrid(lvNum(["voice", "dimThreshold"], "العتبة بالدقائق", 0, 1440), lvNum(["voice", "dimRate"], "نسبة النقاط بعد العتبة %", 0, 100))));
