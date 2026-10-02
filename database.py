@@ -2,6 +2,7 @@ import aiosqlite
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from collections import OrderedDict
@@ -496,6 +497,130 @@ async def init_db() -> None:
                     PRIMARY KEY (user_id, guild_id)
                 );
             """)
+
+            # Phase 1 Lona leveling foundation. These tables are independent
+            # of wallet/economy data and are additive to the existing schema.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    is_enabled BOOLEAN DEFAULT 1,
+                    command_rank_enabled BOOLEAN DEFAULT 1,
+                    command_rank_channels TEXT DEFAULT '[]',
+                    command_rank_aliases TEXT DEFAULT '["rank","level","لفل","رانك"]',
+                    command_top_enabled BOOLEAN DEFAULT 1,
+                    command_top_channels TEXT DEFAULT '[]',
+                    command_top_aliases TEXT DEFAULT '["top","توب","متصدرين"]',
+                    web_leaderboard_enabled BOOLEAN DEFAULT 1,
+                    web_slug TEXT DEFAULT NULL,
+                    xp_multiplier REAL DEFAULT 1.0,
+                    boost_multiplier REAL DEFAULT 1.0,
+                    boost_expires_at TIMESTAMP DEFAULT NULL,
+                    streak_enabled BOOLEAN DEFAULT 1,
+                    streak_daily_xp INTEGER DEFAULT 50,
+                    streak_max_cap INTEGER DEFAULT 500,
+                    reaction_xp_reactor BOOLEAN DEFAULT 1,
+                    reaction_xp_author BOOLEAN DEFAULT 1,
+                    reaction_xp_amount INTEGER DEFAULT 5,
+                    reaction_cooldown_seconds INTEGER DEFAULT 60,
+                    reaction_allowed_channels TEXT DEFAULT '[]',
+                    voice_xp_enabled BOOLEAN DEFAULT 1,
+                    voice_xp_per_minute INTEGER DEFAULT 20,
+                    voice_mute_no_xp BOOLEAN DEFAULT 1,
+                    voice_deafen_no_xp BOOLEAN DEFAULT 1,
+                    voice_min_two_members BOOLEAN DEFAULT 1,
+                    voice_diminishing_enabled BOOLEAN DEFAULT 0,
+                    voice_diminishing_mins INTEGER DEFAULT 60,
+                    voice_diminishing_rate REAL DEFAULT 0.5,
+                    voice_separate_levels BOOLEAN DEFAULT 1,
+                    rewards_single_highest BOOLEAN DEFAULT 1,
+                    dynamic_top_day_role INTEGER DEFAULT NULL,
+                    dynamic_top_week_role INTEGER DEFAULT NULL,
+                    dynamic_top_month_role INTEGER DEFAULT NULL,
+                    dynamic_top_all_role INTEGER DEFAULT NULL,
+                    weekly_reset_day TEXT DEFAULT 'Friday',
+                    card_layout TEXT DEFAULT 'vertical',
+                    card_particles TEXT DEFAULT 'none',
+                    card_animated_bar BOOLEAN DEFAULT 1,
+                    card_color TEXT DEFAULT '#1E293B',
+                    card_bg_url TEXT DEFAULT NULL,
+                    levelup_channel_id INTEGER DEFAULT NULL,
+                    levelup_channel_type TEXT DEFAULT 'channel',
+                    levelup_format TEXT DEFAULT 'embed',
+                    levelup_title TEXT DEFAULT '🎉 ارتقاء مستوى!',
+                    levelup_template TEXT DEFAULT 'مبروك {user} وصلت للمستوى {level} في سيرفر {server}!',
+                    levelup_voice_enabled BOOLEAN DEFAULT 1,
+                    levelup_voice_channel_id INTEGER DEFAULT NULL,
+                    levelup_voice_template TEXT DEFAULT 'مبروك {user} ارتقيت للمستوى الصوتي {level}!',
+                    overtake_alert_enabled BOOLEAN DEFAULT 1,
+                    overtake_template TEXT DEFAULT '⚡ {passer} تخطى {passed} في توب السيرفر وأصبح المركز #{rank}!',
+                    bot_embed_color TEXT DEFAULT '#6366F1'
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS user_levels (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    text_xp INTEGER DEFAULT 0,
+                    text_level INTEGER DEFAULT 0,
+                    voice_xp INTEGER DEFAULT 0,
+                    voice_level INTEGER DEFAULT 0,
+                    total_messages INTEGER DEFAULT 0,
+                    total_voice_seconds INTEGER DEFAULT 0,
+                    current_streak INTEGER DEFAULT 0,
+                    last_daily_claim TIMESTAMP DEFAULT NULL,
+                    last_message_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, user_id)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_role_rewards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    reward_type TEXT DEFAULT 'text'
+                        CHECK (reward_type IN ('text', 'voice')),
+                    level_required INTEGER NOT NULL,
+                    role_id INTEGER NOT NULL
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_multipliers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    target_type TEXT NOT NULL
+                        CHECK (target_type IN ('role', 'channel')),
+                    target_id INTEGER NOT NULL,
+                    multiplier REAL DEFAULT 1.5
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_blacklist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    target_type TEXT NOT NULL
+                        CHECK (target_type IN ('role', 'channel')),
+                    target_id INTEGER NOT NULL
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_levels_text "
+                "ON user_levels (guild_id, text_xp DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_levels_voice "
+                "ON user_levels (guild_id, voice_xp DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_level_role_rewards_guild "
+                "ON level_role_rewards (guild_id, reward_type, level_required);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_level_multipliers_guild "
+                "ON level_multipliers (guild_id, target_type);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_level_blacklist_guild "
+                "ON level_blacklist (guild_id, target_type);"
+            )
 
             # 2. جدول الإنذارات الإدارية
             await db.execute("""
@@ -1588,6 +1713,423 @@ async def init_db() -> None:
     _stats_cache.clear()
     COMMAND_CACHE.clear()
     LOG_ROUTING_CACHE.clear()
+
+
+# -------------------------------------------------------------
+# Lona leveling database helpers — Phase 1 foundation only
+# -------------------------------------------------------------
+_LEVEL_SETTINGS_JSON_FIELDS = {
+    "command_rank_channels",
+    "command_rank_aliases",
+    "command_top_channels",
+    "command_top_aliases",
+    "reaction_allowed_channels",
+}
+_LEVEL_SETTINGS_MUTABLE_FIELDS = {
+    "is_enabled",
+    "command_rank_enabled",
+    "command_rank_channels",
+    "command_rank_aliases",
+    "command_top_enabled",
+    "command_top_channels",
+    "command_top_aliases",
+    "web_leaderboard_enabled",
+    "web_slug",
+    "xp_multiplier",
+    "boost_multiplier",
+    "boost_expires_at",
+    "streak_enabled",
+    "streak_daily_xp",
+    "streak_max_cap",
+    "reaction_xp_reactor",
+    "reaction_xp_author",
+    "reaction_xp_amount",
+    "reaction_cooldown_seconds",
+    "reaction_allowed_channels",
+    "voice_xp_enabled",
+    "voice_xp_per_minute",
+    "voice_mute_no_xp",
+    "voice_deafen_no_xp",
+    "voice_min_two_members",
+    "voice_diminishing_enabled",
+    "voice_diminishing_mins",
+    "voice_diminishing_rate",
+    "voice_separate_levels",
+    "rewards_single_highest",
+    "dynamic_top_day_role",
+    "dynamic_top_week_role",
+    "dynamic_top_month_role",
+    "dynamic_top_all_role",
+    "weekly_reset_day",
+    "card_layout",
+    "card_particles",
+    "card_animated_bar",
+    "card_color",
+    "card_bg_url",
+    "levelup_channel_id",
+    "levelup_channel_type",
+    "levelup_format",
+    "levelup_title",
+    "levelup_template",
+    "levelup_voice_enabled",
+    "levelup_voice_channel_id",
+    "levelup_voice_template",
+    "overtake_alert_enabled",
+    "overtake_template",
+    "bot_embed_color",
+}
+_USER_LEVEL_MUTABLE_FIELDS = {
+    "text_xp",
+    "text_level",
+    "voice_xp",
+    "voice_level",
+    "total_messages",
+    "total_voice_seconds",
+    "current_streak",
+    "last_daily_claim",
+    "last_message_at",
+}
+
+
+def _decode_level_settings(row: Any) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    result = dict(row)
+    for key in _LEVEL_SETTINGS_JSON_FIELDS:
+        value = result.get(key)
+        result[key] = json.loads(value or "[]")
+    return result
+
+
+def _encode_level_setting(key: str, value: Any) -> Any:
+    if key not in _LEVEL_SETTINGS_JSON_FIELDS:
+        return value
+    if isinstance(value, str):
+        value = json.loads(value)
+    if not isinstance(value, list):
+        raise ValueError(f"{key} must be a JSON array")
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+async def get_level_settings(guild_id: int) -> Optional[Dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT * FROM level_settings WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            return _decode_level_settings(await cur.fetchone())
+
+
+async def create_default_level_settings(guild_id: int) -> Dict[str, Any]:
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO level_settings (guild_id) VALUES (?)",
+            (int(guild_id),),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM level_settings WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    result = _decode_level_settings(row)
+    if result is None:
+        raise RuntimeError("level settings row disappeared after creation")
+    return result
+
+
+async def update_level_settings(
+    guild_id: int,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("level settings data must be a mapping")
+    unknown = set(data) - _LEVEL_SETTINGS_MUTABLE_FIELDS
+    if unknown:
+        raise ValueError(f"unknown level setting: {sorted(unknown)[0]}")
+    await create_default_level_settings(guild_id)
+    if not data:
+        current = await get_level_settings(guild_id)
+        if current is None:
+            raise RuntimeError("level settings row disappeared after creation")
+        return current
+    assignments = ", ".join(f"{key} = ?" for key in data)
+    values = [_encode_level_setting(key, value) for key, value in data.items()]
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            f"UPDATE level_settings SET {assignments} WHERE guild_id = ?",
+            (*values, int(guild_id)),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM level_settings WHERE guild_id = ?",
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    result = _decode_level_settings(row)
+    if result is None:
+        raise RuntimeError("level settings row disappeared after update")
+    return result
+
+
+async def get_user_level(
+    guild_id: int,
+    user_id: int,
+) -> Optional[Dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT * FROM user_levels WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def create_user_level(
+    guild_id: int,
+    user_id: int,
+) -> Dict[str, Any]:
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO user_levels (guild_id, user_id) VALUES (?, ?)",
+            (int(guild_id), int(user_id)),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM user_levels WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("user level row disappeared after creation")
+    return dict(row)
+
+
+async def update_user_level(
+    guild_id: int,
+    user_id: int,
+    data: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("user level data must be a mapping")
+    unknown = set(data) - _USER_LEVEL_MUTABLE_FIELDS
+    if unknown:
+        raise ValueError(f"unknown user level field: {sorted(unknown)[0]}")
+    await create_user_level(guild_id, user_id)
+    if data:
+        assignments = ", ".join(f"{key} = ?" for key in data)
+        async with connect() as db:
+            await db.execute(
+                f"UPDATE user_levels SET {assignments} "
+                "WHERE guild_id = ? AND user_id = ?",
+                (*data.values(), int(guild_id), int(user_id)),
+            )
+            await db.commit()
+    result = await get_user_level(guild_id, user_id)
+    if result is None:
+        raise RuntimeError("user level row disappeared after update")
+    return result
+
+
+async def get_level_rewards(guild_id: int) -> List[Dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT id, guild_id, reward_type, level_required, role_id
+            FROM level_role_rewards
+            WHERE guild_id = ?
+            ORDER BY reward_type, level_required, id
+            """,
+            (int(guild_id),),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def add_level_reward(
+    guild_id: int,
+    reward_type: str,
+    level_required: int,
+    role_id: int,
+) -> Dict[str, Any]:
+    reward_type = str(reward_type).lower()
+    if reward_type not in {"text", "voice"}:
+        raise ValueError("reward_type must be 'text' or 'voice'")
+    async with connect(aiosqlite.Row) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO level_role_rewards
+                (guild_id, reward_type, level_required, role_id)
+            VALUES (?, ?, ?, ?)
+            RETURNING id, guild_id, reward_type, level_required, role_id
+            """,
+            (
+                int(guild_id),
+                reward_type,
+                max(0, int(level_required)),
+                int(role_id),
+            ),
+        )
+        row = await cur.fetchone()
+        await db.commit()
+    if row is None:
+        raise RuntimeError("level reward row was not returned")
+    return dict(row)
+
+
+async def delete_level_reward(guild_id: int, reward_id: int) -> bool:
+    async with connect() as db:
+        cur = await db.execute(
+            "DELETE FROM level_role_rewards WHERE guild_id = ? AND id = ?",
+            (int(guild_id), int(reward_id)),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def get_level_multipliers(guild_id: int) -> List[Dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT id, guild_id, target_type, target_id, multiplier
+            FROM level_multipliers
+            WHERE guild_id = ?
+            ORDER BY target_type, target_id, id
+            """,
+            (int(guild_id),),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def add_level_multiplier(
+    guild_id: int,
+    target_type: str,
+    target_id: int,
+    multiplier: float = 1.5,
+) -> Dict[str, Any]:
+    target_type = str(target_type).lower()
+    if target_type not in {"role", "channel"}:
+        raise ValueError("target_type must be 'role' or 'channel'")
+    multiplier = float(multiplier)
+    if not math.isfinite(multiplier) or multiplier <= 0:
+        raise ValueError("multiplier must be a finite positive number")
+    async with connect(aiosqlite.Row) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO level_multipliers
+                (guild_id, target_type, target_id, multiplier)
+            VALUES (?, ?, ?, ?)
+            RETURNING id, guild_id, target_type, target_id, multiplier
+            """,
+            (int(guild_id), target_type, int(target_id), multiplier),
+        )
+        row = await cur.fetchone()
+        await db.commit()
+    if row is None:
+        raise RuntimeError("level multiplier row was not returned")
+    return dict(row)
+
+
+async def delete_level_multiplier(guild_id: int, multiplier_id: int) -> bool:
+    async with connect() as db:
+        cur = await db.execute(
+            "DELETE FROM level_multipliers WHERE guild_id = ? AND id = ?",
+            (int(guild_id), int(multiplier_id)),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def get_level_blacklist(guild_id: int) -> List[Dict[str, Any]]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT id, guild_id, target_type, target_id
+            FROM level_blacklist
+            WHERE guild_id = ?
+            ORDER BY target_type, target_id, id
+            """,
+            (int(guild_id),),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def add_level_blacklist(
+    guild_id: int,
+    target_type: str,
+    target_id: int,
+) -> Dict[str, Any]:
+    target_type = str(target_type).lower()
+    if target_type not in {"role", "channel"}:
+        raise ValueError("target_type must be 'role' or 'channel'")
+    async with connect(aiosqlite.Row) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO level_blacklist (guild_id, target_type, target_id)
+            VALUES (?, ?, ?)
+            RETURNING id, guild_id, target_type, target_id
+            """,
+            (int(guild_id), target_type, int(target_id)),
+        )
+        row = await cur.fetchone()
+        await db.commit()
+    if row is None:
+        raise RuntimeError("level blacklist row was not returned")
+    return dict(row)
+
+
+async def delete_level_blacklist(guild_id: int, blacklist_id: int) -> bool:
+    async with connect() as db:
+        cur = await db.execute(
+            "DELETE FROM level_blacklist WHERE guild_id = ? AND id = ?",
+            (int(guild_id), int(blacklist_id)),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def _get_level_leaderboard(
+    guild_id: int,
+    limit: int,
+    xp_column: str,
+    level_column: str,
+) -> List[Dict[str, Any]]:
+    if xp_column not in {"text_xp", "voice_xp"} or level_column not in {
+        "text_level",
+        "voice_level",
+    }:
+        raise ValueError("invalid leaderboard column")
+    limit = max(1, min(int(limit), 100))
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            f"""
+            SELECT guild_id, user_id, {xp_column}, {level_column},
+                   total_messages, total_voice_seconds, current_streak
+            FROM user_levels
+            WHERE guild_id = ?
+            ORDER BY {xp_column} DESC, user_id ASC
+            LIMIT ?
+            """,
+            (int(guild_id), limit),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def get_text_leaderboard(
+    guild_id: int,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    return await _get_level_leaderboard(
+        guild_id, limit, "text_xp", "text_level"
+    )
+
+
+async def get_voice_leaderboard(
+    guild_id: int,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    return await _get_level_leaderboard(
+        guild_id, limit, "voice_xp", "voice_level"
+    )
 
 
 # -------------------------------------------------------------
