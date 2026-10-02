@@ -218,6 +218,7 @@ def _render(name, handle, level, xp, required, rank, total, settings, avatar, ba
     rank_text = f"#{compact(rank)}" if rank else "—"
     xp_text = f"{compact(earned)} / {compact(cost)} XP"
     animated = settings.get("card_animated_bar") in (True, 1, "1", "true")
+    show_stats = settings.get("card_show_stats", True) not in (False, 0, "0", "false")
     voice = settings.get("total_voice_seconds")
     stats = [
         ("Messages", compact(settings["total_messages"]) if settings.get("total_messages") is not None else "—"),
@@ -238,10 +239,11 @@ def _render(name, handle, level, xp, required, rank, total, settings, avatar, ba
         card.text((468, 531), f"{progress:.0%}", 22, color, True, center=True)
         card.bar((56, 579, 448, 12), progress, animated)
         card.text((56, 603), xp_text, 14, MUTED, width=445)
-        card.stat((32, 659, 270, 749), *stats[0])
-        card.stat((290, 659, 528, 749), *stats[1])
-        card.stat((32, 765, 270, 855), *stats[2])
-        card.stat((290, 765, 528, 855), "Server rank", f"{rank_text} / {compact(total)}")
+        if show_stats:
+            card.stat((32, 659, 270, 749), *stats[0])
+            card.stat((290, 659, 528, 749), *stats[1])
+            card.stat((32, 765, 270, 855), *stats[2])
+            card.stat((290, 765, 528, 855), "Server rank", f"{rank_text} / {compact(total)}")
         card.text((280, 873), "GROW AT YOUR OWN PACE", 9, MUTED, center=True)
     elif layout == "stats":
         card.text((34, 30), "PRIME / MEMBER STATISTICS", 12, color, True)
@@ -253,9 +255,10 @@ def _render(name, handle, level, xp, required, rank, total, settings, avatar, ba
         card.text((277, 219), xp_text, 17, MUTED)
         card.text((944, 219), f"{progress:.0%}", 17, color, center=True)
         card.bar((278, 252, 685, 14), progress, animated)
-        for index, pair in enumerate(stats):
-            x = 34 + index*317
-            card.stat((x, 304, x+298, 394), *pair)
+        if show_stats:
+            for index, pair in enumerate(stats):
+                x = 34 + index*317
+                card.stat((x, 304, x+298, 394), *pair)
     elif layout == "minimal":
         card.avatar((36, 48), 128, avatar)
         card.text((195, 33), name, 26, bold=True, width=445)

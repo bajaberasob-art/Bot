@@ -89,6 +89,7 @@ from cogs.command_meta import (
     grouped_command_registry,
 )
 from cogs.community import PersistentDropdownTicketView, normalize_ticket_categories
+from leveling_api import register_leveling_routes
 
 routes = web.RouteTableDef()
 PROJECT_DIR = Path(__file__).parent.resolve()
@@ -5000,6 +5001,15 @@ async def index(req):
     # لوحة التحكم التفاعلية (HTML/CSS/JS في مجلد dashboard/)
     page = (DASHBOARD_DIR / "index.html").read_text("utf-8")
     return web.Response(text=page, content_type="text/html", charset="utf-8")
+
+
+register_leveling_routes(
+    routes,
+    authorize=authorize,
+    json_error=json_error,
+    read_json_body=read_json_body,
+    logger=logger,
+)
 
 
 async def start_web_server(bot):
