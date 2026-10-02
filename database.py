@@ -2873,12 +2873,15 @@ async def get_public_level_settings_by_slug(slug: str) -> Optional[Dict[str, Any
             SELECT guild_id
             FROM level_settings
             WHERE web_slug = ? AND web_leaderboard_enabled = 1
-            LIMIT 1
+            ORDER BY guild_id
+            LIMIT 2
             """,
             (slug,),
         ) as cur:
-            row = await cur.fetchone()
-    return {"guild_id": int(row["guild_id"])} if row else None
+            rows = await cur.fetchall()
+    if len(rows) != 1:
+        return None
+    return {"guild_id": int(rows[0]["guild_id"])}
 
 
 async def get_public_level_summary(guild_id: int) -> Dict[str, int]:
