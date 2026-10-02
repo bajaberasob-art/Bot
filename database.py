@@ -1931,6 +1931,12 @@ async def update_level_settings(
     unknown = set(data) - _LEVEL_SETTINGS_MUTABLE_FIELDS
     if unknown:
         raise ValueError(f"unknown level setting: {sorted(unknown)[0]}")
+    data = dict(data)
+    if "voice_min_two_members" in data and "voice_min_members" not in data:
+        legacy_minimum = data["voice_min_two_members"]
+        if legacy_minimum not in (False, True, 0, 1):
+            raise ValueError("voice_min_two_members must be boolean")
+        data["voice_min_members"] = 2 if bool(legacy_minimum) else 1
     await create_default_level_settings(guild_id)
     if not data:
         current = await get_level_settings(guild_id)
