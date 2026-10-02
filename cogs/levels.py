@@ -494,7 +494,7 @@ class Levels(EngagementXP, commands.Cog):
             settings["is_enabled"] and settings["voice_xp_enabled"]
             and not (settings["voice_mute_no_xp"] and session.muted)
             and not (settings["voice_deafen_no_xp"] and session.deafened)
-            and counts.get(session.channel_id, 0) < settings["voice_min_members"]
+            and counts.get(session.channel_id, 0) >= settings["voice_min_members"]
             and not is_blacklisted(blacklist, session.role_ids, {session.channel_id})
         )
 

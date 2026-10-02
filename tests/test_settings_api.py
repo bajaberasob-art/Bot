@@ -455,11 +455,19 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
             "level": 5, "role": str(ROLES[1].id), "type": "text",
         }]
         draft["messages"]["levelup"]["channel"] = str(CHANNELS[0].id)
-        status, saved = await call(
-            settings_save,
-            request("POST", "/api/guild/x/leveling/settings", "s10",
-                    {"revision": 0, "draft": draft}, self.headers),
-        )
+        bot_permissions = getattr(FakeGuild.me, "guild_permissions", None)
+        FakeGuild.me.guild_permissions = SimpleNamespace(manage_roles=True)
+        try:
+            status, saved = await call(
+                settings_save,
+                request("POST", "/api/guild/x/leveling/settings", "s10",
+                        {"revision": 0, "draft": draft}, self.headers),
+            )
+        finally:
+            if bot_permissions is None:
+                del FakeGuild.me.guild_permissions
+            else:
+                FakeGuild.me.guild_permissions = bot_permissions
         self.assertEqual((status, saved["revision"], saved["configured"]), (200, 1, True))
         stored = await database.get_level_settings(FakeGuild.id)
         self.assertEqual(stored["text_xp_enabled"], 0)
