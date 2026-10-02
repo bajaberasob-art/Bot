@@ -2,6 +2,8 @@
   "use strict";
   // DOM helpers
   const $ = (s, p = document) => p.querySelector(s);
+  const urlMountPrefix = location.pathname.startsWith("/api/") ? "/api" : "";
+  const PUBLIC_SLUG_RE = /^(?=.{3,40}$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
   const el = (tag, props = {}, ...children) => {
     const n = document.createElement(tag);
     Object.entries(props).forEach(([k, v]) => {
@@ -6952,11 +6954,11 @@
     const shareUrl = pub.slug ? `${location.origin}${urlMountPrefix}/lb/${encodeURIComponent(pub.slug)}` : "";
     const url = el("code", { class: "leveling-public-url", dir: "ltr", text: shareUrl || "أدخل معرّفاً لإنشاء رابط المشاركة" });
     const copy = el("button", {
-      type: "button", class: "leveling-btn leveling-public-copy", disabled: !shareUrl, text: "نسخ الرابط",
+      type: "button", class: "leveling-btn leveling-public-copy", disabled: !shareUrl || !pub.enabled, text: "نسخ الرابط",
       onClick: async () => {
-        if (!pub.slug) return;
+        if (!pub.slug || !pub.enabled) return;
         try {
-          await navigator.clipboard.writeText(`${location.origin}${urlMountPrefix}/lb/${pub.slug}`);
+          await navigator.clipboard.writeText(shareUrl);
           toast("تم نسخ رابط لوحة الترتيب.", "success");
         } catch (_) {
           toast("تعذر النسخ تلقائياً. انسخ الرابط الظاهر يدوياً.", "warn");
@@ -6965,14 +6967,14 @@
     });
     const slug = el("input", {
       type: "text", dir: "ltr", autocomplete: "off", spellcheck: "false",
-      maxlength: "48", placeholder: "prime-arena", value: pub.slug,
+      maxlength: "40", placeholder: "prime-arena", value: pub.slug,
       "aria-label": "معرّف رابط لوحة الترتيب",
       onInput: (event) => {
         const clean = event.currentTarget.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
         if (clean !== event.currentTarget.value) event.currentTarget.value = clean;
         pub.slug = clean;
         url.textContent = clean ? `${location.origin}${urlMountPrefix}/lb/${clean}` : "أدخل معرّفاً لإنشاء رابط المشاركة";
-        copy.disabled = !clean;
+        copy.disabled = !clean || !pub.enabled;
         lvTouch();
       },
     });
@@ -6982,10 +6984,10 @@
         el("label", { class: "leveling-field leveling-public-field" },
           el("span", { class: "leveling-label", text: "معرّف الرابط" }),
           slug,
-          el("small", { class: "leveling-hint", text: "أحرف إنجليزية صغيرة وأرقام وشرطة فقط، دون مسافات." })),
+          el("small", { class: "leveling-hint", text: "من 3 إلى 40 حرفاً: أحرف إنجليزية صغيرة وأرقام وشرطة مفردة بين الكلمات." })),
         el("div", { class: "leveling-public-share" },
           el("span", { class: "leveling-label", text: "رابط المشاركة" }), url, copy),
-        el("p", { class: "leveling-public-note", text: "سيظهر الرابط بعد حفظ الإعدادات. تعطيل اللوحة لا يمسح المعرّف." })));
+      el("p", { class: "leveling-public-note", text: "يعمل الرابط بعد تفعيل اللوحة وحفظ الإعدادات. تعطيل اللوحة لا يمسح المعرّف." })));
   }
   function lvTabPoints() {
     return el("div", { class: "leveling-stack" },
@@ -7344,7 +7346,8 @@
       if (seen.has(k)) e.push("لا يمكن تكرار المستوى والنوع نفسهما."); seen.add(k);
     });
     if (!/^#[0-9a-f]{6}$/i.test(d.card.color)) e.push("لون البطاقة غير صالح.");
-    if (d.public.enabled && !/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(d.public.slug)) e.push("أدخل معرّف رابط صالحاً: أحرف إنجليزية صغيرة وأرقام وشرطة، دون شرطة في البداية أو النهاية.");
+    if (d.public.slug && !PUBLIC_SLUG_RE.test(d.public.slug)) e.push("أدخل معرّف رابط من 3 إلى 40 حرفاً: أحرف إنجليزية صغيرة وأرقام وشرطة مفردة بين الكلمات.");
+    if (d.public.enabled && !d.public.slug) e.push("أدخل معرّف الرابط قبل إتاحة اللوحة للعامة.");
     if (!lvBgOk(String(d.card.bg).trim())) e.push("رابط الخلفية يجب أن يبدأ بـ https://.");
     const allowed = { levelup: ["user", "level", "server"], milestone: ["user", "level"], overtake: ["passer", "passed", "rank"] };
     Object.entries(d.messages).forEach(([k, m]) => {
@@ -8362,7 +8365,7 @@
       const query = new URLSearchParams({ mode: view.mode, page: String(view.page) });
       if (view.userId) query.set("user_id", view.userId);
       try {
-        if (!/^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/.test(slug)) throw Object.assign(new Error("invalid-slug"), { status: 400 });
+        if (!PUBLIC_SLUG_RE.test(slug)) throw Object.assign(new Error("invalid-slug"), { status: 400 });
         const response = await fetch(`${urlMountPrefix}/lb/${encodeURIComponent(slug)}/data?${query}`, {
           method: "GET", headers: { Accept: "application/json" }, credentials: "omit", cache: "no-store",
         });
@@ -8409,7 +8412,7 @@
       const summary = data ? el("section", { class: "public-lb-summary", "aria-label": "ملخص السيرفر" },
         ...[
           ["الأعضاء", fmt(data.server?.memberCount)],
-          ["نشطون", fmt(data.summary?.activeMembers)],
+          ["حسابات لديها نقاط", fmt(data.summary?.activeMembers)],
           ["إجمالي XP", fmt(data.summary?.totalXp)],
           ["آخر تحديث", safeDate(data.summary?.lastUpdated)],
         ].map(([label, value], i) => el("div", { class: `public-lb-stat public-lb-stat-${i + 1}` },
@@ -8503,6 +8506,7 @@
     await request();
   }
   addEventListener("keydown", (e) => {
+    if (publicLeaderboardPath) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       openCommandPalette();
@@ -8521,6 +8525,7 @@
     });
   });
   addEventListener("pointerdown", (e) => {
+    if (publicLeaderboardPath) return;
     document.querySelectorAll(".popover:not([hidden])").forEach((p) => {
       if (!p.parentElement.contains(e.target)) {
         p.hidden = true;
@@ -8528,15 +8533,17 @@
       }
     });
   });
-  addEventListener("online", health);
-  addEventListener("offline", () => setOffline(true));
-  addEventListener("beforeunload", (e) => {
-    closeSSE();
-    if (dirty()) {
-      e.preventDefault();
-      e.returnValue = "";
-    }
-  });
+  if (!publicLeaderboardPath) {
+    addEventListener("online", health);
+    addEventListener("offline", () => setOffline(true));
+    addEventListener("beforeunload", (e) => {
+      closeSSE();
+      if (dirty()) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+  }
   if (publicLeaderboardPath) {
     renderPublicLeaderboard().catch(() => {
       document.body.classList.add("public-lb-route");
