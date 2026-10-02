@@ -70,11 +70,16 @@ class PublicLeaderboardTests(unittest.IsolatedAsyncioTestCase):
         import public_leaderboard
         public_leaderboard._page_cache.clear()
 
-        for user_id, text_xp, voice_xp, messages, seconds in (
+        rows = [
             (MEMBER_ONE, 500, 400, 12, 900),
             (MEMBER_TWO, 300, 900, 8, 1800),
             (REMOVED_MEMBER, 200, 700, 4, 600),
-        ):
+        ]
+        rows.extend(
+            (100000000000000200 + index, 1, 1, 0, 0)
+            for index in range(9)
+        )
+        for user_id, text_xp, voice_xp, messages, seconds in rows:
             await database.create_user_level(GUILD_ID, user_id)
             await database.update_user_level(GUILD_ID, user_id, {
                 "text_xp": text_xp,
@@ -107,11 +112,12 @@ class PublicLeaderboardTests(unittest.IsolatedAsyncioTestCase):
         data = json.loads(response.text)
         self.assertEqual(data["mode"], "voice")
         self.assertEqual(data["pageSize"], 10)
-        self.assertEqual(data["total"], 3)
-        self.assertEqual(data["totalPages"], 1)
+        self.assertEqual(data["total"], 12)
+        self.assertEqual(data["totalPages"], 2)
+        self.assertEqual(len(data["rows"]), 10)
         self.assertEqual(data["server"]["name"], "PRIME Test")
-        self.assertEqual(data["summary"]["activeMembers"], 3)
-        self.assertEqual(data["summary"]["totalXp"], 3000)
+        self.assertEqual(data["summary"]["activeMembers"], 12)
+        self.assertEqual(data["summary"]["totalXp"], 3018)
         self.assertEqual(data["rows"][0]["name"], "Member Two")
         self.assertEqual(data["rows"][0]["xp"], 900)
         self.assertEqual(data["rows"][0]["level"], 3)
@@ -124,6 +130,15 @@ class PublicLeaderboardTests(unittest.IsolatedAsyncioTestCase):
         serialized = response.text
         for user_id in (MEMBER_ONE, MEMBER_TWO, REMOVED_MEMBER):
             self.assertNotIn(str(user_id), serialized)
+
+        second_page = await self.call(
+            "/lb/{slug}/data", "/lb/prime-test/data?mode=voice&page=2"
+        )
+        second_page_data = json.loads(second_page.text)
+        self.assertEqual(second_page_data["page"], 2)
+        self.assertEqual(
+            [row["rank"] for row in second_page_data["rows"]], [11, 12]
+        )
 
         text = await self.call(
             "/lb/{slug}/data", "/lb/prime-test/data?mode=text"
