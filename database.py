@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
@@ -2805,7 +2806,7 @@ async def get_level_leaderboard_page(
         raise ValueError("mode must be 'text' or 'voice'")
     xp_column, level_column, total_column = columns[mode]
     limit = max(1, min(100, int(limit)))
-    offset = max(0, min(10000, int(offset)))
+    offset = max(0, min(1_000_000, int(offset)))
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
             f"SELECT COUNT(*) FROM user_levels WHERE guild_id = ? AND {xp_column} > 0",
@@ -2834,6 +2835,91 @@ async def get_level_leaderboard_page(
         "total": int(count_row[0] or 0) if count_row else 0,
         "rows": rows,
     }
+
+
+_PUBLIC_LEVEL_SLUG_RE = re.compile(r"^(?=.{3,40}$)[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+async def get_public_level_settings_by_slug(slug: str) -> Optional[Dict[str, Any]]:
+    """Resolve only canonical, enabled public leaderboard slugs."""
+    if not isinstance(slug, str) or not _PUBLIC_LEVEL_SLUG_RE.fullmatch(slug):
+        return None
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT guild_id
+            FROM level_settings
+            WHERE web_slug = ? AND web_leaderboard_enabled = 1
+            LIMIT 1
+            """,
+            (slug,),
+        ) as cur:
+            row = await cur.fetchone()
+    return {"guild_id": int(row["guild_id"])} if row else None
+
+
+async def get_public_level_summary(guild_id: int) -> Dict[str, int]:
+    """Return compact public aggregates without materializing member rows."""
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT COUNT(*) AS active_members,
+                   COALESCE(SUM(COALESCE(text_xp, 0) + COALESCE(voice_xp, 0)), 0)
+                       AS total_xp
+            FROM user_levels
+            WHERE guild_id = ? AND (text_xp > 0 OR voice_xp > 0)
+            """,
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    return {
+        "active_members": int(row["active_members"] or 0) if row else 0,
+        "total_xp": int(row["total_xp"] or 0) if row else 0,
+    }
+
+
+async def get_level_user_rank(
+    guild_id: int,
+    user_id: int,
+    mode: str = "text",
+) -> Optional[Dict[str, Any]]:
+    """Return one user's rank using the same XP-desc/user-ID-asc order as pages."""
+    columns = {
+        "text": ("text_xp", "text_level", "total_messages"),
+        "voice": ("voice_xp", "voice_level", "total_voice_seconds"),
+    }
+    if mode not in columns:
+        raise ValueError("mode must be 'text' or 'voice'")
+    xp_column, level_column, total_column = columns[mode]
+    guild_id, user_id = int(guild_id), int(user_id)
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            f"""
+            SELECT user_id, {xp_column} AS xp, {level_column} AS level,
+                   {total_column} AS activity_total, total_messages,
+                   total_voice_seconds, current_streak
+            FROM user_levels
+            WHERE guild_id = ? AND user_id = ? AND {xp_column} > 0
+            """,
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        xp = int(row["xp"] or 0)
+        async with db.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM user_levels
+            WHERE guild_id = ? AND {xp_column} > 0
+              AND ({xp_column} > ? OR ({xp_column} = ? AND user_id < ?))
+            """,
+            (guild_id, xp, xp, user_id),
+        ) as cur:
+            count_row = await cur.fetchone()
+    result = dict(row)
+    result["rank"] = int(count_row[0] or 0) + 1 if count_row else 1
+    return result
 
 
 async def get_level_dashboard_analytics(guild_id: int) -> Dict[str, Any]:
