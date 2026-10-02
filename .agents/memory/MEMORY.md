@@ -26,3 +26,4 @@
 - [Dashboard preview safety](dashboard-preview-safety.md) — visual previews use isolated mockup data and never weaken production OAuth or guild permissions.
 - [Overview telemetry boundaries](overview-telemetry-boundaries.md) — the index view must consume optional live metrics without inventing data or adding backend routes.
 - [Ticket CRM control settings](ticket-crm-control-settings.md) — additive ticket settings support partial updates; permission saves must not reset close/archive behavior.
+- [Lona leveling scope](lona-leveling-scope.md) — implement ten separately authorized phases; Phase 1 is database foundations only.
