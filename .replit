@@ -55,6 +55,10 @@ DASHBOARD_BASE_PATH = "/api/dashboard/"
 DASHBOARD_LOCAL_LOGIN = "1"
 
 [[ports]]
+localPort = 1000
+externalPort = 3000
+
+[[ports]]
 localPort = 8080
 externalPort = 80
 
