@@ -59,10 +59,14 @@ class VoiceCredit:
     seconds: float = 0.0
 
 
-def is_blacklisted(blacklist: list, role_ids: set, channel_ids: set) -> bool:
+def is_blacklisted(
+    blacklist: list, role_ids: set, channel_ids: set, user_id: int | None = None,
+) -> bool:
     return any(
         row["target_type"] == "role" and row["target_id"] in role_ids
         or row["target_type"] == "channel" and row["target_id"] in channel_ids
+        or row["target_type"] == "user" and user_id is not None
+        and row["target_id"] == user_id
         for row in blacklist
     )
 
@@ -134,6 +138,24 @@ def resolve_multiplier(settings: dict, multipliers: list, role_ids: set,
             factors.append(bounded_multiplier(item["multiplier"]))
     if boost_is_active(settings.get("boost_expires_at"), now):
         factors.append(bounded_multiplier(settings.get("boost_multiplier", 1)))
+    for boost in settings.get("timed_xp_boosts", []):
+        if not isinstance(boost, dict):
+            continue
+        try:
+            starts = datetime.fromisoformat(
+                str(boost.get("starts_at", "")).replace("Z", "+00:00")
+            )
+            expires = datetime.fromisoformat(
+                str(boost.get("expires_at", "")).replace("Z", "+00:00")
+            )
+            if starts.tzinfo is None:
+                starts = starts.replace(tzinfo=timezone.utc)
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if starts <= now < expires:
+                factors.append(bounded_multiplier(boost.get("multiplier", 1)))
+        except (TypeError, ValueError):
+            continue
     # Clamp only the final product so fractional factors remain meaningful.
     if any(factor == 0 for factor in factors):
         return 0.0
@@ -192,7 +214,7 @@ class Levels(EngagementXP, commands.Cog):
         settings = await database.get_level_settings(key[0])
         if settings is None:
             settings = await database.create_default_level_settings(key[0])
-        if not settings["is_enabled"]:
+        if not settings["is_enabled"] or not settings.get("text_xp_enabled", True):
             return
         role_ids = {role.id for role in message.author.roles}
         channel_ids = {message.channel.id}
@@ -201,12 +223,25 @@ class Levels(EngagementXP, commands.Cog):
         if parent_id:
             channel_ids.add(parent_id)
         blacklist = await database.get_level_blacklist(key[0])
-        if is_blacklisted(blacklist, role_ids, channel_ids):
+        if is_blacklisted(blacklist, role_ids, channel_ids, message.author.id):
+            return
+        try:
+            allowed_channels = {int(value) for value in settings.get("text_allowed_channels", [])}
+        except (TypeError, ValueError):
+            allowed_channels = set()
+        if allowed_channels and not allowed_channels.intersection(channel_ids):
             return
         now = datetime.now(timezone.utc)
         multipliers = await database.get_level_multipliers(key[0])
         factor = resolve_multiplier(settings, multipliers, role_ids, channel_ids, now)
-        xp = int(random.randint(15, 25) * factor)
+        try:
+            minimum = max(0, min(1000, int(settings.get("text_xp_min", 15))))
+            maximum = max(0, min(1000, int(settings.get("text_xp_max", 25))))
+        except (TypeError, ValueError, OverflowError):
+            minimum, maximum = 15, 25
+        if minimum > maximum:
+            minimum, maximum = 15, 25
+        xp = int(random.randint(minimum, maximum) * factor)
         if xp <= 0:
             return
         cooldown = self.cooldown_seconds(settings)
@@ -234,7 +269,8 @@ class Levels(EngagementXP, commands.Cog):
                 member.guild, member, award["old_level"], award["text_level"],
                 award["text_xp"], progress["xp_required"], progress["next_level_total_xp"],
             ))
-        elif milestones and progress["percentage"] >= 90:
+        elif (milestones and settings.get("milestone_alert_enabled", True)
+              and progress["percentage"] >= 90):
             # One notification on crossing 90%, not every following message.
             previous = text_progress(award["old_xp"])
             if previous["level"] == progress["level"] and previous["percentage"] < 90:
@@ -264,6 +300,64 @@ class Levels(EngagementXP, commands.Cog):
 
     def emit_milestone(self, event: TextMilestone):
         self.bot.dispatch("lona_text_milestone", event)
+
+    async def _send_leveling_notice(self, guild, channel_id, template, values):
+        if not channel_id:
+            return
+        channel = guild.get_channel(int(channel_id))
+        if channel is None:
+            channel = self.bot.get_channel(int(channel_id))
+        if channel is None or not callable(getattr(channel, "send", None)):
+            logger.warning("Leveling announcement channel unavailable guild=%s channel=%s",
+                           guild.id, channel_id)
+            return
+        try:
+            content = str(template or "").format_map(values).strip()
+        except (KeyError, ValueError, IndexError):
+            logger.warning("Invalid leveling announcement template guild=%s", guild.id)
+            return
+        if not content:
+            return
+        try:
+            await channel.send(
+                content[:1900],
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            logger.warning("Cannot send leveling announcement guild=%s channel=%s",
+                           guild.id, channel_id, exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_lona_text_level_up(self, event: TextLevelUp):
+        settings = await database.get_level_settings(event.guild.id)
+        if not settings or not settings.get("is_enabled") or not settings.get("levelup_enabled", True):
+            return
+        await self._send_leveling_notice(
+            event.guild, settings.get("levelup_channel_id"), settings.get("levelup_template"),
+            {"user": event.member.mention, "level": event.new_level,
+             "server": event.guild.name},
+        )
+
+    @commands.Cog.listener()
+    async def on_lona_text_milestone(self, event: TextMilestone):
+        settings = await database.get_level_settings(event.guild.id)
+        if not settings or not settings.get("is_enabled") or not settings.get("milestone_alert_enabled"):
+            return
+        await self._send_leveling_notice(
+            event.guild, settings.get("milestone_channel_id"), settings.get("milestone_template"),
+            {"user": event.member.mention, "level": event.current_level},
+        )
+
+    @commands.Cog.listener()
+    async def on_lona_text_overtake(self, event: OvertakeEvent):
+        settings = await database.get_level_settings(event.guild.id)
+        if not settings or not settings.get("is_enabled") or not settings.get("overtake_alert_enabled"):
+            return
+        await self._send_leveling_notice(
+            event.guild, settings.get("overtake_channel_id"), settings.get("overtake_template"),
+            {"passer": event.passer.mention, "passed": event.passed.mention,
+             "rank": event.new_rank},
+        )
 
     async def apply_text_rewards(self, member: discord.Member, level: int, settings: dict):
         try:

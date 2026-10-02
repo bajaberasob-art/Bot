@@ -2638,11 +2638,16 @@ async def get_level_blacklist(guild_id: int) -> List[Dict[str, Any]]:
         async with db.execute(
             """
             SELECT id, guild_id, target_type, target_id
-            FROM level_blacklist
-            WHERE guild_id = ?
+            FROM (
+                SELECT id, guild_id, target_type, target_id
+                FROM level_blacklist WHERE guild_id = ?
+                UNION ALL
+                SELECT id, guild_id, 'user' AS target_type, target_id
+                FROM level_user_blacklist WHERE guild_id = ?
+            )
             ORDER BY target_type, target_id, id
             """,
-            (int(guild_id),),
+            (int(guild_id), int(guild_id)),
         ) as cur:
             return [dict(row) for row in await cur.fetchall()]
 
@@ -2653,18 +2658,36 @@ async def add_level_blacklist(
     target_id: int,
 ) -> Dict[str, Any]:
     target_type = str(target_type).lower()
-    if target_type not in {"role", "channel"}:
-        raise ValueError("target_type must be 'role' or 'channel'")
+    if target_type not in {"role", "channel", "user"}:
+        raise ValueError("target_type must be 'role', 'channel' or 'user'")
     async with connect(aiosqlite.Row) as db:
-        cur = await db.execute(
-            """
-            INSERT INTO level_blacklist (guild_id, target_type, target_id)
-            VALUES (?, ?, ?)
-            RETURNING id, guild_id, target_type, target_id
-            """,
-            (int(guild_id), target_type, int(target_id)),
-        )
-        row = await cur.fetchone()
+        if target_type == "user":
+            cur = await db.execute(
+                """
+                INSERT INTO level_user_blacklist (guild_id, target_id)
+                VALUES (?, ?)
+                ON CONFLICT(guild_id, target_id) DO NOTHING
+                """,
+                (int(guild_id), int(target_id)),
+            )
+            async with db.execute(
+                """
+                SELECT id, guild_id, 'user' AS target_type, target_id
+                FROM level_user_blacklist WHERE guild_id = ? AND target_id = ?
+                """,
+                (int(guild_id), int(target_id)),
+            ) as lookup:
+                row = await lookup.fetchone()
+        else:
+            cur = await db.execute(
+                """
+                INSERT INTO level_blacklist (guild_id, target_type, target_id)
+                VALUES (?, ?, ?)
+                RETURNING id, guild_id, target_type, target_id
+                """,
+                (int(guild_id), target_type, int(target_id)),
+            )
+            row = await cur.fetchone()
         await db.commit()
     if row is None:
         raise RuntimeError("level blacklist row was not returned")
