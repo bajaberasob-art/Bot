@@ -2302,7 +2302,8 @@ async def _record_level_daily_xp(
         raise ValueError("daily XP credits cannot be negative")
     if not (text_xp or voice_xp):
         return
-    day_utc = _level_utc(awarded_at).date().isoformat()
+    timestamp = _level_utc(awarded_at)
+    day_utc = timestamp.date().isoformat()
     await db.execute(
         """
         INSERT INTO level_xp_daily (guild_id, user_id, day_utc, text_xp, voice_xp)
@@ -2312,6 +2313,16 @@ async def _record_level_daily_xp(
             voice_xp = level_xp_daily.voice_xp + excluded.voice_xp
         """,
         (int(guild_id), int(user_id), day_utc, text_xp, voice_xp),
+    )
+    await db.execute(
+        """
+        INSERT INTO level_xp_events (guild_id, user_id, awarded_at, text_xp, voice_xp)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            int(guild_id), int(user_id), timestamp.isoformat(),
+            text_xp, voice_xp,
+        ),
     )
 
 
@@ -3142,7 +3153,7 @@ async def get_command_rank_snapshot(
 
 async def get_command_level_leaderboard(
     guild_id: int, human_ids: List[int], mode: str = "text",
-    period: str = "all_time", now: Optional[datetime] = None,
+    period: str = "all_time", now: Optional[datetime] = None, limit: int = 10,
 ) -> List[Dict[str, Any]]:
     """Return an indexed Top 10 for current humans and one UTC XP period.
 
@@ -3157,6 +3168,8 @@ async def get_command_level_leaderboard(
         raise ValueError("leaderboard mode must be text or voice")
     if period not in {"daily", "weekly", "monthly", "all_time"}:
         raise ValueError("period must be daily, weekly, monthly, or all_time")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+        raise ValueError("leaderboard limit must be from 1 to 20")
     if not human_ids:
         return []
     xp_column, level_column = columns[mode]
@@ -3168,9 +3181,9 @@ async def get_command_level_leaderboard(
             FROM user_levels
             WHERE guild_id = ? AND {xp_column} > 0
               AND user_id IN (SELECT value FROM json_each(?))
-            ORDER BY {xp_column} DESC, user_id ASC LIMIT 10
+              ORDER BY {xp_column} DESC, user_id ASC LIMIT ?
         """
-        params = (int(guild_id), eligible)
+        params = (int(guild_id), eligible, limit)
     else:
         start_day, end_day = _level_xp_period_bounds(period, now)
         query = f"""
@@ -3184,14 +3197,99 @@ async def get_command_level_leaderboard(
               AND d.day_utc >= ? AND d.day_utc < ?
               AND d.user_id IN (SELECT value FROM json_each(?))
             GROUP BY d.user_id
-            ORDER BY xp DESC, d.user_id ASC LIMIT 10
+              ORDER BY xp DESC, d.user_id ASC LIMIT ?
         """
-        params = (int(guild_id), start_day, end_day, eligible)
+        params = (int(guild_id), start_day, end_day, eligible, limit)
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
             query, params,
         ) as cur:
             return [dict(row) for row in await cur.fetchall()]
+
+
+async def get_level_periodic_top_leaderboard(
+    guild_id: int,
+    human_ids: List[int],
+    mode: str,
+    start: datetime,
+    end: datetime,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """Rank period XP using exact UTC event times, without changing lifetime XP."""
+    columns = {
+        "text": ("text_xp", "text_level"),
+        "voice": ("voice_xp", "voice_level"),
+    }
+    if mode not in columns:
+        raise ValueError("leaderboard mode must be text or voice")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+        raise ValueError("leaderboard limit must be from 1 to 20")
+    if not human_ids:
+        return []
+    start_utc, end_utc = _level_utc(start), _level_utc(end)
+    if end_utc <= start_utc:
+        raise ValueError("leaderboard period end must be after start")
+    xp_column, level_column = columns[mode]
+    eligible = json.dumps(sorted({int(value) for value in human_ids}))
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            f"""
+            SELECT e.user_id, u.{level_column} AS level,
+                   CAST(SUM(e.{xp_column}) AS INTEGER) AS xp,
+                   u.{xp_column} AS total_xp
+            FROM level_xp_events e
+            JOIN user_levels u
+              ON u.guild_id = e.guild_id AND u.user_id = e.user_id
+            WHERE e.guild_id = ? AND e.{xp_column} > 0
+              AND e.awarded_at >= ? AND e.awarded_at < ?
+              AND e.user_id IN (SELECT value FROM json_each(?))
+            GROUP BY e.user_id
+            ORDER BY xp DESC, e.user_id ASC LIMIT ?
+            """,
+            (
+                int(guild_id), start_utc.isoformat(), end_utc.isoformat(),
+                eligible, limit,
+            ),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def claim_level_periodic_top_run(
+    guild_id: int, period: str, period_key: str,
+) -> bool:
+    if period not in {"daily", "weekly", "monthly"}:
+        raise ValueError("invalid periodic TOP period")
+    async with connect(aiosqlite.Row) as db:
+        cursor = await db.execute(
+            """
+            INSERT OR IGNORE INTO level_periodic_top_runs
+                (guild_id, period, period_key, claimed_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                int(guild_id), period, str(period_key),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        await db.commit()
+        return cursor.rowcount == 1
+
+
+async def complete_level_periodic_top_run(
+    guild_id: int, period: str, period_key: str,
+) -> None:
+    async with connect() as db:
+        await db.execute(
+            """
+            UPDATE level_periodic_top_runs SET completed_at = ?
+            WHERE guild_id = ? AND period = ? AND period_key = ?
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                int(guild_id), period, str(period_key),
+            ),
+        )
+        await db.commit()
 
 
 # -------------------------------------------------------------
