@@ -243,7 +243,7 @@ class RankCommands(commands.Cog):
             values = {
                 "user": target.display_name,
                 "username": target.name,
-                "mention": target.mention,
+                "mention": getattr(target, "mention", f"<@{target.id}>"),
                 "level": row["text_level"],
                 "old_level": row["text_level"],
                 "xp": row["text_xp"],
