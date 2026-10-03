@@ -13,7 +13,7 @@ import database
 from cogs.card_generator import generate_rank_card
 from cogs.utilities import ShortcutInteraction
 from interaction_runtime import send_interaction_message
-from level_progression import xp_required
+from level_progression import text_progress, xp_required
 
 logger = logging.getLogger("PrimeRankCommands")
 RANK_ALIASES = ("level", "lvl", "لفل", "رانك")
@@ -33,17 +33,25 @@ class CommandInteraction:
 
 
 class LeaderboardView(discord.ui.View):
-    def __init__(self, cog, owner_id, guild_id, mode):
+    def __init__(self, cog, owner_id, guild_id, mode, period):
         super().__init__(timeout=120)
         self.cog, self.owner_id, self.guild_id = cog, owner_id, guild_id
         self.message = None
         self.busy = False
-        self.set_mode(mode)
+        self.mode, self.period = mode, period
+        self.set_selection()
 
-    def set_mode(self, mode):
+    def set_selection(self):
         for child in self.children:
-            child.style = (discord.ButtonStyle.primary
-                           if child.label.casefold() == mode else discord.ButtonStyle.secondary)
+            selected = child.label.casefold() == self.period
+            if child.label.casefold() == "all":
+                selected = self.period == "all_time"
+            if child.label.casefold() in {"text", "voice"}:
+                selected = child.label.casefold() == self.mode
+            child.style = (
+                discord.ButtonStyle.primary if selected
+                else discord.ButtonStyle.secondary
+            )
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.owner_id:
@@ -52,7 +60,7 @@ class LeaderboardView(discord.ui.View):
             return False
         return True
 
-    async def switch(self, interaction, mode):
+    async def switch(self, interaction, *, mode=None, period=None):
         try:
             guild = self.cog.guild_for(interaction)
             if guild.id != self.guild_id:
@@ -71,9 +79,14 @@ class LeaderboardView(discord.ui.View):
                     if not await utilities.app_command_interceptor(CommandInteraction(interaction, command)):
                         return
                 settings = await self.cog.settings_for(interaction, "top")
-                embed = await self.cog.leaderboard_embed(guild, mode, settings)
-                self.set_mode(mode)
-                await interaction.message.edit(embed=embed, view=self)
+                next_mode = mode or self.mode
+                next_period = period or self.period
+                embeds = await self.cog.leaderboard_embeds(
+                    guild, next_mode, next_period, settings
+                )
+                self.mode, self.period = next_mode, next_period
+                self.set_selection()
+                await interaction.message.edit(embeds=embeds, view=self)
             finally:
                 self.busy = False
         except RankUnavailable as error:
@@ -83,13 +96,29 @@ class LeaderboardView(discord.ui.View):
             await send_interaction_message(
                 interaction, "تعذر تحديث المتصدرين الآن؛ حاول مجدداً لاحقاً.", ephemeral=True)
 
-    @discord.ui.button(label="TEXT", style=discord.ButtonStyle.primary)
-    async def text_button(self, interaction, button):
-        await self.switch(interaction, "text")
+    @discord.ui.button(label="DAILY", style=discord.ButtonStyle.primary, row=0)
+    async def daily_button(self, interaction, button):
+        await self.switch(interaction, period="daily")
 
-    @discord.ui.button(label="VOICE", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="WEEKLY", style=discord.ButtonStyle.secondary, row=0)
+    async def weekly_button(self, interaction, button):
+        await self.switch(interaction, period="weekly")
+
+    @discord.ui.button(label="MONTHLY", style=discord.ButtonStyle.secondary, row=0)
+    async def monthly_button(self, interaction, button):
+        await self.switch(interaction, period="monthly")
+
+    @discord.ui.button(label="ALL", style=discord.ButtonStyle.secondary, row=0)
+    async def all_time_button(self, interaction, button):
+        await self.switch(interaction, period="all_time")
+
+    @discord.ui.button(label="TEXT", style=discord.ButtonStyle.primary, row=1)
+    async def text_button(self, interaction, button):
+        await self.switch(interaction, mode="text")
+
+    @discord.ui.button(label="VOICE", style=discord.ButtonStyle.secondary, row=1)
     async def voice_button(self, interaction, button):
-        await self.switch(interaction, "voice")
+        await self.switch(interaction, mode="voice")
 
     async def on_timeout(self):
         for child in self.children:
@@ -208,30 +237,72 @@ class RankCommands(commands.Cog):
             await send_interaction_message(
                 interaction, "تعذر إنشاء بطاقة PRIME الآن؛ حاول مجدداً لاحقاً.", ephemeral=True)
 
-    async def leaderboard_embed(self, guild, mode, settings):
+    async def leaderboard_embeds(self, guild, mode, period, settings):
         if mode not in {"text", "voice"}:
             raise RankUnavailable("اختر TEXT أو VOICE.")
+        if period not in {"daily", "weekly", "monthly", "all_time"}:
+            raise RankUnavailable("اختر DAILY أو WEEKLY أو MONTHLY أو ALL.")
         humans = await self.human_members(guild)
-        rows = await database.get_command_level_leaderboard(guild.id, list(humans), mode)
-        try:
-            color = discord.Color.from_str(settings.get("bot_embed_color", "#6366F1"))
-        except (ValueError, TypeError):
-            color = discord.Color(0x6366F1)
-        embed = discord.Embed(title=f"PRIME • {mode.upper()} TOP 10", color=color)
-        lines = []
-        for position, row in enumerate(rows, 1):
+        rows = await database.get_command_level_leaderboard(
+            guild.id, list(humans), mode, period
+        )
+        palette = (0x12D6FF, 0x4263EB, 0x6366F1, 0x8B5CF6)
+        period_label = "ALL" if period == "all_time" else period.upper()
+        embeds = []
+        eligible_rows = []
+        for row in rows:
             member = guild.get_member(row["user_id"])
-            if member is None or member.bot:
-                # A member can leave while the query is running.
-                continue
+            if member is not None and not member.bot:
+                eligible_rows.append((member, row))
+        for position, (member, row) in enumerate(eligible_rows, 1):
             name = discord.utils.escape_mentions(
-                discord.utils.escape_markdown(member.display_name[:50])).replace("\n", " ")
-            lines.append(f"**#{position}** · {name} — **Lv {row['level']:,}** · **{row['xp']:,} XP**")
-        embed.description = "\n".join(lines) or "لا يوجد أعضاء لديهم XP في هذه القائمة بعد."
-        embed.set_footer(text="أعلى 10 أعضاء • البوتات والأعضاء المغادرون مستبعدون • ترتيب التعادل حسب ID")
-        return embed
+                discord.utils.escape_markdown(member.display_name[:50])
+            ).replace("\n", " ")
+            total_xp = max(0, int(row.get("total_xp") or 0))
+            progression = text_progress(total_xp)
+            current_level = int(row.get("level") or progression["level"])
+            required = int(progression["xp_required"])
+            percent = min(100, max(0, int(progression["percentage"])))
+            period_xp = max(0, int(row.get("xp") or 0))
+            if period == "all_time":
+                xp_line = f"إجمالي XP: **{total_xp:,}**"
+            else:
+                xp_line = (
+                    f"XP الفترة: **+{period_xp:,}** · "
+                    f"الإجمالي: **{total_xp:,}**"
+                )
+            avatar = getattr(member, "display_avatar", None)
+            avatar_url = getattr(avatar, "url", None)
+            embed = discord.Embed(
+                title=f"🏆 PRIME TOP · {period_label}" if position == 1 else None,
+                description=(
+                    f"المستوى **{current_level:,}** · {xp_line}\n"
+                    f"التقدم **{progression['progress_xp']:,}/{required:,} XP** "
+                    f"({percent}%)"
+                ),
+                color=palette[(position - 1) % len(palette)],
+            )
+            embed.set_author(
+                name=f"#{position} · {name}",
+                icon_url=str(avatar_url) if avatar_url else None,
+            )
+            if position == 1:
+                embed.add_field(
+                    name=f"{mode.upper()} · أعلى 10",
+                    value="ترتيب الفترة حسب XP المكتسب، دون تصفير XP الدائم.",
+                    inline=False,
+                )
+                embed.set_footer(text="حدود الفترات بتوقيت UTC • البوتات والأعضاء المغادرون مستبعدون")
+            embeds.append(embed)
+        if not embeds:
+            embeds.append(discord.Embed(
+                title=f"🏆 PRIME TOP · {period_label}",
+                description="لا يوجد أعضاء لديهم XP في هذه القائمة بعد.",
+                color=0x12D6FF,
+            ))
+        return embeds
 
-    async def show_top(self, interaction, mode="text"):
+    async def show_top(self, interaction, mode="text", period="daily"):
         view = None
         try:
             guild = self.guild_for(interaction)
@@ -240,10 +311,13 @@ class RankCommands(commands.Cog):
                 raise RankUnavailable(f"يرجى الانتظار {retry} ثانية قبل إعادة استخدام /top.")
             await self.defer(interaction)
             settings = await self.settings_for(interaction, "top")
-            embed = await self.leaderboard_embed(guild, mode, settings)
-            view = LeaderboardView(self, interaction.user.id, guild.id, mode)
+            embeds = await self.leaderboard_embeds(guild, mode, period, settings)
+            view = LeaderboardView(
+                self, interaction.user.id, guild.id, mode, period
+            )
             view.message = await send_interaction_message(
-                interaction, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+                interaction, embeds=embeds, view=view,
+                allowed_mentions=discord.AllowedMentions.none())
             if view.message is None:
                 view.stop()
         except RankUnavailable as error:
@@ -272,10 +346,32 @@ class RankCommands(commands.Cog):
 
     @app_commands.command(name="top", description="أعلى 10 أعضاء في مستويات PRIME النصية أو الصوتية")
     @app_commands.guild_only()
-    @app_commands.choices(mode=[app_commands.Choice(name="TEXT", value="text"),
-                               app_commands.Choice(name="VOICE", value="voice")])
-    async def top_slash(self, interaction: discord.Interaction, mode: str = "text"):
-        await self.show_top(interaction, mode)
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="TEXT", value="text"),
+            app_commands.Choice(name="VOICE", value="voice"),
+        ],
+        period=[
+            app_commands.Choice(name="DAILY", value="daily"),
+            app_commands.Choice(name="WEEKLY", value="weekly"),
+            app_commands.Choice(name="MONTHLY", value="monthly"),
+            app_commands.Choice(name="ALL TIME", value="all_time"),
+        ],
+    )
+    async def top_slash(
+        self,
+        interaction: discord.Interaction,
+        mode: str = "text",
+        period: str = "daily",
+    ):
+        await self.show_top(interaction, mode, period)
+
+    @commands.command(name="top", aliases=["توب", "متصدرين"], ignore_extra=True)
+    @commands.guild_only()
+    async def top_prefix(self, ctx: commands.Context):
+        await self.show_top(
+            ShortcutInteraction(ctx.message, self.top_slash), "text", "daily"
+        )
 
     async def cog_command_error(self, ctx, error):
         if isinstance(error, commands.MemberNotFound):

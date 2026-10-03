@@ -202,6 +202,13 @@ class Card:
         self.text((x+18, y+13), label.upper(), 11, MUTED, width=right-x-30)
         self.text((x+18, y+35), value, 22, bold=True, width=right-x-30)
 
+    def compact_stat(self, box, label, value):
+        self.panel(box, radius=12, fill="#111522", outline="#273044")
+        x, y, right, _ = box
+        width = right - x - 18
+        self.text((x+9, y+7), label.upper(), 8, MUTED, width=width)
+        self.text((x+9, y+27), value, 13, WHITE, True, width=width)
+
 
 def _render(name, handle, level, xp, required, rank, total, settings, avatar, background):
     layout = settings.get("card_layout", "vertical")
@@ -234,7 +241,7 @@ def _render(name, handle, level, xp, required, rank, total, settings, avatar, ba
         card.text((280, 372), name, 30, bold=True, width=475, center=True)
         card.text((280, 417), handle, 15, MUTED, width=465, center=True)
         card.panel((32, 467, 528, 635), radius=24)
-        card.text((56, 488), "TEXT LEVEL", 12, MUTED)
+        card.text((56, 488), "LEVEL", 12, MUTED)
         card.text((55, 510), compact(level), 48, bold=True)
         card.text((468, 531), f"{progress:.0%}", 22, color, True, center=True)
         card.bar((56, 579, 448, 12), progress, animated)
@@ -260,26 +267,35 @@ def _render(name, handle, level, xp, required, rank, total, settings, avatar, ba
                 x = 34 + index*317
                 card.stat((x, 304, x+298, 394), *pair)
     elif layout == "minimal":
-        card.avatar((36, 48), 128, avatar)
-        card.text((195, 33), name, 26, bold=True, width=445)
-        card.text((195, 75), f"LEVEL {compact(level)}  ·  {rank_text} OF {compact(total)}", 14, color, width=650)
-        card.text((195, 118), xp_text, 17, MUTED, width=530)
-        card.text((830, 116), f"{progress:.0%}", 17, color, center=True)
-        card.bar((196, 164, 655, 10), progress, animated)
-        card.text((196, 191), "PRIME / LEVELS", 9, MUTED)
+        card.avatar((28, 45), 100, avatar)
+        card.text((150, 25), name, 23, bold=True, width=690)
+        card.text((150, 57), handle, 12, MUTED, width=500)
+        card.text((150, 80), f"LEVEL {compact(level)}  ·  RANK {rank_text} OF {compact(total)}",
+                  12, color, width=650)
+        card.text((150, 105), xp_text, 13, MUTED, width=550)
+        card.text((846, 105), f"{progress:.0%}", 13, color, True, center=True, width=70)
+        card.bar((150, 130, 675, 9), progress, animated)
+        if show_stats:
+            card.compact_stat((24, 157, 294, 218), *stats[0])
+            card.compact_stat((315, 157, 585, 218), *stats[1])
+            card.compact_stat((606, 157, 876, 218), *stats[2])
     elif layout == "ring":
         card.text((310, 31), "PRIME / PROGRESSION", 12, color, True, center=True)
-        card.avatar((185, 94), 250, avatar, progress)
-        card.panel((246, 320, 374, 369), radius=20, outline=color)
-        card.text((310, 330), f"LVL {compact(level)}", 22, bold=True, center=True, width=115)
-        card.text((310, 401), name, 30, bold=True, width=530, center=True)
-        card.text((310, 447), handle, 15, MUTED, center=True, width=530)
-        card.text((310, 486), f"{progress:.0%}", 35, color, True, center=True)
-        card.text((310, 539), xp_text, 17, MUTED, center=True, width=510)
-        card.panel((106, 591, 514, 648), radius=18)
-        card.text((310, 608), f"RANK {rank_text}  /  {compact(total)} MEMBERS", 16, center=True, width=380)
+        card.avatar((190, 65), 240, avatar, progress)
+        card.panel((246, 290, 374, 339), radius=20, outline=color)
+        card.text((310, 300), f"LVL {compact(level)}", 22, bold=True, center=True, width=115)
+        card.text((310, 369), name, 28, bold=True, width=530, center=True)
+        card.text((310, 408), handle, 14, MUTED, center=True, width=530)
+        card.text((310, 447), f"{progress:.0%}", 32, color, True, center=True)
+        card.text((310, 489), xp_text, 15, MUTED, center=True, width=510)
+        card.text((310, 531), f"RANK {rank_text}  /  {compact(total)} MEMBERS",
+                  13, WHITE, True, center=True, width=540)
+        if show_stats:
+            card.compact_stat((18, 576, 205, 656), *stats[0])
+            card.compact_stat((216, 576, 403, 656), *stats[1])
+            card.compact_stat((414, 576, 601, 656), *stats[2])
     else:
-        card.panel((30, 30, 970, 310), radius=25, fill="#101019")
+        card.panel((30, 30, 970, 260), radius=25, fill="#101019")
         card.text((260, 53), "PRIME / RANK CARD", 11, color, True)
         card.avatar((58, 85), 165, avatar)
         card.text((260, 89), name, 31, bold=True, width=490)
@@ -289,8 +305,12 @@ def _render(name, handle, level, xp, required, rank, total, settings, avatar, ba
         card.line((261, 174, 938, 174))
         card.text((261, 194), f"Level {compact(level)}", 23, bold=True)
         card.text((670, 199), xp_text, 16, MUTED, width=265)
-        card.bar((262, 251, 675, 17), progress, animated)
-        card.text((261, 282), f"{progress:.0%} TO NEXT LEVEL", 10, MUTED)
+        card.bar((262, 225, 675, 15), progress, animated)
+        card.text((261, 244), f"{progress:.0%} TO NEXT LEVEL", 9, MUTED)
+        if show_stats:
+            card.compact_stat((42, 270, 336, 328), *stats[0])
+            card.compact_stat((353, 270, 647, 328), *stats[1])
+            card.compact_stat((664, 270, 958, 328), *stats[2])
     result = io.BytesIO()
     card.image.resize(LAYOUTS[layout], Image.Resampling.LANCZOS).save(result, format="PNG")
     result.seek(0)
