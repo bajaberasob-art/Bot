@@ -87,7 +87,18 @@ class LeaderboardView(discord.ui.View):
                 )
                 self.mode, self.period = next_mode, next_period
                 self.set_selection()
-                await interaction.message.edit(embeds=embeds, view=self)
+                top_config = controls_with_defaults(
+                    settings.get("prime_controls"), settings,
+                )["top"]
+                if top_config["embed"]:
+                    await interaction.message.edit(
+                        content=None, embeds=embeds, view=self,
+                    )
+                else:
+                    await interaction.message.edit(
+                        content=self.cog.leaderboard_content(embeds),
+                        embeds=[], view=self,
+                    )
             finally:
                 self.busy = False
         except RankUnavailable as error:
@@ -223,10 +234,12 @@ class RankCommands(commands.Cog):
             card_settings = dict(settings)
             for key in ("total_messages", "total_voice_seconds", "current_streak"):
                 card_settings[key] = row.get(key, 0)
-            image = await generate_rank_card(
-                target, row["text_level"], row["text_xp"], xp_required(row["text_level"]),
-                row["rank"], row["total_members"], card_settings)
-            attachment = discord.File(image, filename="prime-rank.png") if rank_config["showCard"] else None
+            image = None
+            if rank_config["showCard"]:
+                image = await generate_rank_card(
+                    target, row["text_level"], row["text_xp"], xp_required(row["text_level"]),
+                    row["rank"], row["total_members"], card_settings)
+            attachment = discord.File(image, filename="prime-rank.png") if image else None
             values = {
                 "user": target.display_name,
                 "username": target.name,
@@ -354,7 +367,16 @@ class RankCommands(commands.Cog):
             ))
         return embeds
 
-    async def show_top(self, interaction, mode="text", period="daily"):
+    @staticmethod
+    def leaderboard_content(embeds):
+        lines = []
+        for embed in embeds:
+            name = embed.author.name if embed.author else "PRIME TOP"
+            description = embed.description or ""
+            lines.append(f"**{name}**\n{description}")
+        return "\n\n".join(lines)[:1900]
+
+    async def show_top(self, interaction, mode=None, period="daily"):
         view = None
         try:
             guild = self.guild_for(interaction)
@@ -363,13 +385,23 @@ class RankCommands(commands.Cog):
                 raise RankUnavailable(f"يرجى الانتظار {retry} ثانية قبل إعادة استخدام /top.")
             await self.defer(interaction)
             settings = await self.settings_for(interaction, "top")
+            top_config = controls_with_defaults(
+                settings.get("prime_controls"), settings,
+            )["top"]
+            mode = mode or top_config["defaultMode"]
             embeds = await self.leaderboard_embeds(guild, mode, period, settings)
             view = LeaderboardView(
                 self, interaction.user.id, guild.id, mode, period
             )
-            view.message = await send_interaction_message(
-                interaction, embeds=embeds, view=view,
-                allowed_mentions=discord.AllowedMentions.none())
+            payload = {
+                "view": view,
+                "allowed_mentions": discord.AllowedMentions.none(),
+            }
+            if top_config["embed"]:
+                payload["embeds"] = embeds
+            else:
+                payload["content"] = self.leaderboard_content(embeds)
+            view.message = await send_interaction_message(interaction, **payload)
             if view.message is None:
                 view.stop()
         except RankUnavailable as error:
@@ -413,7 +445,7 @@ class RankCommands(commands.Cog):
     async def top_slash(
         self,
         interaction: discord.Interaction,
-        mode: str = "text",
+        mode: str | None = None,
         period: str = "daily",
     ):
         await self.show_top(interaction, mode, period)
@@ -422,7 +454,7 @@ class RankCommands(commands.Cog):
     @commands.guild_only()
     async def top_prefix(self, ctx: commands.Context):
         await self.show_top(
-            ShortcutInteraction(ctx.message, self.top_slash), "text", "daily"
+            ShortcutInteraction(ctx.message, self.top_slash), None, "daily"
         )
 
     async def cog_command_error(self, ctx, error):
