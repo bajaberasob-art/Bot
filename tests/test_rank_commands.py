@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -16,6 +17,7 @@ from PIL import Image
 import database
 from cogs.rank_commands import LeaderboardView, RankCommands, publish_rank_commands
 from cogs import card_generator
+from cogs.levels import Levels
 from cogs.utilities import Utilities, CommandIntercepted
 from level_progression import level_from_xp, xp_required
 
@@ -228,9 +230,14 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_top_text_and_voice_sorted_top_ten_excludes_bots_and_departed(self):
         self.members[2].bot = True
+        now = datetime.now(timezone.utc)
         for uid in range(1, 21):
-            await self.seed(uid, text=uid*10, voice=(21-uid)*20)
-        await self.seed(999, text=100000, voice=100000)  # Departed member.
+            await database.award_text_xp(888, uid, uid * 10, now, cooldown_seconds=0)
+            await database.award_voice_xp(
+                888, uid, (21 - uid) * 20, 0, 0, awarded_at=now,
+            )
+        await database.award_text_xp(888, 999, 100000, now, cooldown_seconds=0)
+        await database.award_voice_xp(888, 999, 100000, 0, 0, awarded_at=now)
         text_embeds = self.embeds(await self.top(self.interaction(), "text"))
         self.assertEqual(len(text_embeds), 10)
         names = [embed.author.name.rsplit("· ", 1)[-1] for embed in text_embeds]
@@ -348,6 +355,9 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_buttons_switch_text_voice_owner_only_and_timeout(self):
         await self.seed(1, text=155, voice=1000)
+        now = datetime.now(timezone.utc)
+        await database.award_text_xp(888, 1, 155, now, cooldown_seconds=0)
+        await database.award_voice_xp(888, 1, 1000, 0, 0, awarded_at=now)
         reply = await self.top(self.interaction())
         view = reply["view"]
         self.assertEqual(view.period, "daily")
@@ -398,14 +408,23 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         })
         self.guild.get_channel = lambda channel_id: self.channel if channel_id == 456 else None
 
-        await self.cog.on_lona_text_level_up(
-            SimpleNamespace(guild=self.guild, member=self.members[1])
-        )
-        await self.cog.on_lona_voice_level_up(
-            SimpleNamespace(guild=self.guild, member=self.members[1])
-        )
+        async def fake_level_card(*args):
+            self.generated.append(args)
+            result = io.BytesIO()
+            Image.new("RGB", (8, 8)).save(result, "PNG")
+            result.seek(0)
+            return result
 
-        self.assertEqual(self.generator.await_count, 2)
+        levels = Levels(self.bot)
+        with patch("cogs.levels.generate_rank_card", side_effect=fake_level_card) as generator:
+            await levels.on_lona_text_level_up(
+                SimpleNamespace(guild=self.guild, member=self.members[1])
+            )
+            await levels.on_lona_voice_level_up(
+                SimpleNamespace(guild=self.guild, member=self.members[1])
+            )
+
+        self.assertEqual(generator.await_count, 2)
         for args in self.generated:
             card_settings = args[6]
             self.assertTrue(card_settings["card_show_stats"])

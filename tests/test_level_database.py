@@ -120,9 +120,9 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
             (10, datetime(2026, 10, 2, 12, tzinfo=utc), 20),
             (10, datetime(2026, 10, 3, 12, tzinfo=utc), 15),
             (20, datetime(2026, 9, 29, 12, tzinfo=utc), 50),
-            (20, datetime(2026, 10, 3, 12, tzinfo=utc), 10),
             # This offset timestamp is October 2 in UTC, not October 3.
             (20, datetime.fromisoformat("2026-10-03T00:30:00+03:00"), 7),
+            (20, datetime(2026, 10, 3, 12, tzinfo=utc), 10),
         )
         for user_id, awarded_at, amount in awards:
             await database.award_text_xp(
