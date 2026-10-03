@@ -555,7 +555,8 @@ async def init_db() -> None:
                     levelup_voice_template TEXT DEFAULT 'مبروك {user} ارتقيت للمستوى الصوتي {level}!',
                     overtake_alert_enabled BOOLEAN DEFAULT 1,
                     overtake_template TEXT DEFAULT '⚡ {passer} تخطى {passed} في توب السيرفر وأصبح المركز #{rank}!',
-                    bot_embed_color TEXT DEFAULT '#6366F1'
+                    bot_embed_color TEXT DEFAULT '#6366F1',
+                    prime_controls TEXT NOT NULL DEFAULT '{}'
                 );
             """)
             async with db.execute("PRAGMA table_info(level_settings)") as cur:
@@ -580,6 +581,7 @@ async def init_db() -> None:
                 "milestone_channel_id": "INTEGER DEFAULT NULL",
                 "milestone_template": "TEXT DEFAULT '{user} حقق إنجازاً جديداً عند المستوى {level}.'",
                 "overtake_channel_id": "INTEGER DEFAULT NULL",
+                "prime_controls": "TEXT NOT NULL DEFAULT '{}'",
             }
             for column, declaration in level_additive_columns.items():
                 if column not in level_columns:
@@ -619,6 +621,27 @@ async def init_db() -> None:
                     text_xp INTEGER NOT NULL DEFAULT 0 CHECK (text_xp >= 0),
                     voice_xp INTEGER NOT NULL DEFAULT 0 CHECK (voice_xp >= 0),
                     PRIMARY KEY (guild_id, user_id, day_utc)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_xp_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    awarded_at TEXT NOT NULL,
+                    text_xp INTEGER NOT NULL DEFAULT 0 CHECK (text_xp >= 0),
+                    voice_xp INTEGER NOT NULL DEFAULT 0 CHECK (voice_xp >= 0),
+                    CHECK (text_xp > 0 OR voice_xp > 0)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_periodic_top_runs (
+                    guild_id INTEGER NOT NULL,
+                    period TEXT NOT NULL CHECK (period IN ('daily', 'weekly', 'monthly')),
+                    period_key TEXT NOT NULL,
+                    claimed_at TEXT NOT NULL,
+                    completed_at TEXT DEFAULT NULL,
+                    PRIMARY KEY (guild_id, period, period_key)
                 );
             """)
             await db.execute("""
@@ -710,6 +733,10 @@ async def init_db() -> None:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_level_xp_daily_period "
                 "ON level_xp_daily (guild_id, day_utc, user_id);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_level_xp_events_period "
+                "ON level_xp_events (guild_id, awarded_at, user_id);"
             )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_level_role_rewards_guild "
@@ -1828,6 +1855,7 @@ _LEVEL_SETTINGS_JSON_FIELDS = {
     "reaction_allowed_channels",
     "text_allowed_channels",
     "timed_xp_boosts",
+    "prime_controls",
 }
 _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "is_enabled",
@@ -1895,6 +1923,7 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "milestone_channel_id",
     "milestone_template",
     "bot_embed_color",
+    "prime_controls",
 }
 _USER_LEVEL_MUTABLE_FIELDS = {
     "text_xp",
@@ -1915,7 +1944,8 @@ def _decode_level_settings(row: Any) -> Optional[Dict[str, Any]]:
     result = dict(row)
     for key in _LEVEL_SETTINGS_JSON_FIELDS:
         value = result.get(key)
-        result[key] = json.loads(value or "[]")
+        default = "{}" if key == "prime_controls" else "[]"
+        result[key] = json.loads(value or default)
     return result
 
 
@@ -1924,6 +1954,10 @@ def _encode_level_setting(key: str, value: Any) -> Any:
         return value
     if isinstance(value, str):
         value = json.loads(value)
+    if key == "prime_controls":
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be a JSON object")
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     if not isinstance(value, list):
         raise ValueError(f"{key} must be a JSON array")
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
