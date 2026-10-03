@@ -139,6 +139,22 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(missing.getvalue(), present.getvalue())
         self.validate(present, "stats")
 
+    async def test_level_up_stats_render_in_every_card_layout(self):
+        values = {
+            "total_messages": 29059,
+            "total_voice_seconds": 5760,
+            "current_streak": 11,
+        }
+        for layout in cards.LAYOUTS:
+            with_stats = await self.render({
+                "card_layout": layout, "card_show_stats": True, **values,
+            })
+            hidden_stats = await self.render({
+                "card_layout": layout, "card_show_stats": False, **values,
+            })
+            self.assertNotEqual(with_stats.getvalue(), hidden_stats.getvalue(), layout)
+            self.validate(with_stats, layout)
+
     async def test_accent_colors_and_invalid_color_fallback(self):
         values = []
         for color in ("#f2aacb", "#6366f1", "#13ddb8", "not-a-color"):
