@@ -7481,7 +7481,7 @@
             onClick: async () => {
               await navigator.clipboard?.writeText(token);
               toast(`تم نسخ ${token}`, "info", 1600);
-            } })),
+            } }))),
         advanced,
         el("div", { class: "leveling-msg-preview", "data-msg-key": key }),
       );
