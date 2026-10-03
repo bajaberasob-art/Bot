@@ -6923,6 +6923,36 @@
           el("div", {}, el("div", { class: "leveling-discord-head" }, el("b", { text: "PRIME" }), el("span", { text: "BOT" }), el("small", { text: ch ? `#${ch.name}` : "القناة الحالية" })),
             el("p", { text: m.on ? text : "هذا الإشعار معطل حالياً." }))));
     });
+    document.querySelectorAll(".leveling-prime-preview").forEach((box) => {
+      const kind = box.dataset.preview;
+      const cfg = d.prime || {};
+      let title = "معاينة محلية";
+      let body = "لن تُرسل هذه المعاينة إلى Discord.";
+      if (kind === "levelup") {
+        title = cfg.levelup?.embedTitle || "Level Up";
+        body = String(d.messages?.levelup?.tpl || "")
+          .replace(/\{(\w+)\}/g, (all, key) => key in vars ? vars[key] : all);
+      } else if (kind === "top") {
+        title = cfg.top?.embedTitle || "PRIME TOP";
+        body = cfg.top?.embedMessage || "";
+      } else if (kind.startsWith("periodic-")) {
+        const period = kind.slice("periodic-".length);
+        const item = cfg.periodic?.[period] || {};
+        title = item.embedTitle || `PRIME ${period.toUpperCase()}`;
+        body = String(item.message || "").replace(/\{(\w+)\}/g, (all, key) => (
+          key === "message" ? all : key in vars ? vars[key] : all
+        ));
+      }
+      box.replaceChildren(
+        el("small", { class: "leveling-mock-tag", text: "معاينة محلية فقط — لم تُرسل" }),
+        el("div", { class: "leveling-discord" },
+          avatar(state.session?.avatar, "P"),
+          el("div", {}, el("div", { class: "leveling-discord-head" },
+            el("b", { text: "PRIME" }), el("span", { text: "BOT" })),
+          el("strong", { text: title }), el("p", { text: body })),
+        ),
+      );
+    });
   }
   function lvTabGeneral() {
     const st = state.stats || {};

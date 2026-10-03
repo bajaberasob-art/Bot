@@ -305,7 +305,7 @@ class Levels(EngagementXP, commands.Cog):
     def emit_milestone(self, event: TextMilestone):
         self.bot.dispatch("lona_text_milestone", event)
 
-    async def _send_leveling_notice(self, guild, channel_id, template, values):
+    async def _send_leveling_notice(self, guild, channel_id, template, values, settings=None, kind=None, users=None):
         if not channel_id:
             return
         channel = guild.get_channel(int(channel_id))
@@ -315,17 +315,44 @@ class Levels(EngagementXP, commands.Cog):
             logger.warning("Leveling announcement channel unavailable guild=%s channel=%s",
                            guild.id, channel_id)
             return
-        try:
-            content = str(template or "").format_map(values).strip()
-        except (KeyError, ValueError, IndexError):
-            logger.warning("Invalid leveling announcement template guild=%s", guild.id)
-            return
+        content = render_template(template, values)
         if not content:
             return
+        config = controls_with_defaults(
+            (settings or {}).get("prime_controls"), settings or {},
+        )["notifications"].get(kind, {}) if kind in {"milestone", "overtake"} else {}
+        role = None
+        try:
+            if config.get("mentionRole"):
+                role = guild.get_role(int(config["mentionRole"]))
+        except (TypeError, ValueError):
+            role = None
+        if role:
+            content = f"{role.mention} {content}"
+        embed = None
+        if config.get("sendAsEmbed"):
+            try:
+                color = int(str(config.get("embedColor") or "#12D6FF").lstrip("#"), 16)
+            except (TypeError, ValueError):
+                color = 0x12D6FF
+            embed = discord.Embed(
+                title=str(config.get("embedTitle") or "PRIME")[:256],
+                description=content[:4000],
+                color=discord.Color(color),
+            )
+            if config.get("embedFooter"):
+                embed.set_footer(text=str(config["embedFooter"])[:2048])
+            if config.get("timestamp"):
+                embed.timestamp = datetime.now(timezone.utc)
         try:
             await channel.send(
-                content[:1900],
-                allowed_mentions=discord.AllowedMentions.none(),
+                content=(content[:1900] if not embed or role else None),
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=(users or []) if config.get("mentionUser", True) else [],
+                    roles=[role] if role else [],
+                    everyone=False, replied_user=False,
+                ),
             )
         except discord.HTTPException:
             logger.warning("Cannot send leveling announcement guild=%s channel=%s",
@@ -499,7 +526,10 @@ class Levels(EngagementXP, commands.Cog):
             return
         await self._send_leveling_notice(
             event.guild, settings.get("milestone_channel_id"), settings.get("milestone_template"),
-            {"user": event.member.mention, "level": event.current_level},
+            {"user": event.member.mention, "mention": event.member.mention,
+             "username": event.member.display_name, "level": event.current_level,
+             "server": event.guild.name},
+            settings, "milestone", [event.member],
         )
 
     @commands.Cog.listener()
@@ -510,7 +540,10 @@ class Levels(EngagementXP, commands.Cog):
         await self._send_leveling_notice(
             event.guild, settings.get("overtake_channel_id"), settings.get("overtake_template"),
             {"passer": event.passer.mention, "passed": event.passed.mention,
-             "rank": event.new_rank},
+             "user": event.passer.mention, "mention": event.passer.mention,
+             "username": event.passer.display_name, "rank": event.new_rank,
+             "server": event.guild.name},
+            settings, "overtake", [event.passer, event.passed],
         )
 
     async def apply_text_rewards(self, member: discord.Member, level: int, settings: dict):
