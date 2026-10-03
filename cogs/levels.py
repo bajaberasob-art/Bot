@@ -998,21 +998,20 @@ class Levels(EngagementXP, commands.Cog):
                         schedule_date = local.date()
                         if period == "daily":
                             if current < target:
-                                schedule_date -= timedelta(days=1)
+                                continue
                         elif period == "weekly":
                             weekday = int(config.get("weekday", 4))
                             schedule_date -= timedelta(days=(local.weekday() - weekday) % 7)
                             if schedule_date == local.date() and current < target:
-                                schedule_date -= timedelta(days=7)
+                                continue
                         else:
                             scheduled = local.date().replace(day=int(config.get("dayOfMonth", 1)))
-                            if local.date() < scheduled or (
-                                local.date() == scheduled and current < target
-                            ):
-                                if scheduled.month == 1:
-                                    scheduled = scheduled.replace(year=scheduled.year - 1, month=12)
-                                else:
-                                    scheduled = scheduled.replace(month=scheduled.month - 1)
+                            if local.date() < scheduled:
+                                continue
+                            if local.date() == scheduled and current < target:
+                                continue
+                            if local.date() > scheduled:
+                                pass
                             schedule_date = scheduled
                         await self._publish_periodic_top(
                             guild, period, schedule_date, config,
