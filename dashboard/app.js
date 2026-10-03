@@ -7340,6 +7340,7 @@
           lvSwitch([...key, "showXp"], "عرض XP المكتسب"),
           lvSwitch([...key, "showRank"], "عرض المركز"),
         ),
+        el("div", { class: "leveling-prime-preview", "data-preview": `periodic-${period}` }),
       );
     };
     const p = ["prime"];
@@ -7369,6 +7370,7 @@
           lvText([...p, "levelup", "embedImage"], "رابط صورة الإمبد", { dir: "ltr" }),
         ),
         lvSwitch([...p, "levelup", "timestamp"], "إضافة توقيت"),
+        el("div", { class: "leveling-prime-preview", "data-preview": "levelup" }),
       ),
       lvCard("إعدادات /top", "قائمة واحدة للنص والصوت والفترات، دون تعديل رصيد XP الدائم.",
         lvSwitch([...p, "top", "enabled"], "تفعيل /top"),
@@ -7382,6 +7384,7 @@
         lvSwitch([...p, "top", "showAvatar"], "عرض صور الأعضاء"),
         lvSwitch([...p, "top", "showProgress"], "عرض شريط التقدم"),
         lvSwitch([...p, "top", "embed"], "إرسال كـ Embed"),
+        el("div", { class: "leveling-prime-preview", "data-preview": "top" }),
       ),
       periodicPanel("daily", "TOP اليومي", {}),
       periodicPanel("weekly", "TOP الأسبوعي", {}),
