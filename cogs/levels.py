@@ -13,8 +13,9 @@ import discord
 from discord.ext import commands, tasks
 
 import database
+from cogs.card_generator import generate_rank_card
 from level_engagement import EngagementXP
-from level_progression import text_progress
+from level_progression import text_progress, xp_required
 
 logger = logging.getLogger("LonaLevels")
 MAX_MULTIPLIER = 100.0
@@ -328,16 +329,127 @@ class Levels(EngagementXP, commands.Cog):
             logger.warning("Cannot send leveling announcement guild=%s channel=%s",
                            guild.id, channel_id, exc_info=True)
 
+    async def _send_level_up_card(self, guild, member, settings, mode, template):
+        channel_id = (
+            settings.get("levelup_channel_id")
+            if mode == "text"
+            else settings.get("levelup_voice_channel_id")
+        )
+        if not channel_id or getattr(member, "bot", False):
+            return
+        channel = guild.get_channel(int(channel_id))
+        if channel is None:
+            channel = self.bot.get_channel(int(channel_id))
+        if channel is None or not callable(getattr(channel, "send", None)):
+            logger.warning(
+                "Level-up card channel unavailable guild=%s channel=%s",
+                guild.id, channel_id,
+            )
+            return
+
+        if not getattr(guild, "chunked", True):
+            try:
+                await asyncio.wait_for(guild.chunk(cache=True), timeout=15)
+            except (discord.HTTPException, asyncio.TimeoutError):
+                logger.warning("Cannot build complete level-up rank guild=%s", guild.id)
+                return
+        humans = {
+            item.id: item
+            for item in getattr(guild, "members", ())
+            if not getattr(item, "bot", False)
+        }
+        if member.id not in humans:
+            return
+
+        snapshot = await database.get_command_rank_snapshot(
+            guild.id, member.id, list(humans), mode=mode,
+        )
+        current_xp = max(0, int(snapshot.get("xp") or 0))
+        current = text_progress(current_xp)
+        level = int(current["level"])
+        rank = snapshot.get("rank")
+        total_members = int(snapshot.get("total_members") or len(humans))
+        card_settings = dict(settings)
+        card_settings.update({
+            "card_show_stats": True,
+            "total_messages": int(snapshot.get("total_messages") or 0),
+            "total_voice_seconds": int(snapshot.get("total_voice_seconds") or 0),
+            "current_streak": int(snapshot.get("current_streak") or 0),
+        })
+        image = await generate_rank_card(
+            member, level, current_xp, xp_required(level), rank,
+            total_members, card_settings,
+        )
+
+        values = {
+            "user": getattr(member, "mention", ""),
+            "level": level,
+            "server": getattr(guild, "name", "PRIME"),
+        }
+        default_description = (
+            f"مبروك {values['user']} 👑\nوصلت للمستوى {level}"
+        )
+        try:
+            description = str(template or "").format_map(values).strip()
+        except (KeyError, ValueError, IndexError, AttributeError):
+            description = default_description
+        if not description:
+            description = default_description
+
+        title = str(settings.get("levelup_title") or "🎉 ارتقاء مستوى!")[:256]
+        embed = discord.Embed(
+            title=title,
+            description=description[:4000],
+            color=discord.Color(0x12D6FF),
+        )
+        embed.set_image(url="attachment://prime-level-up.png")
+        attachment = discord.File(image, filename="prime-level-up.png")
+        try:
+            await channel.send(
+                embed=embed,
+                file=attachment,
+                allowed_mentions=discord.AllowedMentions(
+                    users=[member], roles=False, everyone=False, replied_user=False,
+                ),
+            )
+        finally:
+            attachment.close()
+            image.close()
+
     @commands.Cog.listener()
     async def on_lona_text_level_up(self, event: TextLevelUp):
         settings = await database.get_level_settings(event.guild.id)
         if not settings or not settings.get("is_enabled") or not settings.get("levelup_enabled", True):
             return
-        await self._send_leveling_notice(
-            event.guild, settings.get("levelup_channel_id"), settings.get("levelup_template"),
-            {"user": event.member.mention, "level": event.new_level,
-             "server": event.guild.name},
-        )
+        try:
+            await self._send_level_up_card(
+                event.guild, event.member, settings, "text",
+                settings.get("levelup_template"),
+            )
+        except Exception:
+            logger.exception(
+                "Text level-up card failed guild=%s member=%s",
+                event.guild.id, event.member.id,
+            )
+
+    @commands.Cog.listener()
+    async def on_lona_voice_level_up(self, event: VoiceLevelUp):
+        settings = await database.get_level_settings(event.guild.id)
+        if (
+            not settings or not settings.get("is_enabled")
+            or not settings.get("levelup_voice_enabled", True)
+        ):
+            return
+        try:
+            await self._send_level_up_card(
+                event.guild, event.member, settings, "voice",
+                settings.get("levelup_voice_template"),
+            )
+        except Exception:
+            logger.exception(
+                "Voice level-up card failed guild=%s member=%s",
+                event.guild.id, event.member.id,
+            )
 
     @commands.Cog.listener()
     async def on_lona_text_milestone(self, event: TextMilestone):
