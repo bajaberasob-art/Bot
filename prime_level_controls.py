@@ -101,11 +101,12 @@ def controls_with_defaults(value=None, settings=None):
                 else:
                     result[section].update(source)
     settings = settings or {}
-    result["levelup"]["embedTitle"] = (
-        result["levelup"].get("embedTitle")
-        or settings.get("levelup_title")
-        or "🎉 Level Up!"
-    )
+    if not isinstance(value, dict) or "channels" not in value.get("rank", {}):
+        result["rank"]["channels"] = [
+            str(item) for item in settings.get("command_rank_channels", [])
+        ]
+    if not isinstance(value, dict) or "embedTitle" not in value.get("levelup", {}):
+        result["levelup"]["embedTitle"] = settings.get("levelup_title") or "🎉 Level Up!"
     return result
 
 
