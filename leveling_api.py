@@ -5,6 +5,7 @@ import secrets
 import sqlite3
 import string
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from aiohttp import web
@@ -13,6 +14,7 @@ import database
 from cogs.card_generator import generate_rank_card
 from cogs.card_images import validate_url
 from level_progression import text_progress, xp_required
+from prime_level_controls import controls_with_defaults
 
 
 SNOWFLAKE_RE = re.compile(r"^\d{15,22}$")
@@ -120,9 +122,10 @@ def _format_template(value, key):
         parsed = string.Formatter().parse(value)
         for _, field, spec, conversion in parsed:
             if field is not None and (
-                field not in TEMPLATE_FIELDS[key] or spec or conversion
+                not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field)
+                or spec or conversion
             ):
-                raise ValueError(f"unsupported placeholder in {key} template")
+                raise ValueError(f"invalid placeholder in {key} template")
     except (ValueError, KeyError) as error:
         raise ValueError(f"invalid {key} template") from error
     return value.strip()
