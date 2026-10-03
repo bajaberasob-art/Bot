@@ -398,6 +398,8 @@ def _validate_draft(guild, draft, current_settings):
         )
     ):
         raise ValueError("rank must display a card or a non-empty custom message")
+    settings["command_rank_enabled"] = int(rank_config["enabled"])
+    settings["command_top_enabled"] = int(settings["prime_controls"]["top"]["enabled"])
     for section, keys in (
         ("levelup", ("embedImage", "embedThumbnail")),
     ):
