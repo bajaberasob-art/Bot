@@ -50,6 +50,7 @@ DASHBOARD_PORT = "1000"
 CLIENT_ID = "1550042204091715634"
 REDIRECT_URI = "https://606ace4b-80f4-436d-a16c-4b91959eec01-00-1btltnca2drwt.pike.replit.dev/api/dashboard/api/auth/callback"
 DASHBOARD_BASE_PATH = "/api/dashboard/"
+OPENROUTER_API_KEY = "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"
 
 [userenv.development]
 DASHBOARD_LOCAL_LOGIN = "1"
