@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timezone
 
 import database
 
@@ -110,6 +111,68 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await database.get_user_level(702, 1))["total_messages"], 15)
         with self.assertRaises(ValueError):
             await database.update_user_level(702, 1, {"guild_id": 999})
+
+    async def test_command_leaderboard_utc_periods_preserve_lifetime_xp(self):
+        utc = timezone.utc
+        awards = (
+            (10, datetime(2026, 9, 26, 12, tzinfo=utc), 40),
+            (10, datetime(2026, 9, 30, 12, tzinfo=utc), 30),
+            (10, datetime(2026, 10, 2, 12, tzinfo=utc), 20),
+            (10, datetime(2026, 10, 3, 12, tzinfo=utc), 15),
+            (20, datetime(2026, 9, 29, 12, tzinfo=utc), 50),
+            (20, datetime(2026, 10, 3, 12, tzinfo=utc), 10),
+            # This offset timestamp is October 2 in UTC, not October 3.
+            (20, datetime.fromisoformat("2026-10-03T00:30:00+03:00"), 7),
+        )
+        for user_id, awarded_at, amount in awards:
+            await database.award_text_xp(
+                708, user_id, amount, awarded_at, cooldown_seconds=0,
+            )
+        await database.update_user_level(708, 30, {"text_xp": 999})
+        now = datetime(2026, 10, 3, 12, tzinfo=utc)
+
+        daily = await database.get_command_level_leaderboard(
+            708, [10, 20, 30], "text", "daily", now,
+        )
+        weekly = await database.get_command_level_leaderboard(
+            708, [10, 20, 30], "text", "weekly", now,
+        )
+        monthly = await database.get_command_level_leaderboard(
+            708, [10, 20, 30], "text", "monthly", now,
+        )
+        all_time = await database.get_command_level_leaderboard(
+            708, [10, 20, 30], "text", "all_time", now,
+        )
+        self.assertEqual([(row["user_id"], row["xp"]) for row in daily], [(10, 15), (20, 10)])
+        self.assertEqual([(row["user_id"], row["xp"]) for row in weekly], [(20, 67), (10, 65)])
+        self.assertEqual([(row["user_id"], row["xp"]) for row in monthly], [(10, 35), (20, 17)])
+        self.assertEqual(
+            [(row["user_id"], row["xp"], row["total_xp"]) for row in all_time],
+            [(30, 999, 999), (10, 105, 105), (20, 67, 67)],
+        )
+        # Legacy/lifetime-only XP remains available all-time but is not
+        # fabricated into a daily period, and current-member filtering applies.
+        filtered = await database.get_command_level_leaderboard(
+            708, [10], "text", "daily", now,
+        )
+        self.assertEqual([row["user_id"] for row in filtered], [10])
+
+        await database.award_voice_xp(
+            708, 10, 6, 0, 60, awarded_at=datetime(2026, 10, 3, 12, tzinfo=utc),
+        )
+        await database.award_voice_xp(
+            708, 20, 100, 0, 60, awarded_at=datetime(2026, 9, 29, 12, tzinfo=utc),
+        )
+        await database.award_voice_xp(
+            708, 20, 9, 0, 60, awarded_at=datetime(2026, 10, 3, 12, tzinfo=utc),
+        )
+        voice_weekly = await database.get_command_level_leaderboard(
+            708, [10, 20], "voice", "weekly", now,
+        )
+        self.assertEqual(
+            [(row["user_id"], row["xp"]) for row in voice_weekly],
+            [(20, 109), (10, 6)],
+        )
 
     async def test_public_leaderboard_slug_pages_ranks_and_summary(self):
         await database.update_level_settings(

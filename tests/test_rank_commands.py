@@ -101,13 +101,17 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
     async def rank(self, interaction, member=None):
         await self.cog.rank_slash.callback(self.cog, interaction, member)
 
-    async def top(self, interaction, mode="text"):
-        await self.cog.top_slash.callback(self.cog, interaction, mode)
+    async def top(self, interaction, mode="text", period="daily"):
+        await self.cog.top_slash.callback(self.cog, interaction, mode, period)
         call = interaction.followup.send.call_args or interaction.response.send_message.call_args
         kwargs = call.kwargs
         if "view" in kwargs:
             self.views.append(kwargs["view"])
         return kwargs
+
+    @staticmethod
+    def embeds(reply):
+        return reply.get("embeds") or [reply["embed"]]
 
     async def test_rank_self_real_values_avatar_settings_and_stats(self):
         await self.seed(1, 155, total_messages=25, total_voice_seconds=3660, current_streak=3)
@@ -157,6 +161,21 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
             await rank.callback(self.cog, SimpleNamespace(message=message), None)
         self.assertEqual(len(self.generated), 5)
         self.assertEqual(self.channel.send.await_count, 5)
+
+    async def test_top_prefix_aliases_use_the_same_daily_text_flow(self):
+        top = self.bot.get_command("top")
+        for alias in ("top", "توب", "متصدرين"):
+            self.assertIs(self.bot.get_command(alias), top)
+            self.clock += 5
+            message = SimpleNamespace(
+                author=self.members[1], guild=self.guild, channel=self.channel, _state=None)
+            await top.callback(self.cog, SimpleNamespace(message=message))
+        self.assertEqual(self.channel.send.await_count, 3)
+        for call in self.channel.send.await_args_list:
+            kwargs = call.kwargs
+            self.assertIn("DAILY", kwargs["embeds"][0].title)
+            self.assertEqual(kwargs["view"].mode, "text")
+            self.assertEqual(kwargs["view"].period, "daily")
 
     async def test_rank_cooldown_shared_between_slash_and_arabic_prefix(self):
         await self.rank(self.interaction())
@@ -212,17 +231,20 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         for uid in range(1, 21):
             await self.seed(uid, text=uid*10, voice=(21-uid)*20)
         await self.seed(999, text=100000, voice=100000)  # Departed member.
-        text = (await self.top(self.interaction(), "text"))["embed"].description
-        self.assertEqual(len(text.splitlines()), 10)
-        self.assertIn("عضو 20", text.splitlines()[0])
-        self.assertNotIn("عضو 2 —", text)
+        text_embeds = self.embeds(await self.top(self.interaction(), "text"))
+        self.assertEqual(len(text_embeds), 10)
+        names = [embed.author.name.rsplit("· ", 1)[-1] for embed in text_embeds]
+        self.assertEqual(names[0], "عضو 20")
+        self.assertNotIn("عضو 2", names)
+        text = "\n".join(embed.description for embed in text_embeds)
         self.assertNotIn("100,000", text)
+        self.assertIn("DAILY", text_embeds[0].title)
         self.clock += 5
-        voice = (await self.top(self.interaction(), "voice"))["embed"].description
-        self.assertEqual(len(voice.splitlines()), 10)
-        self.assertIn("عضو 1", voice.splitlines()[0])
-        self.assertIn("Lv", voice)
-        self.assertIn("XP", voice)
+        voice_embeds = self.embeds(await self.top(self.interaction(), "voice"))
+        self.assertEqual(len(voice_embeds), 10)
+        self.assertEqual(voice_embeds[0].author.name.rsplit("· ", 1)[-1], "عضو 1")
+        self.assertIn("VOICE", voice_embeds[0].fields[0].name)
+        self.assertTrue(all("XP" in embed.description for embed in voice_embeds))
 
     async def test_ten_humans_after_many_higher_bot_records(self):
         for uid in range(1, 21):
@@ -244,7 +266,7 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_leaderboard_and_no_xp_writes(self):
         reply = await self.top(self.interaction())
-        self.assertIn("لا يوجد", reply["embed"].description)
+        self.assertIn("لا يوجد", self.embeds(reply)[0].description)
         self.assertIsNone(await database.get_user_level(888, 1))
         self.assertIsNone(await database.get_level_settings(888))
 
@@ -328,13 +350,14 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.seed(1, text=155, voice=1000)
         reply = await self.top(self.interaction())
         view = reply["view"]
+        self.assertEqual(view.period, "daily")
         other = self.interaction(2)
         self.assertFalse(await view.interaction_check(other))
         click = self.interaction()
         self.assertTrue(await view.interaction_check(click))
         await view.voice_button.callback(click)
-        embed = click.message.edit.call_args.kwargs["embed"]
-        self.assertIn("VOICE", embed.title)
+        embed = click.message.edit.call_args.kwargs["embeds"][0]
+        self.assertIn("VOICE", embed.fields[0].name)
         self.assertEqual(view.voice_button.style, discord.ButtonStyle.primary)
         too_fast = self.interaction()
         await view.text_button.callback(too_fast)
@@ -342,8 +365,60 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.clock += 2
         await view.text_button.callback(self.interaction())
         self.assertEqual(view.text_button.style, discord.ButtonStyle.primary)
+        self.clock += 2
+        weekly_click = self.interaction()
+        await view.weekly_button.callback(weekly_click)
+        self.assertEqual(view.period, "weekly")
+        self.assertEqual(view.weekly_button.style, discord.ButtonStyle.primary)
+        self.assertIn("WEEKLY", weekly_click.message.edit.call_args.kwargs["embeds"][0].title)
+        self.clock += 2
+        monthly_click = self.interaction()
+        await view.monthly_button.callback(monthly_click)
+        self.assertEqual(view.period, "monthly")
+        self.assertEqual(view.monthly_button.style, discord.ButtonStyle.primary)
+        self.clock += 2
+        all_click = self.interaction()
+        await view.all_time_button.callback(all_click)
+        self.assertEqual(view.period, "all_time")
+        self.assertEqual(view.all_time_button.style, discord.ButtonStyle.primary)
+        self.assertIn("ALL", all_click.message.edit.call_args.kwargs["embeds"][0].title)
         await view.on_timeout()
         self.assertTrue(all(child.disabled for child in view.children))
+
+    async def test_level_up_notice_attaches_stat_card_for_text_and_voice(self):
+        await self.seed(
+            1, text=155, voice=270, total_messages=41,
+            total_voice_seconds=9000, current_streak=12,
+        )
+        await database.update_level_settings(888, {
+            "levelup_channel_id": 456,
+            "levelup_voice_channel_id": 456,
+            "card_layout": "minimal",
+            "card_show_stats": False,
+        })
+        self.guild.get_channel = lambda channel_id: self.channel if channel_id == 456 else None
+
+        await self.cog.on_lona_text_level_up(
+            SimpleNamespace(guild=self.guild, member=self.members[1])
+        )
+        await self.cog.on_lona_voice_level_up(
+            SimpleNamespace(guild=self.guild, member=self.members[1])
+        )
+
+        self.assertEqual(self.generator.await_count, 2)
+        for args in self.generated:
+            card_settings = args[6]
+            self.assertTrue(card_settings["card_show_stats"])
+            self.assertEqual(
+                (card_settings["total_messages"], card_settings["total_voice_seconds"],
+                 card_settings["current_streak"]),
+                (41, 9000, 12),
+            )
+            self.assertIs(args[0], self.members[1])
+        self.assertEqual(self.channel.send.await_count, 2)
+        for call in self.channel.send.await_args_list:
+            self.assertEqual(call.kwargs["file"].filename, "prime-level-up.png")
+            self.assertEqual(call.kwargs["embed"].image.url, "attachment://prime-level-up.png")
 
     async def test_button_rechecks_disabled_top_settings_and_global_policy(self):
         reply = await self.top(self.interaction())
