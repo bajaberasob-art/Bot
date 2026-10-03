@@ -2359,6 +2359,7 @@ async def award_voice_xp(
     guild_id: int, user_id: int, voice_xp: int, text_xp: int,
     eligible_seconds: int,
     detect_overtakes: bool = False,
+    awarded_at: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Commit one batched voice credit, preserving chat counts/timestamps.
 
@@ -2372,6 +2373,7 @@ async def award_voice_xp(
         raise ValueError("voice credits cannot be negative")
     if not (voice_xp or text_xp or eligible_seconds):
         raise ValueError("empty voice credit")
+    awarded_at = _level_utc(awarded_at or datetime.now(timezone.utc))
     async with connect(aiosqlite.Row) as db:
         await db.execute("BEGIN IMMEDIATE")
         try:
@@ -2408,7 +2410,7 @@ async def award_voice_xp(
                  new_text_xp, new_text_level, eligible_seconds),
             )
             await _record_level_daily_xp(
-                db, guild_id, user_id, datetime.now(timezone.utc),
+                db, guild_id, user_id, awarded_at,
                 text_xp=text_xp, voice_xp=voice_xp,
             )
             await db.commit()
@@ -3062,24 +3064,31 @@ async def get_level_dashboard_analytics(guild_id: int) -> Dict[str, Any]:
 
 
 async def get_command_rank_snapshot(
-    guild_id: int, user_id: int, human_ids: List[int],
+    guild_id: int, user_id: int, human_ids: List[int], mode: str = "text",
 ) -> Dict[str, Any]:
     """Read-only card snapshot; rank excludes bots/departed members.
 
     Discord supplies current human IDs. One JSON parameter avoids SQLite's
     bound-parameter limit on large guilds. Legacy XP/rank helpers are unchanged.
     """
+    columns = {
+        "text": ("text_xp", "text_level"),
+        "voice": ("voice_xp", "voice_level"),
+    }
+    if mode not in columns:
+        raise ValueError("rank mode must be text or voice")
+    xp_column, level_column = columns[mode]
     eligible = json.dumps(sorted({int(value) for value in human_ids}))
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
-            """
+            f"""
             SELECT u.*,
-                CASE WHEN u.text_xp > 0 THEN 1 + (
+                CASE WHEN u.{xp_column} > 0 THEN 1 + (
                     SELECT COUNT(*) FROM user_levels p
-                    WHERE p.guild_id = u.guild_id AND p.text_xp > 0
+                    WHERE p.guild_id = u.guild_id AND p.{xp_column} > 0
                       AND p.user_id IN (SELECT value FROM json_each(?))
-                      AND (p.text_xp > u.text_xp OR
-                           (p.text_xp = u.text_xp AND p.user_id < u.user_id))
+                      AND (p.{xp_column} > u.{xp_column} OR
+                           (p.{xp_column} = u.{xp_column} AND p.user_id < u.user_id))
                 ) ELSE NULL END AS rank
             FROM user_levels u WHERE u.guild_id = ? AND u.user_id = ?
             """,
@@ -3087,35 +3096,66 @@ async def get_command_rank_snapshot(
         ) as cur:
             row = await cur.fetchone()
     result = dict(row) if row else {
-        "text_level": 0, "text_xp": 0, "rank": None, "total_messages": 0,
-        "total_voice_seconds": 0, "current_streak": 0,
+        "text_level": 0, "text_xp": 0, "voice_level": 0, "voice_xp": 0,
+        "rank": None, "total_messages": 0, "total_voice_seconds": 0,
+        "current_streak": 0,
     }
+    result["level"] = int(result.get(level_column) or 0)
+    result["xp"] = int(result.get(xp_column) or 0)
     result["total_members"] = len(set(human_ids))
     return result
 
 
 async def get_command_level_leaderboard(
     guild_id: int, human_ids: List[int], mode: str = "text",
+    period: str = "all_time", now: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
-    """Indexed, read-only top ten current humans with positive XP."""
-    queries = {
-        "text": """SELECT user_id, text_level AS level, text_xp AS xp FROM user_levels
-                   WHERE guild_id = ? AND text_xp > 0
-                     AND user_id IN (SELECT value FROM json_each(?))
-                   ORDER BY text_xp DESC, user_id ASC LIMIT 10""",
-        "voice": """SELECT user_id, voice_level AS level, voice_xp AS xp FROM user_levels
-                    WHERE guild_id = ? AND voice_xp > 0
-                      AND user_id IN (SELECT value FROM json_each(?))
-                    ORDER BY voice_xp DESC, user_id ASC LIMIT 10""",
+    """Return an indexed Top 10 for current humans and one UTC XP period.
+
+    Period XP is additive only; permanent text/voice XP is never reset. The
+    daily table begins recording at migration time and cannot infer old dates.
+    """
+    columns = {
+        "text": ("text_xp", "text_level"),
+        "voice": ("voice_xp", "voice_level"),
     }
-    if mode not in queries:
+    if mode not in columns:
         raise ValueError("leaderboard mode must be text or voice")
+    if period not in {"daily", "weekly", "monthly", "all_time"}:
+        raise ValueError("period must be daily, weekly, monthly, or all_time")
     if not human_ids:
         return []
+    xp_column, level_column = columns[mode]
+    eligible = json.dumps(sorted({int(value) for value in human_ids}))
+    if period == "all_time":
+        query = f"""
+            SELECT user_id, {level_column} AS level, {xp_column} AS xp,
+                   {xp_column} AS total_xp
+            FROM user_levels
+            WHERE guild_id = ? AND {xp_column} > 0
+              AND user_id IN (SELECT value FROM json_each(?))
+            ORDER BY {xp_column} DESC, user_id ASC LIMIT 10
+        """
+        params = (int(guild_id), eligible)
+    else:
+        start_day, end_day = _level_xp_period_bounds(period, now)
+        query = f"""
+            SELECT d.user_id, u.{level_column} AS level,
+                   CAST(SUM(d.{xp_column}) AS INTEGER) AS xp,
+                   u.{xp_column} AS total_xp
+            FROM level_xp_daily d
+            JOIN user_levels u
+              ON u.guild_id = d.guild_id AND u.user_id = d.user_id
+            WHERE d.guild_id = ? AND d.{xp_column} > 0
+              AND d.day_utc >= ? AND d.day_utc < ?
+              AND d.user_id IN (SELECT value FROM json_each(?))
+            GROUP BY d.user_id
+            ORDER BY xp DESC, d.user_id ASC LIMIT 10
+        """
+        params = (int(guild_id), start_day, end_day, eligible)
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
-            queries[mode],
-            (int(guild_id), json.dumps(sorted({int(value) for value in human_ids}))),
+            query, params,
         ) as cur:
             return [dict(row) for row in await cur.fetchall()]
 
