@@ -26,6 +26,7 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
             {
                 "level_settings",
                 "user_levels",
+                    "level_xp_daily",
                 "level_role_rewards",
                 "level_multipliers",
                 "level_blacklist",
@@ -38,6 +39,7 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "idx_level_role_rewards_guild",
                 "idx_level_multipliers_guild",
                 "idx_level_blacklist_guild",
+                "idx_level_xp_daily_period",
             }.issubset(indexes)
         )
 
