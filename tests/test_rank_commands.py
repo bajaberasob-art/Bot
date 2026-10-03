@@ -141,7 +141,7 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
                          (25, 3660, 3))
         sent = itx.followup.send.call_args.kwargs
         self.assertEqual(sent["file"].filename, "prime-rank.png")
-        self.assertEqual(len(sent["embed"].fields), 3)
+        self.assertNotIn("embed", sent)
         itx.response.defer.assert_awaited_once()
 
     async def test_rank_other_member(self):
