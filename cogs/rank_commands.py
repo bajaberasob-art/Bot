@@ -274,13 +274,16 @@ class RankCommands(commands.Cog):
             try:
                 if not rank_config["imageOnly"] and not attachment and not content:
                     raise RankUnavailable("فعّل بطاقة الرتبة أو الرسالة المخصصة قبل استخدام الأمر.")
-                await send_interaction_message(
-                    interaction,
-                    content=content if not embed else None,
-                    file=attachment,
-                    embed=embed,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
+                payload = {
+                    "allowed_mentions": discord.AllowedMentions.none(),
+                }
+                if content and not embed:
+                    payload["content"] = content
+                if attachment:
+                    payload["file"] = attachment
+                if embed:
+                    payload["embed"] = embed
+                await send_interaction_message(interaction, **payload)
             finally:
                 if attachment:
                     attachment.close()
