@@ -103,8 +103,11 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
     async def rank(self, interaction, member=None):
         await self.cog.rank_slash.callback(self.cog, interaction, member)
 
-    async def top(self, interaction, mode="text", period="daily"):
-        await self.cog.top_slash.callback(self.cog, interaction, mode, period)
+    async def top(self, interaction, mode="text", period=None):
+        if period is None:
+            await self.cog.top_slash.callback(self.cog, interaction, mode)
+        else:
+            await self.cog.top_slash.callback(self.cog, interaction, mode, period)
         call = interaction.followup.send.call_args or interaction.response.send_message.call_args
         kwargs = call.kwargs
         if "view" in kwargs:
