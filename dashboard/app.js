@@ -6611,7 +6611,7 @@
   // ===== Leveling view (Phase 7): frontend-only, guild-scoped local drafts =====
   const LV_TABS = [
     ["general", "عام"], ["public", "اللوحة العامة"], ["points", "النقاط"], ["voice", "الصوت"], ["rewards", "المكافآت"],
-    ["card", "البطاقة"], ["messages", "الرسائل"], ["data", "البيانات"],
+    ["card", "البطاقة"], ["messages", "الرسائل"], ["prime", "PRIME TOP"], ["data", "البيانات"],
   ];
   const LV_LAYOUTS = { vertical: [560, 900, "عمودية"], stats: [1000, 420, "إحصائيات"], minimal: [900, 230, "مصغرة"], ring: [620, 680, "حلقة"], classic: [1000, 340, "كلاسيكية"] };
   const LV_PARTS = { none: "بدون", sparks: "شرارات", shine: "لمعان", embers: "جمر", snow: "ثلج", petals: "بتلات", neon: "نيون" };
@@ -6633,6 +6633,7 @@
     if (base && typeof base === "object") {
       const o = {};
       Object.keys(base).forEach((k) => { o[k] = lvMerge(base[k], src && typeof src === "object" ? src[k] : undefined); });
+      if (src && typeof src === "object") Object.keys(src).forEach((k) => { if (!(k in o)) o[k] = src[k]; });
       return o;
     }
     return typeof src === typeof base ? src : base;

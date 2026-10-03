@@ -305,6 +305,7 @@ async def _dashboard_snapshot(guild_id):
         },
     }
     draft["prime"] = controls_with_defaults(settings.get("prime_controls"), settings)
+    draft["prime"] = controls_with_defaults(settings.get("prime_controls"), settings)
     return {
         "revision": int(settings.get("revision", 0) or 0),
         "draft": draft,
