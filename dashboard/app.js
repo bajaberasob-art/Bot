@@ -7284,6 +7284,81 @@
       el("div", { class: "leveling-msg-preview", "data-msg-key": key }));
     return el("div", { class: "leveling-stack" }, lvDemoTag("قوالب توضيحية محلية"), mk("levelup", "رسالة رفع المستوى", "{user} {level} {server}"), mk("milestone", "رسالة الإنجاز (توضيحية محلية فقط)", "{user} {level}"), mk("overtake", "رسالة التجاوز", "{passer} {passed} {rank}"));
   }
+  function lvTabPrime() {
+    const periodicPanel = (period, title, defaults) => {
+      const key = ["prime", "periodic", period];
+      return lvCard(title, "إعداد مستقل؛ المدة تحسب من سجل XP الجديد فقط ولا تصفّر XP الدائم.",
+        lvSwitch([...key, "enabled"], "تفعيل النشر الدوري"),
+        lvGrid(
+          lvSelect([...key, "channel"], "قناة النشر", lvChanOpts("اختر قناة")),
+          lvSelect([...key, "rewardRole"], "رتبة الفائزين", lvRoleOpts("بدون مكافأة")),
+          lvText([...key, "time"], "وقت النشر", { type: "time" }),
+          lvText([...key, "timezone"], "المنطقة الزمنية", { dir: "ltr", placeholder: "UTC" }),
+          lvNum([...key, "winners"], "عدد الفائزين", 1, 20),
+        ),
+        period === "weekly" ? lvNum([...key, "weekday"], "يوم النشر (0 الاثنين، 6 الأحد)", 0, 6) : null,
+        period === "monthly" ? lvNum([...key, "dayOfMonth"], "يوم النشر الشهري", 1, 28) : null,
+        lvArea([...key, "message"], "رسالة الفائزين", "متغيرات: {user} {mention} {username} {xp} {rank} {period}"),
+        lvSwitch([...key, "embed"], "إرسال كـ Embed"),
+        lvGrid(
+          lvText([...key, "embedTitle"], "عنوان الإمبد"),
+          lvText([...key, "embedColor"], "لون الإمبد", { type: "color" }),
+        ),
+        lvArea([...key, "embedDescription"], "وصف الإمبد", "يمكن استخدام {message}"),
+        lvGrid(
+          lvSwitch([...key, "mentionWinners"], "منشن الفائزين"),
+          lvSwitch([...key, "showXp"], "عرض XP المكتسب"),
+          lvSwitch([...key, "showRank"], "عرض المركز"),
+        ),
+      );
+    };
+    const p = ["prime"];
+    return el("div", { class: "leveling-stack" },
+      lvCard("إعدادات /rank", "الافتراضي صورة PNG واحدة فقط. إعدادات الرتبة اليدوية مستقلة عن إشعار الارتقاء.",
+        lvSwitch([...p, "rank", "enabled"], "تفعيل أمر الرتبة"),
+        lvPicker([...p, "rank", "channels"], "تقييد القنوات (فارغ = كل القنوات)", "channel"),
+        lvSwitch([...p, "rank", "imageOnly"], "صورة فقط (تتجاوز النص والإمبد)"),
+        lvSwitch([...p, "rank", "showCard"], "عرض بطاقة PRIME"),
+        lvSwitch([...p, "rank", "showCustomMessage"], "عرض رسالة مخصصة"),
+        lvArea([...p, "rank", "customMessage"], "الرسالة المخصصة", "متغيرات: {user} {username} {mention} {level} {xp} {required_xp} {progress} {rank} {total_members} {messages} {voice_time} {streak} {server}"),
+        lvSwitch([...p, "rank", "sendEmbed"], "إرسال الرسالة داخل Embed"),
+      ),
+      lvCard("إشعار الارتقاء", "لا يتأثر هذا القسم بطريقة إرسال /rank.",
+        lvSwitch([...p, "levelup", "sendNotification"], "إرسال إشعار الارتقاء"),
+        lvSwitch([...p, "levelup", "sendAsEmbed"], "إرسال كـ Embed"),
+        lvSwitch([...p, "levelup", "showRankCard"], "إرفاق بطاقة الرتبة"),
+        lvSwitch([...p, "levelup", "mentionUser"], "منشن العضو"),
+        lvSelect([...p, "levelup", "mentionRole"], "منشن رتبة إضافية", lvRoleOpts("بدون رتبة")),
+        lvText([...p, "levelup", "embedTitle"], "عنوان الإمبد"),
+        lvGrid(
+          lvText([...p, "levelup", "embedColor"], "لون الإمبد", { type: "color" }),
+          lvText([...p, "levelup", "embedFooter"], "تذييل الإمبد"),
+        ),
+        lvGrid(
+          lvText([...p, "levelup", "embedThumbnail"], "رابط الصورة المصغرة", { dir: "ltr" }),
+          lvText([...p, "levelup", "embedImage"], "رابط صورة الإمبد", { dir: "ltr" }),
+        ),
+        lvSwitch([...p, "levelup", "timestamp"], "إضافة توقيت"),
+      ),
+      lvCard("إعدادات /top", "قائمة واحدة للنص والصوت والفترات، دون تعديل رصيد XP الدائم.",
+        lvSwitch([...p, "top", "enabled"], "تفعيل /top"),
+        lvGrid(
+          lvSelect([...p, "top", "defaultMode"], "النمط الافتراضي", [["text", "نص"], ["voice", "صوت"]]),
+          lvNum([...p, "top", "count"], "عدد النتائج (1–20)", 1, 20),
+          lvText([...p, "top", "embedTitle"], "عنوان الترتيب"),
+          lvText([...p, "top", "embedColor"], "لون الترتيب", { type: "color" }),
+        ),
+        lvArea([...p, "top", "embedMessage"], "رسالة الترتيب"),
+        lvSwitch([...p, "top", "showAvatar"], "عرض صور الأعضاء"),
+        lvSwitch([...p, "top", "showProgress"], "عرض شريط التقدم"),
+        lvSwitch([...p, "top", "embed"], "إرسال كـ Embed"),
+      ),
+      periodicPanel("daily", "TOP اليومي", {}),
+      periodicPanel("weekly", "TOP الأسبوعي", {}),
+      periodicPanel("monthly", "TOP الشهري", {}),
+      el("p", { class: "leveling-unavail", text: "تُحفظ الإعدادات كوحدة واحدة عبر REST API، وتُطبق مباشرة بعد الحفظ." }),
+    );
+  }
   const lvMin = (m) => `${lvFmt(Math.floor(m / 60))} س ${lvFmt(Math.floor(m % 60))} د`;
   function lvTabData() {
     const s = lvState(), analytics = s.analytics, totals = analytics?.totals || {};
@@ -7406,7 +7481,7 @@
         toast("أُعيدت التعديلات إلى آخر إعدادات محمّلة من السيرفر", "info");
       } }), box);
   }
-  const LV_PANELS = { general: lvTabGeneral, public: lvTabPublic, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, data: lvTabData };
+  const LV_PANELS = { general: lvTabGeneral, public: lvTabPublic, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, prime: lvTabPrime, data: lvTabData };
   function lvRender() {
     const root = $(".leveling-view");
     if (!root) return;

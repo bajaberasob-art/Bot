@@ -14,6 +14,7 @@ from cogs.card_generator import generate_rank_card
 from cogs.utilities import ShortcutInteraction
 from interaction_runtime import send_interaction_message
 from level_progression import text_progress, xp_required
+from prime_level_controls import controls_with_defaults, render_template
 
 logger = logging.getLogger("PrimeRankCommands")
 RANK_ALIASES = ("level", "lvl", "لفل", "رانك")
@@ -165,6 +166,11 @@ class RankCommands(commands.Cog):
         settings = await database.get_level_settings(interaction.guild.id) or {}
         if not settings.get("is_enabled", True) or not settings.get(f"command_{family}_enabled", True):
             raise RankUnavailable("هذا الأمر معطل في إعدادات المستويات لهذا السيرفر.")
+        controls = controls_with_defaults(settings.get("prime_controls"), settings)
+        if family == "rank" and not controls["rank"]["enabled"]:
+            raise RankUnavailable("أمر الرتبة معطل في إعدادات PRIME.")
+        if family == "top" and not controls["top"]["enabled"]:
+            raise RankUnavailable("أمر TOP معطل في إعدادات PRIME.")
         allowed = {int(value) for value in settings.get(f"command_{family}_channels", [])}
         channel = interaction.channel
         channels = {channel.id, getattr(channel, "parent_id", None)}
@@ -210,25 +216,61 @@ class RankCommands(commands.Cog):
             if target.id not in humans:
                 raise RankUnavailable("هذا العضو لم يعد موجوداً في قائمة أعضاء السيرفر.")
             row = await database.get_command_rank_snapshot(guild.id, target.id, list(humans))
+            controls = controls_with_defaults(
+                settings.get("prime_controls"), settings,
+            )
+            rank_config = controls["rank"]
             card_settings = dict(settings)
             for key in ("total_messages", "total_voice_seconds", "current_streak"):
                 card_settings[key] = row.get(key, 0)
             image = await generate_rank_card(
                 target, row["text_level"], row["text_xp"], xp_required(row["text_level"]),
                 row["rank"], row["total_members"], card_settings)
-            embed = discord.Embed(title="PRIME • بطاقة المستوى", color=0x6366F1)
-            embed.set_image(url="attachment://prime-rank.png")
-            seconds = int(row.get("total_voice_seconds", 0) or 0)
-            embed.add_field(name="الرسائل", value=f"{int(row.get('total_messages', 0) or 0):,}")
-            embed.add_field(name="وقت الصوت", value=f"{seconds // 3600}h {(seconds % 3600) // 60}m")
-            embed.add_field(name="السلسلة اليومية", value=f"{int(row.get('current_streak', 0) or 0):,} days")
-            attachment = discord.File(image, filename="prime-rank.png")
+            attachment = discord.File(image, filename="prime-rank.png") if rank_config["showCard"] else None
+            values = {
+                "user": target.display_name,
+                "username": target.name,
+                "mention": target.mention,
+                "level": row["text_level"],
+                "old_level": row["text_level"],
+                "xp": row["text_xp"],
+                "required_xp": xp_required(row["text_level"]),
+                "progress": text_progress(row["text_xp"])["percentage"],
+                "rank": row.get("rank") or "",
+                "total_members": row.get("total_members", 0),
+                "messages": row.get("total_messages", 0),
+                "voice_time": int(row.get("total_voice_seconds", 0) or 0),
+                "streak": row.get("current_streak", 0),
+                "server": getattr(guild, "name", "PRIME"),
+            }
+            content = (
+                render_template(rank_config["customMessage"], values)
+                if rank_config["showCustomMessage"] else None
+            )
+            if rank_config["imageOnly"]:
+                content = None
+            embed = None
+            if content and rank_config["sendEmbed"] and not rank_config["imageOnly"]:
+                embed = discord.Embed(
+                    title="PRIME • بطاقة المستوى",
+                    description=content[:4000],
+                    color=0x6366F1,
+                )
+                if attachment:
+                    embed.set_image(url="attachment://prime-rank.png")
             try:
+                if not rank_config["imageOnly"] and not attachment and not content:
+                    raise RankUnavailable("فعّل بطاقة الرتبة أو الرسالة المخصصة قبل استخدام الأمر.")
                 await send_interaction_message(
-                    interaction, file=attachment, embed=embed,
-                    allowed_mentions=discord.AllowedMentions.none())
+                    interaction,
+                    content=content if not embed else None,
+                    file=attachment,
+                    embed=embed,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             finally:
-                attachment.close()
+                if attachment:
+                    attachment.close()
                 image.close()
         except RankUnavailable as error:
             await send_interaction_message(interaction, str(error), ephemeral=True)
@@ -243,8 +285,12 @@ class RankCommands(commands.Cog):
         if period not in {"daily", "weekly", "monthly", "all_time"}:
             raise RankUnavailable("اختر DAILY أو WEEKLY أو MONTHLY أو ALL.")
         humans = await self.human_members(guild)
+        top_config = controls_with_defaults(
+            settings.get("prime_controls"), settings,
+        )["top"]
         rows = await database.get_command_level_leaderboard(
-            guild.id, list(humans), mode, period
+            guild.id, list(humans), mode, period,
+            limit=int(top_config["count"]),
         )
         palette = (0x12D6FF, 0x4263EB, 0x6366F1, 0x8B5CF6)
         period_label = "ALL" if period == "all_time" else period.upper()
@@ -274,22 +320,28 @@ class RankCommands(commands.Cog):
             avatar = getattr(member, "display_avatar", None)
             avatar_url = getattr(avatar, "url", None)
             embed = discord.Embed(
-                title=f"🏆 PRIME TOP · {period_label}" if position == 1 else None,
+                title=(
+                    f"{top_config['embedTitle']} · {period_label}"
+                    if position == 1 else None
+                ),
                 description=(
                     f"المستوى **{current_level:,}** · {xp_line}\n"
-                    f"التقدم **{progression['progress_xp']:,}/{required:,} XP** "
-                    f"({percent}%)"
+                    + (
+                        f"التقدم **{progression['progress_xp']:,}/{required:,} XP** "
+                        f"({percent}%)"
+                        if top_config["showProgress"] else ""
+                    )
                 ),
-                color=palette[(position - 1) % len(palette)],
+                color=int(top_config["embedColor"].lstrip("#"), 16),
             )
             embed.set_author(
                 name=f"#{position} · {name}",
-                icon_url=str(avatar_url) if avatar_url else None,
+                icon_url=str(avatar_url) if avatar_url and top_config["showAvatar"] else None,
             )
             if position == 1:
                 embed.add_field(
-                    name=f"{mode.upper()} · أعلى 10",
-                    value="ترتيب الفترة حسب XP المكتسب، دون تصفير XP الدائم.",
+                    name=f"{mode.upper()} · أعلى {int(top_config['count'])}",
+                    value=top_config["embedMessage"][:1024],
                     inline=False,
                 )
                 embed.set_footer(text="حدود الفترات بتوقيت UTC • البوتات والأعضاء المغادرون مستبعدون")
