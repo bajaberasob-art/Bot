@@ -612,6 +612,16 @@ async def init_db() -> None:
                 );
             """)
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS level_xp_daily (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    day_utc TEXT NOT NULL,
+                    text_xp INTEGER NOT NULL DEFAULT 0 CHECK (text_xp >= 0),
+                    voice_xp INTEGER NOT NULL DEFAULT 0 CHECK (voice_xp >= 0),
+                    PRIMARY KEY (guild_id, user_id, day_utc)
+                );
+            """)
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS level_reaction_awards (
                     guild_id INTEGER NOT NULL,
                     message_id INTEGER NOT NULL,
@@ -696,6 +706,10 @@ async def init_db() -> None:
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_levels_activity "
                 "ON user_levels (guild_id, last_message_at DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_level_xp_daily_period "
+                "ON level_xp_daily (guild_id, day_utc, user_id);"
             )
             await db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_level_role_rewards_guild "
@@ -2246,6 +2260,47 @@ def _level_utc(value):
     return value.astimezone(timezone.utc)
 
 
+async def _record_level_daily_xp(
+    db, guild_id, user_id, awarded_at, *, text_xp=0, voice_xp=0,
+):
+    text_xp, voice_xp = int(text_xp), int(voice_xp)
+    if min(text_xp, voice_xp) < 0:
+        raise ValueError("daily XP credits cannot be negative")
+    if not (text_xp or voice_xp):
+        return
+    day_utc = _level_utc(awarded_at).date().isoformat()
+    await db.execute(
+        """
+        INSERT INTO level_xp_daily (guild_id, user_id, day_utc, text_xp, voice_xp)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id, day_utc) DO UPDATE SET
+            text_xp = level_xp_daily.text_xp + excluded.text_xp,
+            voice_xp = level_xp_daily.voice_xp + excluded.voice_xp
+        """,
+        (int(guild_id), int(user_id), day_utc, text_xp, voice_xp),
+    )
+
+
+def _level_xp_period_bounds(period, now=None):
+    if period not in {"daily", "weekly", "monthly"}:
+        raise ValueError("period must be daily, weekly, monthly, or all_time")
+    current = _level_utc(now or datetime.now(timezone.utc)).date()
+    if period == "daily":
+        start = current
+        end = current + timedelta(days=1)
+    elif period == "weekly":
+        start = current - timedelta(days=current.weekday())
+        end = start + timedelta(days=7)
+    else:
+        start = current.replace(day=1)
+        end = (
+            datetime(start.year + 1, 1, 1).date()
+            if start.month == 12
+            else datetime(start.year, start.month + 1, 1).date()
+        )
+    return start.isoformat(), end.isoformat()
+
+
 async def award_text_xp(
     guild_id: int, user_id: int, xp: int, awarded_at: datetime,
     cooldown_seconds: int = 60,
@@ -2279,6 +2334,9 @@ async def award_text_xp(
                     await db.rollback()
                     return None
             result = await _add_level_text_credit(db, guild_id, user_id, xp, row, detect_overtakes)
+            await _record_level_daily_xp(
+                db, guild_id, user_id, awarded_at, text_xp=xp
+            )
             await db.execute(
                 """
                 UPDATE user_levels SET
@@ -2348,6 +2406,10 @@ async def award_voice_xp(
                 """,
                 (int(guild_id), int(user_id), new_voice_xp, new_voice_level,
                  new_text_xp, new_text_level, eligible_seconds),
+            )
+            await _record_level_daily_xp(
+                db, guild_id, user_id, datetime.now(timezone.utc),
+                text_xp=text_xp, voice_xp=voice_xp,
             )
             await db.commit()
         except BaseException:
@@ -2424,6 +2486,9 @@ async def award_reaction_xp(
             results = []
             for user_id, xp, row in eligible:
                 result = await _add_level_text_credit(db, guild_id, user_id, xp, row, False)
+                await _record_level_daily_xp(
+                    db, guild_id, user_id, awarded_at, text_xp=xp
+                )
                 result["overtakes"] = crossings[user_id]
                 results.append(result)
             await db.execute(
@@ -2489,6 +2554,9 @@ async def claim_level_streak(
             result = await _add_level_text_credit(
                 db, guild_id, user_id, xp, row,
                 detect_overtakes and bool(settings["overtake_alert_enabled"]))
+            await _record_level_daily_xp(
+                db, guild_id, user_id, claimed_at, text_xp=xp
+            )
             await db.execute(
                 """UPDATE user_levels SET current_streak = ?, last_daily_claim = ?
                    WHERE guild_id = ? AND user_id = ?""",
