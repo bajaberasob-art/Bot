@@ -8,6 +8,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
@@ -582,9 +583,13 @@ class Levels(EngagementXP, commands.Cog):
         if not self.voice_xp_worker.is_running():
             self.voice_xp_worker.start()
             logger.info("Voice XP worker started")
+        if not self.periodic_top_worker.is_running():
+            self.periodic_top_worker.start()
+            logger.info("Periodic PRIME TOP scheduler started")
 
     def cog_unload(self):
         self.voice_xp_worker.cancel()
+        self.periodic_top_worker.cancel()
         self._voice_online = False
         self.voice_sessions.clear()
         self._voice_pending.clear()
@@ -804,6 +809,192 @@ class Levels(EngagementXP, commands.Cog):
             self.voice_sessions.clear()
             self._voice_pending.clear()
         logger.info("Voice tracking paused on gateway disconnect")
+
+    async def _publish_periodic_top(self, guild, period, schedule_date, config):
+        zone = ZoneInfo(config["timezone"])
+        if period == "daily":
+            end_local = datetime.combine(schedule_date, datetime.min.time(), tzinfo=zone)
+            start_local = end_local - timedelta(days=1)
+            period_key = schedule_date.isoformat()
+        elif period == "weekly":
+            end_date = schedule_date - timedelta(days=schedule_date.weekday())
+            end_local = datetime.combine(end_date, datetime.min.time(), tzinfo=zone)
+            start_local = end_local - timedelta(days=7)
+            period_key = schedule_date.strftime("%G-W%V")
+        else:
+            end_date = schedule_date.replace(day=1)
+            if end_date.month == 1:
+                start_date = end_date.replace(year=end_date.year - 1, month=12)
+            else:
+                start_date = end_date.replace(month=end_date.month - 1)
+            end_local = datetime.combine(end_date, datetime.min.time(), tzinfo=zone)
+            start_local = datetime.combine(start_date, datetime.min.time(), tzinfo=zone)
+            period_key = schedule_date.strftime("%Y-%m")
+        if not getattr(guild, "chunked", True):
+            try:
+                await asyncio.wait_for(guild.chunk(cache=True), timeout=15)
+            except (discord.HTTPException, asyncio.TimeoutError):
+                logger.warning("Periodic TOP skipped; member cache incomplete guild=%s", guild.id)
+                return
+        humans = {
+            member.id: member for member in getattr(guild, "members", ())
+            if not getattr(member, "bot", False)
+        }
+        channel = guild.get_channel(int(config["channel"])) if config.get("channel") else None
+        if channel is None or not callable(getattr(channel, "send", None)):
+            logger.warning("Periodic TOP channel missing guild=%s period=%s", guild.id, period)
+            return
+        rows = await database.get_level_periodic_top_leaderboard(
+            guild.id, list(humans), "text",
+            start_local.astimezone(timezone.utc),
+            end_local.astimezone(timezone.utc),
+            limit=int(config["winners"]),
+        )
+        if not await database.claim_level_periodic_top_run(
+            guild.id, period, period_key,
+        ):
+            return
+        try:
+            winners = []
+            lines = []
+            for position, row in enumerate(rows, 1):
+                member = humans.get(int(row["user_id"]))
+                if member is None:
+                    continue
+                winners.append(member)
+                name = member.mention if config["mentionWinners"] else discord.utils.escape_markdown(
+                    getattr(member, "display_name", getattr(member, "name", "عضو"))
+                )
+                values = {
+                    "user": getattr(member, "display_name", getattr(member, "name", "")),
+                    "username": getattr(member, "name", ""),
+                    "mention": member.mention if config["mentionWinners"] else name,
+                    "level": int(row.get("level") or 0),
+                    "xp": int(row.get("xp") or 0),
+                    "rank": position,
+                    "total_members": len(humans),
+                    "messages": "",
+                    "voice_time": "",
+                    "streak": "",
+                    "server": guild.name,
+                    "period": period,
+                }
+                line = render_template(config["message"], values)
+                extras = []
+                if config["showRank"]:
+                    extras.append(f"#{position}")
+                if config["showXp"]:
+                    extras.append(f"{values['xp']:,} XP")
+                if extras and "{xp}" not in config["message"] and "{rank}" not in config["message"]:
+                    line = f"{line} · {' · '.join(extras)}"
+                lines.append(line[:500])
+            message_text = "\n".join(lines) or "لا يوجد فائزون مسجلون في هذه الفترة."
+            description = render_template(
+                config["embedDescription"], {"message": message_text, "period": period},
+            ) or message_text
+            color = int(str(config["embedColor"]).lstrip("#"), 16)
+            embed = discord.Embed(
+                title=config["embedTitle"][:256],
+                description=description[:4000],
+                color=discord.Color(color),
+            ) if config["embed"] else None
+            reward_role = None
+            try:
+                if config.get("rewardRole"):
+                    reward_role = guild.get_role(int(config["rewardRole"]))
+            except (TypeError, ValueError):
+                reward_role = None
+            bot_member = getattr(guild, "me", None)
+            can_assign = bool(
+                reward_role and bot_member
+                and getattr(getattr(bot_member, "guild_permissions", None), "manage_roles", False)
+                and not getattr(reward_role, "managed", False)
+                and reward_role < getattr(bot_member, "top_role", reward_role)
+            )
+            if can_assign:
+                for member in winners:
+                    try:
+                        if reward_role not in getattr(member, "roles", ()):
+                            await member.add_roles(
+                                reward_role,
+                                reason=f"PRIME {period} TOP reward",
+                            )
+                    except (discord.HTTPException, AttributeError):
+                        logger.warning(
+                            "Cannot assign periodic TOP role guild=%s member=%s",
+                            guild.id, member.id, exc_info=True,
+                        )
+            try:
+                allowed_mentions = discord.AllowedMentions(
+                    users=winners if config["mentionWinners"] else [],
+                    roles=False, everyone=False, replied_user=False,
+                )
+                await channel.send(
+                    content=None if embed else message_text[:1900],
+                    embed=embed,
+                    allowed_mentions=allowed_mentions,
+                )
+            except discord.HTTPException:
+                logger.warning(
+                    "Periodic TOP delivery failed guild=%s period=%s",
+                    guild.id, period, exc_info=True,
+                )
+        finally:
+            await database.complete_level_periodic_top_run(
+                guild.id, period, period_key,
+            )
+
+    @tasks.loop(seconds=60)
+    async def periodic_top_worker(self):
+        now_utc = datetime.now(timezone.utc)
+        for guild in list(getattr(self.bot, "guilds", ())):
+            try:
+                settings = await database.get_level_settings(guild.id)
+                if not settings or not settings.get("is_enabled", True):
+                    continue
+                controls = controls_with_defaults(settings.get("prime_controls"), settings)
+                for period, config in controls["periodic"].items():
+                    if not config.get("enabled"):
+                        continue
+                    try:
+                        zone = ZoneInfo(config["timezone"])
+                        local = now_utc.astimezone(zone)
+                        target_hour, target_minute = map(int, config["time"].split(":"))
+                        target = (target_hour, target_minute)
+                        current = (local.hour, local.minute)
+                        schedule_date = local.date()
+                        if period == "daily":
+                            if current < target:
+                                schedule_date -= timedelta(days=1)
+                        elif period == "weekly":
+                            weekday = int(config.get("weekday", 4))
+                            schedule_date -= timedelta(days=(local.weekday() - weekday) % 7)
+                            if schedule_date == local.date() and current < target:
+                                schedule_date -= timedelta(days=7)
+                        else:
+                            scheduled = local.date().replace(day=int(config.get("dayOfMonth", 1)))
+                            if local.date() < scheduled or (
+                                local.date() == scheduled and current < target
+                            ):
+                                if scheduled.month == 1:
+                                    scheduled = scheduled.replace(year=scheduled.year - 1, month=12)
+                                else:
+                                    scheduled = scheduled.replace(month=scheduled.month - 1)
+                            schedule_date = scheduled
+                        await self._publish_periodic_top(
+                            guild, period, schedule_date, config,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Periodic TOP failed guild=%s period=%s",
+                            guild.id, period,
+                        )
+            except Exception:
+                logger.exception("Periodic TOP settings failed guild=%s", guild.id)
+
+    @periodic_top_worker.before_loop
+    async def before_periodic_top_worker(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(seconds=60)
     async def voice_xp_worker(self):
