@@ -16,6 +16,7 @@ import database
 from cogs.card_generator import generate_rank_card
 from level_engagement import EngagementXP
 from level_progression import text_progress, xp_required
+from prime_level_controls import controls_with_defaults, render_template
 
 logger = logging.getLogger("LonaLevels")
 MAX_MULTIPLIER = 100.0
@@ -330,6 +331,10 @@ class Levels(EngagementXP, commands.Cog):
                            guild.id, channel_id, exc_info=True)
 
     async def _send_level_up_card(self, guild, member, settings, mode, template):
+        controls = controls_with_defaults(settings.get("prime_controls"), settings)
+        config = controls["levelup"]
+        if not config["sendNotification"]:
+            return
         channel_id = (
             settings.get("levelup_channel_id")
             if mode == "text"
@@ -376,45 +381,80 @@ class Levels(EngagementXP, commands.Cog):
             "total_voice_seconds": int(snapshot.get("total_voice_seconds") or 0),
             "current_streak": int(snapshot.get("current_streak") or 0),
         })
-        image = await generate_rank_card(
-            member, level, current_xp, xp_required(level), rank,
-            total_members, card_settings,
-        )
+        image = None
+        if config["showRankCard"]:
+            image = await generate_rank_card(
+                member, level, current_xp, xp_required(level), rank,
+                total_members, card_settings,
+            )
 
         values = {
             "user": getattr(member, "mention", ""),
+            "mention": getattr(member, "mention", ""),
+            "username": getattr(member, "display_name", getattr(member, "name", "")),
             "level": level,
+            "old_level": max(0, level - 1),
+            "xp": current_xp,
+            "required_xp": xp_required(level),
+            "progress": text_progress(current_xp)["percentage"],
+            "rank": rank or "",
+            "total_members": total_members,
+            "messages": int(snapshot.get("total_messages") or 0),
+            "voice_time": int(snapshot.get("total_voice_seconds") or 0),
+            "streak": int(snapshot.get("current_streak") or 0),
             "server": getattr(guild, "name", "PRIME"),
+            "period": "",
         }
-        default_description = (
-            f"مبروك {values['user']} 👑\nوصلت للمستوى {level}"
+        if not config["mentionUser"]:
+            values["user"] = values["username"]
+            values["mention"] = values["username"]
+        description = render_template(template, values) or (
+            f"Congratulations {values['user']} — level {level}."
         )
+        title = str(config.get("embedTitle") or settings.get("levelup_title") or "🎉 Level Up!")[:256]
         try:
-            description = str(template or "").format_map(values).strip()
-        except (KeyError, ValueError, IndexError, AttributeError):
-            description = default_description
-        if not description:
-            description = default_description
-
-        title = str(settings.get("levelup_title") or "🎉 ارتقاء مستوى!")[:256]
+            color_value = int(str(config.get("embedColor") or "#12D6FF").lstrip("#"), 16)
+        except (TypeError, ValueError):
+            color_value = 0x12D6FF
         embed = discord.Embed(
             title=title,
             description=description[:4000],
-            color=discord.Color(0x12D6FF),
-        )
-        embed.set_image(url="attachment://prime-level-up.png")
-        attachment = discord.File(image, filename="prime-level-up.png")
+            color=discord.Color(color_value),
+        ) if config["sendAsEmbed"] else None
+        if embed:
+            if image:
+                embed.set_image(url="attachment://prime-level-up.png")
+            elif config.get("embedImage"):
+                embed.set_image(url=config["embedImage"])
+            if config.get("embedThumbnail"):
+                embed.set_thumbnail(url=config["embedThumbnail"])
+            if config.get("embedFooter"):
+                embed.set_footer(text=config["embedFooter"][:2048])
+            if config["timestamp"]:
+                embed.timestamp = datetime.now(timezone.utc)
+        attachment = discord.File(image, filename="prime-level-up.png") if image else None
+        role = None
+        if config.get("mentionRole"):
+            try:
+                role = guild.get_role(int(config["mentionRole"]))
+            except (TypeError, ValueError):
+                role = None
         try:
             await channel.send(
+                content=role.mention if role else (None if embed else description[:1900]),
                 embed=embed,
                 file=attachment,
                 allowed_mentions=discord.AllowedMentions(
-                    users=[member], roles=False, everyone=False, replied_user=False,
+                    users=[member] if config["mentionUser"] else [],
+                    roles=[role] if role else [],
+                    everyone=False, replied_user=False,
                 ),
             )
         finally:
-            attachment.close()
-            image.close()
+            if attachment:
+                attachment.close()
+            if image:
+                image.close()
 
     @commands.Cog.listener()
     async def on_lona_text_level_up(self, event: TextLevelUp):
