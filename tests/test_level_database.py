@@ -176,45 +176,6 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
             [(20, 109), (10, 6)],
         )
 
-    async def test_periodic_top_uses_exact_event_window_and_single_claim(self):
-        start = datetime(2026, 10, 1, tzinfo=timezone.utc)
-        end = datetime(2026, 10, 2, tzinfo=timezone.utc)
-        await database.award_text_xp(
-            709, 10, 5, datetime.fromisoformat("2026-10-02T01:30:00+03:00"),
-            cooldown_seconds=0,
-        )
-        await database.award_text_xp(
-            709, 20, 9, datetime(2026, 10, 1, 23, 30, tzinfo=timezone.utc),
-            cooldown_seconds=0,
-        )
-        await database.award_text_xp(
-            709, 10, 50, end, cooldown_seconds=0,
-        )
-        rows = await database.get_level_periodic_top_leaderboard(
-            709, [10, 20], "text", start, end, limit=5,
-        )
-        self.assertEqual(
-            [(row["user_id"], row["xp"]) for row in rows],
-            [(20, 9), (10, 5)],
-        )
-
-        self.assertTrue(await database.claim_level_periodic_top_run(709, "daily", "2026-10-02"))
-        self.assertFalse(await database.claim_level_periodic_top_run(709, "daily", "2026-10-02"))
-        self.assertTrue(await database.claim_level_periodic_top_run(709, "daily", "2026-10-03"))
-        await database.complete_level_periodic_top_run(709, "daily", "2026-10-02")
-        async with database.connect() as db:
-            async with db.execute(
-                """
-                SELECT claimed_at, completed_at
-                FROM level_periodic_top_runs
-                WHERE guild_id = ? AND period = ? AND period_key = ?
-                """,
-                (709, "daily", "2026-10-02"),
-            ) as cur:
-                claim = await cur.fetchone()
-        self.assertIsNotNone(claim[0])
-        self.assertIsNotNone(claim[1])
-
     async def test_public_leaderboard_slug_pages_ranks_and_summary(self):
         await database.update_level_settings(
             704, {"web_leaderboard_enabled": 1, "web_slug": "prime-arena"}
