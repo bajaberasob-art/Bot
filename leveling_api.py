@@ -305,7 +305,6 @@ async def _dashboard_snapshot(guild_id):
         },
     }
     draft["prime"] = controls_with_defaults(settings.get("prime_controls"), settings)
-    draft["prime"] = controls_with_defaults(settings.get("prime_controls"), settings)
     return {
         "revision": int(settings.get("revision", 0) or 0),
         "draft": draft,
@@ -387,6 +386,25 @@ def _validate_draft(guild, draft, current_settings):
             guild, raw, assignable=True,
         ),
     )
+    rank_config = settings["prime_controls"]["rank"]
+    if rank_config["imageOnly"] and not rank_config["showCard"]:
+        raise ValueError("rank image-only mode requires the rank card")
+    if (
+        not rank_config["imageOnly"]
+        and not rank_config["showCard"]
+        and (
+            not rank_config["showCustomMessage"]
+            or not rank_config["customMessage"].strip()
+        )
+    ):
+        raise ValueError("rank must display a card or a non-empty custom message")
+    for section, keys in (
+        ("levelup", ("embedImage", "embedThumbnail")),
+    ):
+        for key in keys:
+            url = settings["prime_controls"][section][key]
+            if url:
+                validate_url(url)
     settings["command_rank_channels"] = settings["prime_controls"]["rank"]["channels"]
     minimum, maximum = settings["text_xp_min"], settings["text_xp_max"]
     if minimum > maximum:
