@@ -74,7 +74,7 @@ class FakeGuild:
     admins = {10, 100000000000000010}
 
     def get_member(self, uid):
-        # user 10 = administrator, anyone else = ordinary member (no 0x8 bit)
+        # Keep the short test-suite identity and full harness snowflake as admins.
         allowed = uid in self.admins
         return SimpleNamespace(
             id=uid,
@@ -325,7 +325,7 @@ class FakeBot:
 async def test_login(req):
     sid = "harness-session"
     ws.SESSIONS[sid] = {
-        "id": "10", "username": "Harness Admin", "avatar": "https://cdn.discordapp.com/embed/avatars/1.png",
+        "id": "100000000000000010", "username": "Harness Admin", "avatar": "https://cdn.discordapp.com/embed/avatars/1.png",
         "guilds": [{
             "id": str(FakeGuild.id), "name": FakeGuild.name, "members": 1284,
             "icon": None, "is_owner": False, "permissions": "8",
@@ -342,7 +342,7 @@ async def test_login(req):
 
 async def test_revoke(req):
     """Simulates losing admin rights mid-session (the live grant is re-checked on the next tick)."""
-    FakeGuild.admins.discard(10)
+    FakeGuild.admins.discard(100000000000000010)
     ws.GRANT_CACHE.clear()
     return web.json_response({"ok": True})
 

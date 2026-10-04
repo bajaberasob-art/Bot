@@ -51,3 +51,16 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+# Runtime databases (never commit live bot data)
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal

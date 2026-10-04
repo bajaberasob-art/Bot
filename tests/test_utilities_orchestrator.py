@@ -2,6 +2,7 @@ import os
 import re
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import database
 from cogs.utilities import Utilities, dynamic_prefix
@@ -107,6 +108,24 @@ class UtilitiesOrchestratorTests(unittest.IsolatedAsyncioTestCase):
         prefixes = await dynamic_prefix(self.bot, FakeMessage("hello"))
         self.assertIn("?", prefixes)
         self.assertNotIn("!", prefixes)
+
+    async def test_prefixless_rank_mention_is_narrowly_recognized(self):
+        for content in ("لفل <@123>", "لفل <@!123>"):
+            prefixes = await dynamic_prefix(self.bot, FakeMessage(content))
+            self.assertEqual(prefixes[0], "")
+        for content in ("لفل", "لفل عضو", "مرحبا لفل <@123>", "!لفل <@123>"):
+            prefixes = await dynamic_prefix(self.bot, FakeMessage(content))
+            self.assertNotIn("", prefixes)
+
+    async def test_prefixless_rank_mention_skips_dashboard_shortcut_dispatch(self):
+        message = FakeMessage("لفل <@123>")
+        with (
+            patch.object(self.cog, "_dispatch_policy_alias", new=AsyncMock()) as alias_dispatch,
+            patch.object(self.cog, "_dispatch_shortcut", new=AsyncMock()) as shortcut_dispatch,
+        ):
+            await self.cog.on_message(message)
+        alias_dispatch.assert_not_awaited()
+        shortcut_dispatch.assert_not_awaited()
 
     async def test_command_interceptor_blocks_disabled_and_roleless_commands(self):
         command = SimpleNamespace(qualified_name="secret")

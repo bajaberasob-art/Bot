@@ -22,6 +22,16 @@ def image_bytes(color="#26cbab", size=(160, 160)):
     return result.getvalue()
 
 
+def animated_gif_bytes(colors=("#ff0000", "#00ff00", "#0000ff")):
+    result = io.BytesIO()
+    frames = [Image.new("RGB", (120, 80), color) for color in colors]
+    frames[0].save(
+        result, "GIF", save_all=True, append_images=frames[1:],
+        duration=[110, 140, 190], loop=0, disposal=2,
+    )
+    return result.getvalue()
+
+
 class CardTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.user = SimpleNamespace(display_name="لونا • Lona 👑", name="lona", display_avatar=None)
@@ -47,13 +57,106 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(getattr(image, "n_frames", 1), 1)
             image.verify()
 
-    async def test_all_five_layouts_are_distinct_valid_pngs(self):
+    async def test_all_eight_layouts_are_distinct_valid_pngs(self):
         results = []
         for layout in cards.LAYOUTS:
             data = await self.render({"card_layout": layout})
             self.validate(data, layout)
             results.append(data.getvalue())
-        self.assertEqual(len(set(results)), 5)
+        self.assertEqual(len(set(results)), 8)
+
+    async def test_expanded_card_controls_change_the_static_rank_card(self):
+        plain = await self.render()
+        designed = await self.render({
+            "card_design": {
+                "glowStrength": 92, "particleDensity": 0, "particleColor": "#ff9900",
+                "barStyle": "segmented", "frame": "diamond", "bgOverlay": 48,
+                "bgBlur": 12, "animationEnabled": True, "animationStyle": "aurora",
+                "animationIntensity": 90,
+                "stats": {"messages": False, "voice": True, "streak": False, "serverRank": False},
+            },
+        })
+        self.validate(designed)
+        self.assertNotEqual(plain.getvalue(), designed.getvalue())
+
+    async def test_level_up_gif_has_eighteen_moving_frames_and_static_rank_stays_png(self):
+        settings = {
+            "card_design": {
+                **cards.CARD_DESIGN_DEFAULTS,
+                "animationStyle": "beam",
+                "animationIntensity": 70,
+            },
+        }
+        gif = await cards.generate_level_up_gif(
+            self.user, self.level, self.xp, self.required, 5, 1284, settings,
+        )
+        self.assertEqual(gif.tell(), 0)
+        with Image.open(gif) as image:
+            self.assertEqual(image.format, "GIF")
+            self.assertEqual(image.n_frames, 18)
+            # GIF stores frame timing in 10 ms units; 85 ms is encoded as 80 ms.
+            self.assertEqual(image.info["duration"], 80)
+            image.seek(0)
+            first = image.convert("RGB").tobytes()
+            image.seek(8)
+            middle = image.convert("RGB").tobytes()
+            self.assertNotEqual(first, middle)
+        self.validate(await self.render())
+
+    async def test_disabled_animation_returns_single_frame_gif_preview(self):
+        settings = {
+            "card_design": {
+                **cards.CARD_DESIGN_DEFAULTS,
+                "animationEnabled": False,
+            },
+        }
+        gif = await cards.generate_level_up_gif(
+            self.user, self.level, self.xp, self.required, 5, 1284, settings,
+        )
+        with Image.open(gif) as image:
+            self.assertEqual(image.format, "GIF")
+            self.assertEqual(image.n_frames, 1)
+
+    async def test_animated_background_frames_survive_rank_card_rendering(self):
+        background = animated_gif_bytes()
+
+        async def fetch(url):
+            return background if url else None
+
+        settings = {
+            "card_bg_url": "https://example.com/animated.gif",
+            "card_design": {
+                **cards.CARD_DESIGN_DEFAULTS,
+                "animationEnabled": False,
+                "animationIntensity": 0,
+            },
+        }
+        with patch("cogs.card_generator.fetch_image", side_effect=fetch):
+            gif = await cards.generate_level_up_gif(
+                self.user, self.level, self.xp, self.required, 5, 1284, settings,
+            )
+        with Image.open(gif) as image:
+            self.assertEqual(image.format, "GIF")
+            self.assertEqual(image.n_frames, 3)
+            self.assertEqual(image.info.get("loop"), 0)
+            self.assertEqual(image.info.get("duration"), 110)
+            image.seek(0)
+            first = image.convert("RGB").tobytes()
+            image.seek(1)
+            second = image.convert("RGB").tobytes()
+            self.assertNotEqual(first, second)
+
+    async def test_animated_background_detection_is_independent_of_light_animation(self):
+        settings = {
+            "card_bg_url": "https://example.com/animated.gif",
+            "card_design": {"animationEnabled": False, "animationIntensity": 0},
+        }
+        with patch(
+            "cogs.card_generator.fetch_image",
+            new=AsyncMock(return_value=animated_gif_bytes()),
+        ):
+            self.assertTrue(await cards.has_animated_background(settings))
+            self.assertTrue(await cards.should_use_animated_card(settings))
 
     async def test_default_and_unknown_layout_are_vertical(self):
         default = await self.render()
@@ -223,6 +326,14 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
         with patch("cogs.card_images.MAX_PIXELS", 10):
             with self.assertRaises(ValueError):
                 card_images.normalize_image(image_bytes())
+
+    def test_bounded_animated_gif_is_retained_by_image_normalizer(self):
+        source = animated_gif_bytes()
+        normalized = card_images.normalize_image(source)
+        self.assertEqual(normalized, source)
+        with Image.open(io.BytesIO(normalized)) as image:
+            self.assertEqual(image.format, "GIF")
+            self.assertEqual(image.n_frames, 3)
 
     def test_private_urls_credentials_ports_and_schemes_rejected(self):
         for url in ("http://127.0.0.1/image", "http://[::1]/image", "http://10.0.0.1/img",

@@ -347,13 +347,14 @@ class EngagementTests(unittest.IsolatedAsyncioTestCase):
         self.members[123].bot = True
         self.assertEqual((await self.claim())["status"], "ignored")
 
-    async def test_streak_utc_date_boundary_and_equivalent_timezone(self):
-        first = datetime(2026, 10, 2, 23, 59, tzinfo=timezone.utc)
+    async def test_streak_riyadh_date_boundary_and_equivalent_timezone(self):
+        first = datetime(2026, 10, 2, 20, 59, tzinfo=timezone.utc)
         await self.claim(claimed_at=first)
-        # A different displayed local day is still the same UTC claim date.
+        # The same instant remains the same Riyadh claim date.
         local = first.astimezone(timezone(timedelta(hours=3)))
         self.assertEqual((await self.claim(claimed_at=local))["status"], "already_claimed")
-        result = await self.claim(claimed_at=first + timedelta(minutes=1))
+        # 21:00 UTC is midnight in Riyadh and starts the next streak day.
+        result = await self.claim(claimed_at=first + timedelta(minutes=2))
         self.assertEqual(result["current_streak"], 2)
 
     async def test_streak_naive_dates_are_utc_and_backdated_claim_is_rejected(self):

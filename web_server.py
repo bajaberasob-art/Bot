@@ -18,6 +18,7 @@ import aiohttp
 import discord
 from aiohttp import web
 
+import subscription_service
 from database import (
     LOG_ROUTING_ALL_KEYS,
     LOG_ROUTING_KEYS,
@@ -89,6 +90,7 @@ from cogs.command_meta import (
     grouped_command_registry,
 )
 from cogs.community import PersistentDropdownTicketView, normalize_ticket_categories
+from level_admin import is_level_admin
 from leveling_api import register_leveling_routes
 from public_leaderboard import register_public_leaderboard_routes
 
@@ -674,6 +676,7 @@ async def api_me(req):
         for key, value in session.items()
         if key != "expires_at" and not key.startswith("_")
     }
+    public_session["local_development"] = bool(session.get("_local_dev"))
     # This is intentionally derived on every request so a session created
     # before a code update still gets the recovery link.
     public_session["invite_url"] = bot_invite_url()
@@ -847,7 +850,7 @@ def pwa_svg() -> str:
 
 
 def service_worker_source() -> str:
-    return """const CACHE = "prime-dashboard-shell-v10";
+    return """const CACHE = "prime-dashboard-shell-v13";
 const STATIC = [
   "./",
   "./static/app.css",
@@ -992,6 +995,20 @@ async def live_grant(session, guild) -> bool:
     allowed = bool(member and member_allows_dashboard(member, guild))
     GRANT_CACHE[(user_id, guild.id)] = (now, allowed)
     return allowed
+
+
+async def live_level_admin(session, guild) -> bool:
+    """Apply the stricter admin policy to destructive leveling operations."""
+    if session.get("_local_dev"):
+        return False
+    try:
+        user_id = int(session["id"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if user_id == int(getattr(guild, "owner_id", 0) or 0):
+        return True
+    member = await resolve_dashboard_member(guild, user_id)
+    return bool(member and is_level_admin(member, guild))
 
 
 async def authorize(req, *, write: bool = False):
@@ -1347,6 +1364,329 @@ async def api_guild_stats(req):
             latency_series=metrics,
         )
     )
+
+
+def _subscription_actor_id(session: dict) -> int:
+    try:
+        actor_id = int(session["id"])
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        raise web.HTTPUnauthorized(
+            text=json.dumps({"error": "unauthorized"}),
+            content_type="application/json",
+        ) from error
+    if actor_id < 0:
+        raise web.HTTPUnauthorized(
+            text=json.dumps({"error": "unauthorized"}),
+            content_type="application/json",
+        )
+    return actor_id
+
+
+def _subscription_validation_error(error: ValueError):
+    return json_error(400, "validation", message=str(error)[:500])
+
+
+async def _process_subscription_xp(bot, guild, result: dict) -> None:
+    """Reuse the bot cog's existing post-commit leveling notifications."""
+    if result.get("idempotent"):
+        return
+    record = result.get("subscription") or {}
+    member = guild.get_member(int(record.get("user_id", 0)))
+    if member is None:
+        try:
+            member = await guild.fetch_member(int(record["user_id"]))
+        except (discord.NotFound, discord.Forbidden):
+            return
+        except (discord.HTTPException, asyncio.TimeoutError):
+            logger.exception(
+                "Subscription dashboard cannot fetch member guild=%s",
+                guild.id,
+            )
+            return
+    if member.bot:
+        return
+    cog = bot.get_cog("SubscriptionCommands") if bot else None
+    handler = getattr(cog, "_process_level_events", None)
+    if callable(handler):
+        await handler(guild, member, result)
+
+
+@routes.get('/api/guild/{guild_id}/subscriptions')
+async def api_subscriptions_get(req):
+    _, guild = await authorize(req)
+    guild_id = int(guild.id)
+    try:
+        # Several service reads also run expiry processing or initialize
+        # defaults with BEGIN IMMEDIATE. Serialize this snapshot so concurrent
+        # writers do not contend with one another on the shared SQLite file.
+        settings = await subscription_service.get_subscription_settings(guild_id)
+        plans = await subscription_service.list_subscription_plans(guild_id)
+        reminders = await subscription_service.list_subscription_reminders(guild_id)
+        templates = await subscription_service.list_subscription_templates(guild_id)
+        records = await subscription_service.list_subscriptions(guild_id, limit=100)
+        analytics = await subscription_service.get_subscription_analytics(guild_id)
+        notifications = await subscription_service.list_subscription_notifications(
+            guild_id, limit=100
+        )
+        admin_audit = await subscription_service.list_subscription_admin_audit(
+            guild_id, limit=60
+        )
+        control_audit = await subscription_service.list_subscription_control_audit(
+            guild_id, limit=60
+        )
+        status_filter = str(req.query.get("status", "")).strip()
+        search = str(req.query.get("q", "")).strip().casefold()
+        if status_filter in {"active", "expired", "cancelled"}:
+            records = [row for row in records if row["status"] == status_filter]
+        if search:
+            records = [
+                row for row in records
+                if search in str(row["subscription_id"]).casefold()
+                or search in str(row["user_id"])
+                or search in str(row.get("plan_id") or "").casefold()
+            ]
+        return web.json_response(
+            {
+                "settings": settings,
+                "plans": plans,
+                "reminders": reminders,
+                "templates": templates,
+                "subscriptions": records,
+                "analytics": analytics,
+                "notifications": notifications,
+                "admin_audit": admin_audit,
+                "control_audit": control_audit,
+            }
+        )
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.get('/api/guild/{guild_id}/subscriptions/{subscription_id}')
+async def api_subscription_detail(req):
+    _, guild = await authorize(req)
+    subscription_id = req.match_info["subscription_id"]
+    try:
+        record = await subscription_service.get_subscription(
+            guild.id, subscription_id
+        )
+        if record is None:
+            return json_error(404, "not_found")
+        history, admin_audit = await asyncio.gather(
+            subscription_service.get_subscription_history(guild.id, subscription_id),
+            subscription_service.list_subscription_admin_audit(
+                guild.id, subscription_id=subscription_id, limit=100
+            ),
+        )
+        return web.json_response(
+            {"subscription": record, "history": history, "admin_audit": admin_audit}
+        )
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/settings')
+async def api_subscriptions_settings_save(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    expected_revision = body.pop("expected_revision", None)
+    try:
+        result = await subscription_service.update_subscription_settings(
+            guild.id,
+            body,
+            expected_revision=expected_revision,
+            actor_id=_subscription_actor_id(session),
+        )
+        return web.json_response({"settings": result})
+    except subscription_service.SubscriptionSettingsConflict as error:
+        return web.json_response(
+            {"error": "conflict", "settings": error.current}, status=409
+        )
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/plans')
+async def api_subscription_plan_save(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    plan_id = body.pop("plan_id", None)
+    try:
+        result = await subscription_service.save_subscription_plan(
+            guild.id, body, plan_id=plan_id,
+            actor_id=_subscription_actor_id(session),
+        )
+        return web.json_response({"plan": result})
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/plans/{plan_id}/disable')
+async def api_subscription_plan_disable(req):
+    session, guild = await authorize(req, write=True)
+    try:
+        result = await subscription_service.disable_subscription_plan(
+            guild.id, req.match_info["plan_id"],
+            actor_id=_subscription_actor_id(session),
+        )
+        return web.json_response({"plan": result})
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/reminders')
+async def api_subscription_reminder_save(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    reminder_id = body.pop("reminder_id", None)
+    try:
+        result = await subscription_service.save_subscription_reminder(
+            guild.id, body, reminder_id=reminder_id,
+            actor_id=_subscription_actor_id(session),
+        )
+        return web.json_response({"reminder": result})
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/reminders/{reminder_id}/disable')
+async def api_subscription_reminder_disable(req):
+    session, guild = await authorize(req, write=True)
+    try:
+        result = await subscription_service.disable_subscription_reminder(
+            guild.id, req.match_info["reminder_id"],
+            actor_id=_subscription_actor_id(session),
+        )
+        return web.json_response({"reminder": result})
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/templates')
+async def api_subscription_template_save(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    template_id = body.pop("template_id", None)
+    try:
+        result = await subscription_service.save_subscription_template(
+            guild.id, body, template_id=template_id,
+            actor_id=_subscription_actor_id(session),
+        )
+        return web.json_response({"template": result})
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/templates/{template_id}/disable')
+async def api_subscription_template_disable(req):
+    session, guild = await authorize(req, write=True)
+    try:
+        result = await subscription_service.disable_subscription_template(
+            guild.id, req.match_info["template_id"],
+            actor_id=_subscription_actor_id(session),
+        )
+        return web.json_response({"template": result})
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/grant')
+async def api_subscription_grant(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    allowed = {"user_id", "duration_days", "plan_id", "idempotency_key"}
+    if set(body) - allowed or "user_id" not in body:
+        return json_error(400, "validation", message="invalid grant fields")
+    try:
+        user_id = int(body["user_id"])
+        if user_id <= 0:
+            raise ValueError("user_id must be a positive integer")
+        try:
+            member = guild.get_member(user_id)
+            if member is None:
+                member = await guild.fetch_member(user_id)
+        except discord.NotFound as error:
+            raise ValueError("user_id must identify a member of this server") from error
+        except (discord.Forbidden, discord.HTTPException, asyncio.TimeoutError):
+            logger.exception(
+                "Subscription dashboard could not verify member guild=%s user=%s",
+                guild.id,
+                user_id,
+            )
+            return json_error(503, "member_verification_unavailable")
+        if getattr(member, "bot", False):
+            raise ValueError("subscriptions cannot be granted to bot accounts")
+        result = await subscription_service.create_subscription(
+            guild.id,
+            user_id,
+            body.get("duration_days"),
+            idempotency_key=body.get("idempotency_key"),
+            actor_id=_subscription_actor_id(session),
+            plan_id=body.get("plan_id"),
+        )
+        await _process_subscription_xp(request_bot(req), guild, result)
+        return web.json_response(result)
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/{subscription_id}/renew')
+async def api_subscription_renew(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    if set(body) - {"duration_days", "idempotency_key"}:
+        return json_error(400, "validation", message="invalid renewal fields")
+    try:
+        result = await subscription_service.renew_subscription(
+            guild.id,
+            req.match_info["subscription_id"],
+            body.get("duration_days"),
+            idempotency_key=body.get("idempotency_key"),
+            actor_id=_subscription_actor_id(session),
+        )
+        await _process_subscription_xp(request_bot(req), guild, result)
+        return web.json_response(result)
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/{subscription_id}/cancel')
+async def api_subscription_cancel(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    if set(body) - {"reason", "idempotency_key"}:
+        return json_error(400, "validation", message="invalid cancellation fields")
+    try:
+        result = await subscription_service.cancel_subscription(
+            guild.id,
+            req.match_info["subscription_id"],
+            idempotency_key=body.get("idempotency_key"),
+            actor_id=_subscription_actor_id(session),
+            reason=body.get("reason", ""),
+        )
+        return web.json_response(result)
+    except ValueError as error:
+        return _subscription_validation_error(error)
+
+
+@routes.post('/api/guild/{guild_id}/subscriptions/{subscription_id}/adjust')
+async def api_subscription_adjust(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    if set(body) - {"changes", "reason", "idempotency_key"}:
+        return json_error(400, "validation", message="invalid adjustment fields")
+    try:
+        result = await subscription_service.adjust_subscription(
+            guild.id,
+            req.match_info["subscription_id"],
+            body.get("changes"),
+            actor_id=_subscription_actor_id(session),
+            idempotency_key=body.get("idempotency_key"),
+            reason=body.get("reason", ""),
+        )
+        return web.json_response(result)
+    except ValueError as error:
+        return _subscription_validation_error(error)
 
 
 @routes.get('/api/guilds/{guild_id}/analytics')
@@ -5007,6 +5347,7 @@ async def index(req):
 register_leveling_routes(
     routes,
     authorize=authorize,
+    level_admin_authorize=live_level_admin,
     json_error=json_error,
     read_json_body=read_json_body,
     logger=logger,

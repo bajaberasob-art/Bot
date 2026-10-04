@@ -86,6 +86,15 @@
       },
     },
     economy: { wealth: [], settings: null, multipliers: {} },
+    subscriptionDashboard: {
+      data: null,
+      loading: false,
+      error: "",
+      guildId: null,
+      tab: sessionStorage.getItem("subscription-tab") || "overview",
+      query: "",
+      status: "all",
+    },
     logRouting: { channels: {} },
     ticketSearch: "",
     ticketStatusFilter: "all",
@@ -479,6 +488,7 @@
     overview: { label: "نظرة عامة", icon: "⌂", hint: "مركز القيادة" },
     tickets: { label: "التذاكر", icon: "▣", hint: "Help Desk" },
     gaming: { label: "السكريمات", icon: "◉", hint: "Gaming Ops" },
+    subscriptions: { label: "الاشتراكات", icon: "◈", hint: "Subscription Control" },
     clan: { label: "الكلان والتنافس", icon: "♛", hint: "Clan Ops" },
     broadcast: { label: "استوديو البث", icon: "✦", hint: "Broadcast Studio" },
     commands: { label: "الأوامر والأتمتة", icon: "⌘", hint: "Commands" },
@@ -592,7 +602,6 @@
         type: "button",
         "data-nav-view": view,
         "aria-current": state.activeView === view ? "page" : "false",
-        onPointerDown: closeNavigationOverlays,
         onClick: () => navigateView(view),
       },
       el("span", { class: "nav-icon", text: meta.icon, "aria-hidden": "true" }),
@@ -634,6 +643,7 @@
       { class: "mobile-more-menu", hidden: true },
       navButton("onboarding"),
       navButton("gaming"),
+      navButton("subscriptions"),
       navButton("clan"),
       navButton("broadcast"),
       navButton("security"),
@@ -649,7 +659,7 @@
     const moreButton = el(
       "button",
       {
-         class: `nav-item ${["onboarding", "gaming", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
+         class: `nav-item ${["onboarding", "gaming", "subscriptions", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
         type: "button",
         "aria-expanded": "false",
         onClick: () => {
@@ -6397,6 +6407,1030 @@
       card("سجل الإعلانات السابقة والمسودات", history),
     );
   }
+  const subscriptionEvents = [
+    ["created", "تفعيل الاشتراك"],
+    ["renewal", "تجديد الاشتراك"],
+    ["expiring", "تذكير قرب الانتهاء"],
+    ["expired", "انتهاء الاشتراك"],
+  ];
+  const subscriptionTabs = [
+    ["overview", "نظرة عامة"],
+    ["subscriptions", "الاشتراكات"],
+    ["settings", "الإعدادات"],
+    ["plans", "الخطط"],
+    ["reminders", "التذكيرات"],
+    ["templates", "القوالب"],
+    ["logs", "السجلات والتسليم"],
+  ];
+  const subscriptionStatuses = {
+    active: "نشط",
+    expired: "منتهي",
+    cancelled: "ملغي",
+    pending: "قيد الانتظار",
+    sending: "جارٍ الإرسال",
+    sent: "تم الإرسال",
+    failed: "فشل",
+    cancelled_notification: "ملغي",
+  };
+  const subNumber = (value) => Number(value || 0).toLocaleString("en-US");
+  const subDate = (value) => {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? String(value)
+      : date.toLocaleString("ar", { dateStyle: "medium", timeStyle: "short" });
+  };
+  function subStatus(value) {
+    const status = String(value || "");
+    return el("span", {
+      class: `sub-status sub-status-${status.replace(/[^a-z_]/g, "")}`,
+      text: subscriptionStatuses[status] || status || "—",
+    });
+  }
+  function subButton(label, handler, style = "ghost", disabled = false) {
+    return el("button", {
+      class: `btn ${style}`,
+      type: "button",
+      disabled,
+      text: label,
+      onClick: handler,
+    });
+  }
+  function subField(label, node, hint = "") {
+    return el(
+      "label",
+      { class: "subscription-field" },
+      el("span", { text: label }),
+      node,
+      hint ? el("small", { text: hint }) : null,
+    );
+  }
+  function subInput(name, label, value, type = "text", attrs = {}, hint = "") {
+    return subField(
+      label,
+      el("input", {
+        name,
+        type,
+        value: value == null ? "" : String(value),
+        ...attrs,
+      }),
+      hint,
+    );
+  }
+  function subCheck(name, label, checked) {
+    return el(
+      "label",
+      { class: "subscription-check" },
+      el("input", { name, type: "checkbox", checked: !!checked }),
+      el("span", { text: label }),
+    );
+  }
+  function subSelect(name, label, options, selected, attrs = {}, hint = "") {
+    const select = el("select", { name, ...attrs });
+    const hasSelectedOption = selected != null
+      && String(selected) !== ""
+      && options.some(([value]) => String(value) === String(selected));
+    const safeOptions = hasSelectedOption || selected == null || String(selected) === ""
+      ? options
+      : [...options, [String(selected), `القيمة المحفوظة (${String(selected)})`]];
+    safeOptions.forEach(([value, text]) => {
+      select.append(el("option", { value: String(value), text }));
+    });
+    select.value = selected == null ? "" : String(selected);
+    return subField(label, select, hint);
+  }
+  function subChannels() {
+    return Object.values(window.guildChannels || {}).map((channel) => [
+      String(channel.id),
+      `#${channel.name}`,
+    ]);
+  }
+  function subPlans(enabledOnly = false) {
+    const plans = state.subscriptionDashboard.data?.plans || [];
+    return plans
+      .filter((plan) => !enabledOnly || plan.enabled)
+      .map((plan) => [plan.plan_id, plan.name]);
+  }
+  function subTemplates(eventType) {
+    return (state.subscriptionDashboard.data?.templates || [])
+      .filter((template) => template.enabled && (!eventType || template.event_type === eventType))
+      .map((template) => [template.template_id, template.name]);
+  }
+  function subSelectOptions(options, emptyLabel = "بدون تحديد") {
+    return [["", emptyLabel], ...options];
+  }
+  async function loadSubscriptionDashboard(guildId = state.guild?.id, redraw = true) {
+    const viewState = state.subscriptionDashboard;
+    if (!guildId || (viewState.loading && viewState.guildId === guildId)) return;
+    viewState.loading = true;
+    viewState.error = "";
+    viewState.guildId = guildId;
+    if (redraw && state.activeView === "subscriptions") renderPage();
+    try {
+      const response = await api(`api/guild/${guildId}/subscriptions`, { cache: "no-store" });
+      const data = await readJson(response, {});
+      if (!response.ok) throw new Error(data.message || data.error || "تعذر تحميل بيانات الاشتراكات");
+      if (state.guild?.id !== guildId) return;
+      viewState.data = data;
+    } catch (error) {
+      if (error.message === "unauth") return;
+      if (state.guild?.id === guildId) viewState.error = error.message || "تعذر تحميل بيانات الاشتراكات";
+    } finally {
+      if (viewState.guildId === guildId) viewState.loading = false;
+      if (state.guild?.id === guildId && state.activeView === "subscriptions") renderPage();
+    }
+  }
+  async function subscriptionPost(path, body, successMessage) {
+    const guildId = state.guild?.id;
+    if (!guildId) return null;
+    try {
+      const response = await writeApi(`api/guild/${guildId}/subscriptions${path}`, body);
+      const data = await readJson(response, {});
+      if (response.status === 409) {
+        toast("تغيرت إعدادات الاشتراكات في جلسة أخرى. حمّل النسخة الحالية ثم أعد تطبيق تعديلاتك.", "warn", 6000);
+        await loadSubscriptionDashboard(guildId, false);
+        return null;
+      }
+      if (!response.ok) {
+        toast(data.message || (data.error === "member_verification_unavailable"
+          ? "تعذر التحقق من عضوية المستخدم حالياً"
+          : "تعذر حفظ التغيير"), "error", 5000);
+        return null;
+      }
+      toast(successMessage, "success", 3000);
+      await loadSubscriptionDashboard(guildId, false);
+      return data;
+    } catch (error) {
+      if (error.message !== "unauth") toast("تعذر الاتصال بالخادم. لم نغيّر البيانات محلياً.", "warn", 5000);
+      return null;
+    }
+  }
+  let subscriptionDialogSequence = 0;
+  const subscriptionFocusableSelector = [
+    "a[href]",
+    "button:not([disabled])",
+    "input:not([disabled]):not([type='hidden'])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])",
+  ].join(",");
+  function subscriptionDialog(title) {
+    const titleId = `subscription-dialog-title-${++subscriptionDialogSequence}`;
+    const back = el("div", {
+      class: "modal-back",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": titleId,
+    });
+    const modal = el("div", { class: "modal subscription-modal", tabindex: "-1" },
+      el("h2", { id: titleId, text: title }),
+    );
+    back.append(modal);
+    let returnFocus = null;
+    let open = false;
+    const close = () => {
+      if (!open) return;
+      open = false;
+      document.removeEventListener("keydown", onKeydown, true);
+      back.remove();
+      if (returnFocus?.isConnected) returnFocus.focus();
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...modal.querySelectorAll(subscriptionFocusableSelector)]
+        .filter((node) => node.getClientRects().length > 0);
+      if (!focusable.length) {
+        event.preventDefault();
+        modal.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const show = () => {
+      returnFocus = document.activeElement;
+      document.body.append(back);
+      open = true;
+      document.addEventListener("keydown", onKeydown, true);
+      back.addEventListener("click", (event) => {
+        if (event.target === back) close();
+      });
+      const initialFocus = modal.querySelector(subscriptionFocusableSelector) || modal;
+      initialFocus.focus();
+    };
+    return { back, modal, close, show };
+  }
+  function subFormModal(title, form, subtitle = "") {
+    const dialog = subscriptionDialog(title);
+    const { modal, close, show } = dialog;
+    form.append(
+      el("div", { class: "modal-actions" },
+        el("button", { class: "btn primary", type: "submit", text: "تأكيد" }),
+        el("button", { class: "btn ghost", type: "button", text: "إلغاء", onClick: close }),
+      ),
+    );
+    modal.append(
+      subtitle ? el("p", { text: subtitle }) : null,
+      form,
+    );
+    show();
+    return { close, form };
+  }
+  function subscriptionOperationKey(kind) {
+    const nonce = globalThis.crypto?.randomUUID?.()
+      || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    return `dashboard:${kind}:${state.guild.id}:${nonce}`;
+  }
+  function openSubscriptionGrant() {
+    const form = el("form", { class: "subscription-form-grid" });
+    const planOptions = subSelectOptions(subPlans(true), "الخطة الافتراضية للسيرفر");
+    form.append(
+      subInput("user_id", "معرّف عضو Discord", "", "text", {
+        inputmode: "numeric",
+        minlength: "15",
+        maxlength: "22",
+        pattern: "[0-9]{15,22}",
+        required: true,
+        dir: "ltr",
+        placeholder: "مثال: 123456789012345678",
+      }, "يجب أن يكون العضو موجوداً في هذا السيرفر."),
+      subSelect("plan_id", "الخطة", planOptions, state.subscriptionDashboard.data?.settings?.default_plan_id),
+      subInput("duration_days", "المدة بالأيام", "", "number", {
+        min: "1",
+        max: "36500",
+        step: "1",
+        placeholder: "استخدم مدة الخطة أو الافتراضي",
+      }, "اتركها فارغة لاستخدام مدة الخطة المختارة أو إعداد السيرفر."),
+    );
+    const modal = subFormModal("إنشاء اشتراك", form, "سيُسجل XP في محرك المستويات الحالي، مع منع تكرار العملية عند إعادة الطلب.");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const body = {
+        user_id: String(values.get("user_id") || "").trim(),
+        idempotency_key: subscriptionOperationKey("grant"),
+      };
+      const planId = String(values.get("plan_id") || "");
+      const days = String(values.get("duration_days") || "").trim();
+      if (planId) body.plan_id = planId;
+      if (days) body.duration_days = Number(days);
+      const result = await subscriptionPost("/grant", body, "تم إنشاء الاشتراك.");
+      if (result) {
+        modal.close();
+        const amount = Number(result.xp?.amount || 0);
+        toast(`تم تسجيل ${subNumber(amount)} XP في محرك المستويات`, "success", 3500);
+      }
+    });
+  }
+  function openSubscriptionRenew(record) {
+    const plan = (state.subscriptionDashboard.data?.plans || [])
+      .find((item) => item.plan_id === record.plan_id);
+    const form = el("form", { class: "subscription-form-grid" });
+    form.append(
+      el("p", { class: "subscription-form-note", text: `تجديد اشتراك العضو ${record.user_id} · ${record.subscription_id}` }),
+      subInput("duration_days", "المدة المضافة بالأيام", plan?.duration_days || state.subscriptionDashboard.data?.settings?.renewal_duration_days || 30, "number", {
+        min: "1",
+        max: "36500",
+        step: "1",
+        required: true,
+      }),
+    );
+    const modal = subFormModal("تجديد الاشتراك", form, "تُضاف المدة بعد تاريخ الانتهاء الحالي إذا كان الاشتراك ما زال سارياً.");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const days = Number(new FormData(form).get("duration_days"));
+      const result = await subscriptionPost(
+        `/${encodeURIComponent(record.subscription_id)}/renew`,
+        { duration_days: days, idempotency_key: subscriptionOperationKey("renew") },
+        "تم تجديد الاشتراك.",
+      );
+      if (result) {
+        modal.close();
+        toast(`XP التجديد: ${subNumber(result.xp?.amount || 0)}`, "success", 3000);
+      }
+    });
+  }
+  function openSubscriptionAdjust(record) {
+    const currentDate = new Date(record.end_date);
+    const localDate = Number.isNaN(currentDate.getTime())
+      ? ""
+      : new Date(currentDate.getTime() - currentDate.getTimezoneOffset() * 60000)
+        .toISOString().slice(0, 16);
+    const form = el("form", { class: "subscription-form-grid" });
+    form.append(
+      subInput("end_date", "تاريخ الانتهاء الجديد", localDate, "datetime-local"),
+      subSelect("status", "الحالة", [
+        ["", "بدون تغيير"],
+        ["active", "نشط"],
+        ["expired", "منتهي"],
+        ["cancelled", "ملغي"],
+      ], ""),
+      subInput("reason", "سبب التعديل", "", "text", { maxlength: "500", required: true }),
+    );
+    const modal = subFormModal("تصحيح سجل الاشتراك", form, "التصحيح إداري ومسجل في سجل التدقيق. لا تُعدّل هذه القيم إلا لتصحيح سجل غير دقيق.");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const changes = {};
+      const endDate = String(values.get("end_date") || "");
+      const status = String(values.get("status") || "");
+      if (endDate) changes.end_date = new Date(endDate).toISOString();
+      if (status) changes.status = status;
+      if (!Object.keys(changes).length) {
+        toast("غيّر تاريخ الانتهاء أو الحالة أولاً", "warn");
+        return;
+      }
+      const result = await subscriptionPost(
+        `/${encodeURIComponent(record.subscription_id)}/adjust`,
+        {
+          changes,
+          reason: String(values.get("reason") || "").trim(),
+          idempotency_key: subscriptionOperationKey("adjust"),
+        },
+        "تم تصحيح سجل الاشتراك وتسجيل التعديل.",
+      );
+      if (result) modal.close();
+    });
+  }
+  async function openSubscriptionDetails(record) {
+    const dialog = subscriptionDialog(`الاشتراك ${record.subscription_id}`);
+    const { modal, close, show } = dialog;
+    const body = el("div", { class: "subscription-detail-body" },
+      el("p", { class: "subscription-form-note", text: "جارٍ تحميل سجل الاشتراك والتدقيق…" }),
+    );
+    modal.append(
+      el("div", { class: "modal-actions" }, subButton("إغلاق", close)),
+      body,
+    );
+    show();
+    try {
+      const response = await api(`api/guild/${state.guild.id}/subscriptions/${encodeURIComponent(record.subscription_id)}`, { cache: "no-store" });
+      const data = await readJson(response, {});
+      if (!response.ok) throw new Error(data.message || "تعذر تحميل السجل");
+      const history = data.history || [];
+      const audit = data.admin_audit || [];
+      body.replaceChildren(
+        el("div", { class: "subscription-detail-summary" },
+          el("span", { text: `العضو: ${record.user_id}` }),
+          subStatus(record.status),
+          el("span", { text: `البداية: ${subDate(record.start_date)}` }),
+          el("span", { text: `النهاية: ${subDate(record.end_date)}` }),
+        ),
+        el("h3", { text: "تاريخ الأحداث" }),
+        history.length ? el("div", { class: "subscription-audit-list" },
+          ...history.map((item) => el("article", { class: "subscription-audit-row" },
+            el("strong", { text: item.event_type }),
+            el("span", { text: `${subscriptionStatuses[item.status] || item.status || ""} · ${subDate(item.created_at)}` }),
+            item.details && Object.keys(item.details).length
+              ? el("small", { text: JSON.stringify(item.details) })
+              : null,
+          )),
+        ) : el("p", { class: "empty-row", text: "لا توجد أحداث محفوظة." }),
+        el("h3", { text: "تعديلات المسؤولين" }),
+        audit.length ? el("div", { class: "subscription-audit-list" },
+          ...audit.map((item) => el("article", { class: "subscription-audit-row" },
+            el("strong", { text: `${item.event_type || item.operation} · المسؤول ${item.actor_id}` }),
+            el("span", { text: subDate(item.created_at) }),
+            item.after ? el("small", { text: JSON.stringify(item.after) }) : null,
+          )),
+        ) : el("p", { class: "empty-row", text: "لا توجد تعديلات إدارية." }),
+      );
+    } catch (error) {
+      body.replaceChildren(el("p", { class: "subscription-error", role: "alert", text: error.message || "تعذر تحميل السجل" }));
+    }
+  }
+  async function cancelSubscription(record) {
+    if (!window.confirm(`إلغاء الاشتراك ${record.subscription_id} للعضو ${record.user_id}؟`)) return;
+    const reason = window.prompt("سبب الإلغاء (اختياري):", "") ?? null;
+    if (reason === null) return;
+    await subscriptionPost(
+      `/${encodeURIComponent(record.subscription_id)}/cancel`,
+      { reason, idempotency_key: subscriptionOperationKey("cancel") },
+      "تم إلغاء الاشتراك وتسجيل الإجراء.",
+    );
+  }
+  function subscriptionRecordsView(records) {
+    const root = el("section", { class: "subscription-panel" });
+    const filterForm = el("form", { class: "subscription-filter-form" });
+    const search = el("input", {
+      name: "q",
+      type: "search",
+      value: state.subscriptionDashboard.query,
+      placeholder: "ابحث بمعرّف الاشتراك أو العضو أو الخطة",
+      "aria-label": "بحث الاشتراكات",
+    });
+    const status = el("select", { name: "status", "aria-label": "تصفية حسب الحالة" },
+      ["all", "active", "expired", "cancelled"].map((value) =>
+        el("option", {
+          value,
+          text: value === "all" ? "كل الحالات" : subscriptionStatuses[value],
+        }),
+      ),
+    );
+    status.value = state.subscriptionDashboard.status;
+    filterForm.append(search, status,
+      el("button", { class: "btn ghost", type: "submit", text: "تصفية" }),
+    );
+    filterForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      state.subscriptionDashboard.query = search.value.trim();
+      state.subscriptionDashboard.status = status.value;
+      renderPage();
+    });
+    const q = state.subscriptionDashboard.query.toLocaleLowerCase();
+    const filtered = records.filter((record) => {
+      if (state.subscriptionDashboard.status !== "all" && record.status !== state.subscriptionDashboard.status) return false;
+      return !q || [record.subscription_id, record.user_id, record.plan_id]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(q));
+    });
+    const table = el("div", {
+      class: "subscription-table-wrap",
+      tabindex: "0",
+      role: "region",
+      "aria-label": "جدول الاشتراكات؛ مرّر أفقياً لعرض كل الأعمدة",
+    });
+    if (!filtered.length) {
+      table.append(el("div", { class: "empty-row", text: records.length ? "لا توجد نتائج تطابق التصفية." : "لا توجد اشتراكات مسجلة في هذا السيرفر." }));
+    } else {
+      const body = el("tbody");
+      filtered.forEach((record) => {
+        const plan = (state.subscriptionDashboard.data?.plans || [])
+          .find((item) => item.plan_id === record.plan_id);
+        const actions = el("div", { class: "subscription-row-actions" },
+          subButton("التفاصيل", () => openSubscriptionDetails(record)),
+          record.status !== "cancelled" && record.status !== "expired"
+            ? subButton("تجديد", () => openSubscriptionRenew(record), "primary")
+            : record.status === "expired"
+              ? subButton("تجديد", () => openSubscriptionRenew(record), "primary")
+              : null,
+          record.status === "active"
+            ? subButton("إلغاء", () => cancelSubscription(record), "cancel")
+            : null,
+          subButton("تصحيح", () => openSubscriptionAdjust(record)),
+        );
+        body.append(el("tr", {},
+          el("td", {}, el("strong", { text: record.subscription_id }), el("small", { class: "sub-cell-meta", text: plan?.name || record.plan_id || "بدون خطة" })),
+          el("td", { dir: "ltr", text: String(record.user_id) }),
+          el("td", {}, subStatus(record.status)),
+          el("td", { text: subDate(record.end_date) }),
+          el("td", {}, actions),
+        ));
+      });
+      table.append(el("table", {},
+        el("thead", {}, el("tr", {},
+          el("th", { text: "الاشتراك / الخطة" }),
+          el("th", { text: "العضو" }),
+          el("th", { text: "الحالة" }),
+          el("th", { text: "ينتهي في" }),
+          el("th", { text: "الإجراءات" }),
+        )),
+        body,
+      ));
+    }
+    root.append(filterForm, table);
+    return root;
+  }
+  function subscriptionSettingsView(data) {
+    const settings = data.settings || {};
+    const rules = settings.notification_rules || {};
+    const form = el("form", { class: "subscription-config-form" });
+    const top = el("div", { class: "subscription-form-grid" });
+    [
+      ["enabled", "تفعيل نظام الاشتراكات"],
+      ["new_subscription_enabled", "السماح بالاشتراكات الجديدة"],
+      ["renewal_enabled", "السماح بالتجديد"],
+      ["xp_enabled", "منح XP عبر محرك المستويات"],
+      ["notifications_enabled", "تفعيل الإشعارات"],
+      ["expiry_enabled", "تطبيق إجراء انتهاء الاشتراك"],
+      ["expiry_detection_enabled", "تشغيل فحص الاشتراكات المستحقة"],
+      ["reminders_enabled", "تشغيل التذكيرات"],
+    ].forEach(([key, label]) => top.append(subCheck(key, label, settings[key])));
+    const fields = el("div", { class: "subscription-form-grid" },
+      subInput("new_xp_base", "XP الأساسي عند الإنشاء", settings.new_xp_base, "number", { min: "0", max: "100000", step: "1" }),
+      subInput("renewal_xp_base", "XP الأساسي عند التجديد", settings.renewal_xp_base, "number", { min: "0", max: "100000", step: "1" }),
+      subInput("level_step_xp", "XP الإضافي لكل مستوى", settings.level_step_xp, "number", { min: "0", max: "100000", step: "1" }),
+      subInput("new_xp_jitter", "حد الزيادة العشوائية للإنشاء", settings.new_xp_jitter, "number", { min: "0", max: "100000", step: "1" }),
+      subInput("renewal_xp_jitter", "حد الزيادة العشوائية للتجديد", settings.renewal_xp_jitter, "number", { min: "0", max: "100000", step: "1" }),
+      subInput("new_xp_cap", "الحد الأعلى لـXP الإنشاء", settings.new_xp_cap, "number", { min: "0", max: "100000", step: "1" }),
+      subInput("renewal_xp_cap", "الحد الأعلى لـXP التجديد", settings.renewal_xp_cap, "number", { min: "0", max: "100000", step: "1" }),
+      subInput("xp_multiplier", "مضاعف XP", settings.xp_multiplier, "number", { min: "0", max: "100", step: "0.01" }),
+      subInput("default_duration_days", "مدة الاشتراك الافتراضية بالأيام", settings.default_duration_days, "number", { min: "1", max: "36500", step: "1" }),
+      subInput("renewal_duration_days", "مدة التجديد الافتراضية بالأيام", settings.renewal_duration_days, "number", { min: "1", max: "36500", step: "1" }),
+      subInput("notification_claim_timeout_minutes", "مهلة استعادة الإشعار العالق بالدقائق", settings.notification_claim_timeout_minutes, "number", { min: "1", max: "120", step: "1" }),
+      subSelect("expiry_action", "إجراء الانتهاء", [
+        ["expire", "تغيير الحالة إلى منتهي"],
+        ["cancel", "تغيير الحالة إلى ملغي"],
+        ["keep_active", "إبقاء الحالة نشطة"],
+      ], settings.expiry_action || "expire"),
+      subSelect("default_plan_id", "الخطة الافتراضية", subSelectOptions(subPlans(true), "بدون خطة افتراضية"), settings.default_plan_id || ""),
+    );
+    const routing = el("div", { class: "subscription-routing-list" });
+    subscriptionEvents.forEach(([eventType, label]) => {
+      const rule = rules[eventType] || {};
+      const eventTemplates = subSelectOptions(subTemplates(eventType), "استخدم القالب الافتراضي");
+      routing.append(el("article", { class: "subscription-routing-card" },
+        el("h3", { text: label }),
+        el("div", { class: "subscription-checks" },
+          subCheck(`rule_${eventType}_enabled`, "تفعيل الحدث", rule.enabled !== false),
+          subCheck(`rule_${eventType}_dm_enabled`, "إرسال DM", rule.dm_enabled !== false),
+          subCheck(`rule_${eventType}_channel_enabled`, "إرسال إلى قناة", !!rule.channel_enabled),
+        ),
+        el("div", { class: "subscription-form-grid" },
+          subSelect(`rule_${eventType}_channel_id`, "قناة الإرسال", subSelectOptions(subChannels()), rule.channel_id || ""),
+          subSelect(`rule_${eventType}_template_id`, "القالب", eventTemplates, rule.template_id || ""),
+        ),
+      ));
+    });
+    form.append(
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "حالة النظام ومحرك XP" }),
+        top,
+        fields,
+      ),
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "توجيه الإشعارات حسب الحدث" }),
+        routing,
+      ),
+      el("div", { class: "subscription-form-actions" },
+        el("button", { class: "btn primary", type: "submit", text: "حفظ إعدادات الاشتراكات" }),
+        el("span", { class: "subscription-muted", text: `مراجعة الإعدادات ${settings.revision ?? 0} · الحفظ يرفض التعديلات القديمة تلقائياً` }),
+      ),
+    );
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const body = {
+        expected_revision: Number(settings.revision || 0),
+        notification_rules: {},
+      };
+      const boolKeys = [
+        "enabled", "new_subscription_enabled", "renewal_enabled",
+        "xp_enabled", "notifications_enabled", "expiry_enabled",
+        "expiry_detection_enabled", "reminders_enabled",
+      ];
+      boolKeys.forEach((key) => {
+        body[key] = form.elements.namedItem(key).checked;
+      });
+      const intKeys = [
+        "new_xp_base", "renewal_xp_base", "level_step_xp", "new_xp_jitter",
+        "renewal_xp_jitter", "new_xp_cap", "renewal_xp_cap",
+        "default_duration_days", "renewal_duration_days",
+        "notification_claim_timeout_minutes",
+      ];
+      intKeys.forEach((key) => {
+        body[key] = Number(values.get(key));
+      });
+      body.xp_multiplier = Number(values.get("xp_multiplier"));
+      body.expiry_action = values.get("expiry_action");
+      body.default_plan_id = values.get("default_plan_id") || null;
+      subscriptionEvents.forEach(([eventType]) => {
+        body.notification_rules[eventType] = {
+          enabled: form.elements.namedItem(`rule_${eventType}_enabled`).checked,
+          dm_enabled: form.elements.namedItem(`rule_${eventType}_dm_enabled`).checked,
+          channel_enabled: form.elements.namedItem(`rule_${eventType}_channel_enabled`).checked,
+          channel_id: values.get(`rule_${eventType}_channel_id`) || null,
+          template_id: values.get(`rule_${eventType}_template_id`) || null,
+        };
+      });
+      await subscriptionPost("/settings", body, "تم حفظ إعدادات الاشتراكات وتسجيلها في التدقيق.");
+    });
+    return form;
+  }
+  function subscriptionPlanForm(plan = null) {
+    const form = el("form", { class: "subscription-entity-form" });
+    const planOverrides = plan?.notification_overrides || {};
+    const globalRules = state.subscriptionDashboard.data?.settings?.notification_rules || {};
+    const planRouting = el("div", { class: "subscription-plan-routing" });
+    subscriptionEvents.forEach(([eventType, label]) => {
+      const override = planOverrides[eventType] || {};
+      const globalRule = globalRules[eventType] || {};
+      const effective = (key, fallback) =>
+        Object.prototype.hasOwnProperty.call(override, key) ? override[key] : fallback;
+      planRouting.append(el("article", { class: "subscription-routing-card" },
+        el("h4", { text: label }),
+        subCheck(`override_${eventType}`, "تخصيص توجيه هذا الحدث لهذه الخطة", Object.keys(override).length > 0),
+        el("div", { class: "subscription-checks" },
+          subCheck(`override_${eventType}_enabled`, "الإشعار مفعل", effective("enabled", globalRule.enabled !== false)),
+          subCheck(`override_${eventType}_dm_enabled`, "إرسال DM", effective("dm_enabled", globalRule.dm_enabled !== false)),
+          subCheck(`override_${eventType}_channel_enabled`, "إرسال إلى قناة", !!effective("channel_enabled", globalRule.channel_enabled)),
+        ),
+        el("div", { class: "subscription-form-grid" },
+          subSelect(
+            `override_${eventType}_channel_id`,
+            "القناة",
+            subSelectOptions(subChannels()),
+            effective("channel_id", globalRule.channel_id || ""),
+          ),
+          subSelect(
+            `override_${eventType}_template_id`,
+            "القالب",
+            subSelectOptions(subTemplates(eventType), "استخدم القالب العام"),
+            effective("template_id", globalRule.template_id || ""),
+          ),
+        ),
+      ));
+    });
+    form.append(
+      el("input", { type: "hidden", name: "plan_id", value: plan?.plan_id || "" }),
+      el("div", { class: "subscription-form-grid" },
+        subInput("name", "اسم الخطة", plan?.name || "", "text", { maxlength: "80", required: true }),
+        subInput("duration_days", "المدة بالأيام", plan?.duration_days ?? 30, "number", { min: "1", max: "36500", required: true }),
+        subInput("description", "الوصف", plan?.description || "", "text", { maxlength: "500" }),
+        subInput("price_cents", "السعر بأصغر وحدة نقدية (اختياري)", plan?.price_cents ?? "", "number", { min: "0", max: "1000000000", step: "1" }, "مثال: 499 = 4.99 من العملة المحددة. لا توجد معالجة دفع."),
+        subInput("currency", "رمز العملة", plan?.currency || "USD", "text", { minlength: "3", maxlength: "3", pattern: "[A-Za-z]{3}", dir: "ltr" }),
+        subInput("new_xp_base", "XP الإنشاء (فارغ = افتراضي السيرفر)", plan?.new_xp_base ?? "", "number", { min: "0", max: "100000", step: "1" }),
+        subInput("renewal_xp_base", "XP التجديد (فارغ = افتراضي السيرفر)", plan?.renewal_xp_base ?? "", "number", { min: "0", max: "100000", step: "1" }),
+        subInput("xp_multiplier", "مضاعف XP (فارغ = افتراضي السيرفر)", plan?.xp_multiplier ?? "", "number", { min: "0", max: "100", step: "0.01" }),
+        subSelect("expiry_action", "إجراء الانتهاء", [
+          ["", "افتراضي السيرفر"],
+          ["expire", "منتهي"],
+          ["cancel", "ملغي"],
+          ["keep_active", "إبقاء نشط"],
+        ], plan?.expiry_action || ""),
+      ),
+      el("div", { class: "subscription-checks" },
+        subCheck("xp_enabled", "منح XP لهذه الخطة", plan?.xp_enabled !== false),
+        subCheck("notifications_enabled", "إشعارات الخطة", plan?.notifications_enabled !== false),
+        subCheck("reminders_enabled", "تذكيرات الانتهاء", plan?.reminders_enabled !== false),
+        subCheck("enabled", "الخطة متاحة", plan?.enabled !== false),
+      ),
+      el("section", { class: "subscription-plan-routing-panel" },
+        el("h4", { text: "توجيه الإشعارات الخاص بالخطة" }),
+        el("p", { class: "subscription-muted", text: "اختياري: فعّل التخصيص للحدث لتجاوز توجيه السيرفر لهذه الخطة فقط." }),
+        planRouting,
+      ),
+      el("div", { class: "subscription-form-actions" },
+        el("button", { class: "btn primary", type: "submit", text: plan ? "حفظ الخطة" : "إنشاء الخطة" }),
+        plan?.enabled ? subButton("تعطيل", async () => {
+          if (!window.confirm(`تعطيل الخطة «${plan.name}»؟ ستبقى الاشتراكات الحالية محفوظة.`)) return;
+          const result = await subscriptionPost(`/plans/${encodeURIComponent(plan.plan_id)}/disable`, {}, "تم تعطيل الخطة.");
+          if (result) renderPage();
+        }, "cancel") : null,
+      ),
+    );
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const optionalNumber = (key) => String(values.get(key) || "").trim() === ""
+        ? null
+        : Number(values.get(key));
+      const body = {
+        name: String(values.get("name") || "").trim(),
+        description: String(values.get("description") || ""),
+        duration_days: Number(values.get("duration_days")),
+        price_cents: optionalNumber("price_cents"),
+        currency: String(values.get("currency") || "USD").trim().toUpperCase(),
+        xp_enabled: form.elements.namedItem("xp_enabled").checked,
+        new_xp_base: optionalNumber("new_xp_base"),
+        renewal_xp_base: optionalNumber("renewal_xp_base"),
+        xp_multiplier: optionalNumber("xp_multiplier"),
+        notification_overrides: {},
+        notifications_enabled: form.elements.namedItem("notifications_enabled").checked,
+        reminders_enabled: form.elements.namedItem("reminders_enabled").checked,
+        expiry_action: values.get("expiry_action") || null,
+        enabled: form.elements.namedItem("enabled").checked,
+      };
+      subscriptionEvents.forEach(([eventType]) => {
+        if (!form.elements.namedItem(`override_${eventType}`).checked) return;
+        body.notification_overrides[eventType] = {
+          enabled: form.elements.namedItem(`override_${eventType}_enabled`).checked,
+          dm_enabled: form.elements.namedItem(`override_${eventType}_dm_enabled`).checked,
+          channel_enabled: form.elements.namedItem(`override_${eventType}_channel_enabled`).checked,
+          channel_id: values.get(`override_${eventType}_channel_id`) || null,
+          template_id: values.get(`override_${eventType}_template_id`) || null,
+        };
+      });
+      const planId = String(values.get("plan_id") || "");
+      if (planId) body.plan_id = planId;
+      const result = await subscriptionPost("/plans", body, planId ? "تم حفظ الخطة." : "تم إنشاء الخطة.");
+      if (result) renderPage();
+    });
+    return form;
+  }
+  function subscriptionPlansView(data) {
+    const plans = data.plans || [];
+    return el("div", { class: "subscription-stack" },
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "إضافة خطة" }),
+        el("p", { class: "subscription-muted", text: "الخطط تصنيف ومدد ومزايا XP وإشعارات؛ لا تُنشئ عملية دفع أو تحصيل." }),
+        subscriptionPlanForm(),
+      ),
+      el("div", { class: "subscription-entity-grid" },
+        ...(plans.length
+          ? plans.map((plan) => el("section", { class: `subscription-panel subscription-entity${plan.enabled ? "" : " is-disabled"}` },
+            el("div", { class: "subscription-entity-head" },
+              el("div", {}, el("h3", { text: plan.name }), el("small", { text: `${plan.duration_days} يوم · ${plan.plan_id}` })),
+              subStatus(plan.enabled ? "active" : "disabled"),
+            ),
+            plan.description ? el("p", { class: "subscription-muted", text: plan.description }) : null,
+            subscriptionPlanForm(plan),
+          ))
+          : [el("div", { class: "empty-row", text: "لا توجد خطط مخصصة؛ يمكن للنظام استخدام المدة الافتراضية." })]),
+      ),
+    );
+  }
+  function subscriptionReminderForm(reminder = null) {
+    const form = el("form", { class: "subscription-entity-form" });
+    const planSelect = el("select", { name: "plan_ids", multiple: true, size: "4" },
+      subPlans().map(([id, name]) => el("option", { value: id, text: name })),
+    );
+    const selectedPlans = new Set(reminder?.conditions?.plan_ids || []);
+    [...planSelect.options].forEach((option) => {
+      option.selected = selectedPlans.has(option.value);
+    });
+    form.append(
+      el("input", { type: "hidden", name: "reminder_id", value: reminder?.reminder_id || "" }),
+      el("div", { class: "subscription-form-grid" },
+        subInput("name", "اسم التذكير", reminder?.name || "", "text", { maxlength: "80", required: true }),
+        subInput("hours_before", "قبل الانتهاء (ساعات)", reminder?.hours_before ?? 24, "number", { min: "1", max: "876000", step: "1", required: true }),
+        subSelect("template_id", "قالب تذكير", subSelectOptions(subTemplates("expiring"), "القالب الافتراضي"), reminder?.template_id || ""),
+        subSelect("channel_id", "قناة الإرسال", subSelectOptions(subChannels()), reminder?.channel_id || ""),
+        subField("قصر التذكير على الخطط (اختياري)", planSelect, "اترك الكل غير محدد لتطبيقه على جميع الخطط."),
+      ),
+      el("div", { class: "subscription-checks" },
+        subCheck("enabled", "التذكير مفعل", reminder?.enabled !== false),
+        subCheck("dm_enabled", "إرسال DM", reminder?.dm_enabled !== false),
+        subCheck("channel_enabled", "إرسال إلى القناة", !!reminder?.channel_enabled),
+      ),
+      el("div", { class: "subscription-form-actions" },
+        el("button", { class: "btn primary", type: "submit", text: reminder ? "حفظ التذكير" : "إنشاء التذكير" }),
+        reminder?.enabled ? subButton("تعطيل", async () => {
+          if (!window.confirm(`تعطيل التذكير «${reminder.name}»؟`)) return;
+          const result = await subscriptionPost(`/reminders/${encodeURIComponent(reminder.reminder_id)}/disable`, {}, "تم تعطيل التذكير.");
+          if (result) renderPage();
+        }, "cancel") : null,
+      ),
+    );
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const planIds = [...planSelect.selectedOptions].map((option) => option.value);
+      const body = {
+        name: String(values.get("name") || "").trim(),
+        hours_before: Number(values.get("hours_before")),
+        enabled: form.elements.namedItem("enabled").checked,
+        dm_enabled: form.elements.namedItem("dm_enabled").checked,
+        channel_enabled: form.elements.namedItem("channel_enabled").checked,
+        channel_id: values.get("channel_id") || null,
+        template_id: values.get("template_id") || null,
+        conditions: planIds.length ? { plan_ids: planIds } : {},
+      };
+      const reminderId = String(values.get("reminder_id") || "");
+      if (reminderId) body.reminder_id = reminderId;
+      const result = await subscriptionPost("/reminders", body, reminderId ? "تم حفظ التذكير." : "تم إنشاء التذكير.");
+      if (result) renderPage();
+    });
+    return form;
+  }
+  function subscriptionRemindersView(data) {
+    const reminders = data.reminders || [];
+    return el("div", { class: "subscription-stack" },
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "إضافة قاعدة تذكير" }),
+        el("p", { class: "subscription-muted", text: "القواعد محفوظة في قاعدة البيانات وتطبقها مهمة البوت تلقائياً؛ عند التأخر يرسل العامل أقرب تذكير مستحق فقط." }),
+        subscriptionReminderForm(),
+      ),
+      el("div", { class: "subscription-entity-grid" },
+        ...(reminders.length
+          ? reminders.map((reminder) => el("section", { class: `subscription-panel subscription-entity${reminder.enabled ? "" : " is-disabled"}` },
+            el("div", { class: "subscription-entity-head" },
+              el("div", {}, el("h3", { text: reminder.name }), el("small", { text: `قبل ${reminder.hours_before} ساعة · ${reminder.reminder_id}` })),
+              subStatus(reminder.enabled ? "active" : "disabled"),
+            ),
+            subscriptionReminderForm(reminder),
+          ))
+          : [el("div", { class: "empty-row", text: "لا توجد قواعد تذكير." })]),
+      ),
+    );
+  }
+  function subscriptionTemplateForm(template = null) {
+    const form = el("form", { class: "subscription-entity-form" });
+    const eventOptions = subscriptionEvents.map(([value, label]) => [value, label]);
+    form.append(
+      el("input", { type: "hidden", name: "template_id", value: template?.template_id || "" }),
+      el("div", { class: "subscription-form-grid" },
+        subInput("name", "اسم القالب", template?.name || "", "text", { maxlength: "80", required: true }),
+        subSelect("event_type", "نوع الحدث", eventOptions, template?.event_type || "created", template?.is_default ? { disabled: true } : {}),
+      ),
+      subField("نص الرسالة",
+        el("textarea", { name: "content", rows: "4", maxlength: "1000", required: true, placeholder: "استخدم الحقول مثل {user} و{server} و{end_date} و{xp}." }, template?.content || ""),
+        "الحقول المتاحة: {user} {name} {server} {plan} {start_date} {end_date} {days_remaining} {subscription_id} {xp} {level} {message} {remaining}."),
+      el("div", { class: "subscription-checks" }, subCheck("enabled", "القالب متاح للاختيار", template?.enabled !== false)),
+      el("div", { class: "subscription-form-actions" },
+        el("button", { class: "btn primary", type: "submit", text: template ? "حفظ القالب" : "إنشاء القالب" }),
+        template?.enabled && !template.is_default
+          ? subButton("تعطيل", async () => {
+            if (!window.confirm(`تعطيل القالب «${template.name}»؟`)) return;
+            const result = await subscriptionPost(`/templates/${encodeURIComponent(template.template_id)}/disable`, {}, "تم تعطيل القالب.");
+            if (result) renderPage();
+          }, "cancel")
+          : null,
+      ),
+    );
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const values = new FormData(form);
+      const body = {
+        name: String(values.get("name") || "").trim(),
+        event_type: String(values.get("event_type") || "created"),
+        content: String(values.get("content") || ""),
+        enabled: form.elements.namedItem("enabled").checked,
+      };
+      const templateId = String(values.get("template_id") || "");
+      if (templateId) body.template_id = templateId;
+      const result = await subscriptionPost("/templates", body, templateId ? "تم حفظ القالب." : "تم إنشاء القالب.");
+      if (result) renderPage();
+    });
+    return form;
+  }
+  function subscriptionTemplatesView(data) {
+    const templates = data.templates || [];
+    return el("div", { class: "subscription-stack" },
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "إنشاء قالب" }),
+        subscriptionTemplateForm(),
+      ),
+      ...subscriptionEvents.map(([eventType, label]) => {
+        const entries = templates.filter((template) => template.event_type === eventType);
+        return el("section", { class: "subscription-panel" },
+          el("h3", { text: label }),
+          entries.length
+            ? el("div", { class: "subscription-entity-grid" },
+              ...entries.map((template) => el("article", { class: `subscription-panel subscription-template-card${template.enabled ? "" : " is-disabled"}` },
+                el("div", { class: "subscription-entity-head" },
+                  el("div", {}, el("h4", { text: template.name }), el("small", { text: template.is_default ? "قالب افتراضي" : template.template_id })),
+                  subStatus(template.enabled ? "active" : "disabled"),
+                ),
+                subscriptionTemplateForm(template),
+              )),
+            )
+            : el("p", { class: "empty-row", text: "لا توجد قوالب لهذا الحدث." }),
+        );
+      }),
+    );
+  }
+  function subscriptionLogsView(data) {
+    const notifications = data.notifications || [];
+    const controlAudit = data.control_audit || [];
+    const adminAudit = data.admin_audit || [];
+    const rows = (items, renderRow, empty) => items.length
+      ? el("div", { class: "subscription-audit-list" }, ...items.map(renderRow))
+      : el("p", { class: "empty-row", text: empty });
+    return el("div", { class: "subscription-stack" },
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "حالة التسليم والإشعارات" }),
+        el("p", { class: "subscription-muted", text: "آخر 100 إشعار، مع الوجهة والحالة ورسالة الخطأ عند الفشل." }),
+        rows(notifications, (item) => {
+          const delivery = item.payload || {};
+          const destinations = [
+            delivery.dm_enabled ? "DM" : "",
+            delivery.channel_enabled
+              ? `قناة ${window.guildChannels?.[String(delivery.channel_id)]?.name
+                ? `#${window.guildChannels[String(delivery.channel_id)].name}`
+                : delivery.channel_id || "غير محددة"}`
+              : "",
+          ].filter(Boolean).join(" + ");
+          return el("article", { class: "subscription-audit-row" },
+            el("strong", { text: `${item.event_type} · ${item.subscription_id}` }),
+            subStatus(item.status),
+            el("span", { text: destinations || "لا توجد وجهة محفوظة" }),
+            el("small", { text: `${subDate(item.created_at)}${item.last_error ? ` · ${item.last_error}` : ""}` }),
+          );
+        }, "لا توجد إشعارات مسجلة."),
+      ),
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "سجل تعديلات الإعدادات والخطط" }),
+        rows(controlAudit, (item) => el("article", { class: "subscription-audit-row" },
+          el("strong", { text: `${item.entity_type} · ${item.operation} · ${item.entity_id}` }),
+          el("span", { text: `المسؤول ${item.actor_id} · ${subDate(item.created_at)}` }),
+        ), "لا توجد تغييرات على عناصر التحكم."),
+      ),
+      el("section", { class: "subscription-panel" },
+        el("h3", { text: "سجل الاشتراكات الإدارية" }),
+        rows(adminAudit, (item) => el("article", { class: "subscription-audit-row" },
+          el("strong", { text: `${item.event_type || "تعديل"} · ${item.subscription_id}` }),
+          el("span", { text: `العضو ${item.user_id} · المسؤول ${item.actor_id}` }),
+          el("small", { text: `${subDate(item.created_at)}${item.after?.reason ? ` · ${item.after.reason}` : ""}` }),
+        ), "لا توجد إجراءات إدارية مسجلة."),
+      ),
+    );
+  }
+  function subscriptionDashboardView() {
+    const viewState = state.subscriptionDashboard;
+    if (!viewState.data || viewState.guildId !== state.guild?.id) {
+      if (!viewState.loading) queueMicrotask(() => loadSubscriptionDashboard(state.guild?.id));
+      return el("section", { id: "view-subscriptions", class: "subscription-view" },
+        el("div", { class: "section-intro" },
+          el("div", { class: "eyebrow", text: `${state.guild?.name || "PRIME"} / SUBSCRIPTION CONTROL` }),
+          el("h1", { text: "مركز الاشتراكات" }),
+        ),
+        viewState.error
+          ? el("div", { class: "subscription-error", role: "alert" },
+            el("span", { text: viewState.error }),
+            subButton("إعادة المحاولة", () => loadSubscriptionDashboard(state.guild?.id), "primary"),
+          )
+          : el("div", { class: "loading" }, el("div", { class: "skeleton" }), el("p", { text: "جارٍ تحميل بيانات الاشتراكات المحفوظة…" })),
+      );
+    }
+    const data = viewState.data;
+    const stats = data.analytics || {};
+    const tab = subscriptionTabs.some(([key]) => key === viewState.tab) ? viewState.tab : "overview";
+    const tabs = el("nav", { class: "subscription-tabs", "aria-label": "أقسام الاشتراكات" },
+      ...subscriptionTabs.map(([key, label]) => el("button", {
+        type: "button",
+        class: tab === key ? "is-active" : "",
+        "aria-pressed": String(tab === key),
+        text: label,
+        onClick: () => {
+          viewState.tab = key;
+          sessionStorage.setItem("subscription-tab", key);
+          renderPage();
+        },
+      })),
+    );
+    let panel;
+    if (tab === "subscriptions") {
+      panel = el("div", { class: "subscription-stack" },
+        el("section", { class: "subscription-panel" },
+          el("div", { class: "subscription-entity-head" },
+            el("div", {}, el("h3", { text: "سجلات الاشتراك" }), el("small", { text: "حتى 100 سجل حديث؛ المعرفات تبقى كنصوص Discord." })),
+            subButton("＋ إنشاء اشتراك", openSubscriptionGrant, "primary"),
+          ),
+          subscriptionRecordsView(data.subscriptions || []),
+        ),
+      );
+    } else if (tab === "settings") {
+      panel = subscriptionSettingsView(data);
+    } else if (tab === "plans") {
+      panel = subscriptionPlansView(data);
+    } else if (tab === "reminders") {
+      panel = subscriptionRemindersView(data);
+    } else if (tab === "templates") {
+      panel = subscriptionTemplatesView(data);
+    } else if (tab === "logs") {
+      panel = subscriptionLogsView(data);
+    } else {
+      panel = el("div", { class: "subscription-stack" },
+        el("div", { class: "subscription-stat-grid" },
+          ["active_subscriptions", "expired_subscriptions", "expiring_soon", "new_subscriptions_today", "renewals_this_month", "total_subscription_xp"]
+            .map((key, index) => {
+              const labels = ["اشتراكات نشطة", "اشتراكات منتهية", "تنتهي خلال 7 أيام", "جديدة اليوم", "تجديدات هذا الشهر", "XP الاشتراكات"];
+              return el("article", { class: "subscription-stat-card" },
+                el("small", { text: labels[index] }),
+                el("strong", { text: subNumber(stats[key]) }),
+              );
+            }),
+        ),
+        el("section", { class: "subscription-panel" },
+          el("div", { class: "subscription-entity-head" },
+            el("div", {}, el("h3", { text: "أحدث الاشتراكات" }), el("small", { text: "تُحدّث الأرقام بعد كل قراءة للبيانات المحفوظة." })),
+            subButton("عرض الاشتراكات", () => { viewState.tab = "subscriptions"; renderPage(); }),
+          ),
+          subscriptionRecordsView((data.subscriptions || []).slice(0, 8)),
+        ),
+        el("section", { class: "subscription-panel" },
+          el("div", { class: "subscription-entity-head" },
+            el("div", {}, el("h3", { text: "آخر الإشعارات" }), el("small", { text: "نتائج التسليم الفعلية من عامل البوت." })),
+            subButton("سجل التسليم", () => { viewState.tab = "logs"; renderPage(); }),
+          ),
+          (data.notifications || []).length
+            ? el("div", { class: "subscription-audit-list" },
+              ...(data.notifications || []).slice(0, 5).map((item) => el("article", { class: "subscription-audit-row" },
+                el("strong", { text: `${item.event_type} · ${item.subscription_id}` }),
+                subStatus(item.status),
+                el("small", { text: `${subDate(item.created_at)}${item.last_error ? ` · ${item.last_error}` : ""}` }),
+              )),
+            )
+            : el("p", { class: "empty-row", text: "لا توجد إشعارات بعد." }),
+        ),
+      );
+    }
+    return el("section", { id: "view-subscriptions", class: "subscription-view" },
+      el("div", { class: "section-intro" },
+        el("div", { class: "eyebrow", text: `${state.guild?.name || "PRIME"} / SUBSCRIPTION CONTROL` }),
+        el("h1", { text: "مركز الاشتراكات" }),
+        el("p", { text: "تحكم في الخطط وXP والتذكيرات ورسائل الأعضاء، مع سجل تدقيق موحد فوق قاعدة البيانات ومحرك المستويات الحالي." }),
+      ),
+      el("div", { class: "subscription-toolbar" },
+        tabs,
+        subButton(viewState.loading ? "جارٍ التحديث…" : "تحديث البيانات", () => loadSubscriptionDashboard(state.guild?.id), "ghost", viewState.loading),
+      ),
+      viewState.error ? el("div", { class: "subscription-error", role: "alert", text: viewState.error }) : null,
+      panel,
+    );
+  }
   function economyView() {
     const snapshot = state.economy.settings || { settings: {} };
     const config = snapshot.settings || {};
@@ -6611,21 +7645,44 @@
   // ===== Leveling view (Phase 7): frontend-only, guild-scoped local drafts =====
   const LV_TABS = [
     ["general", "عام"], ["public", "اللوحة العامة"], ["points", "النقاط"], ["voice", "الصوت"], ["rewards", "المكافآت"],
-    ["card", "البطاقة"], ["messages", "الرسائل"], ["prime", "PRIME TOP"], ["data", "البيانات"],
+    ["card", "البطاقة"], ["messages", "الرسائل"], ["prime", "PRIME TOP"], ["streak", "سلسلة النشاط"], ["data", "البيانات"],
   ];
-  const LV_LAYOUTS = { vertical: [560, 900, "عمودية"], stats: [1000, 420, "إحصائيات"], minimal: [900, 230, "مصغرة"], ring: [620, 680, "حلقة"], classic: [1000, 340, "كلاسيكية"] };
+  const LV_LAYOUTS = { vertical: [560, 900, "عمودية"], stats: [1000, 420, "إحصائيات"], minimal: [900, 230, "مصغّرة"], ring: [620, 680, "حلقة"], classic: [1000, 340, "كلاسيكية"], banner: [1000, 300, "شريطية"], square: [640, 640, "مربّعة"], spotlight: [1000, 500, "كشاف"] };
   const LV_PARTS = { none: "بدون", sparks: "شرارات", shine: "لمعان", embers: "جمر", snow: "ثلج", petals: "بتلات", neon: "نيون" };
+  const LV_STREAK_TEMPLATE_VARS = {
+    duplicate: new Set(["user", "username", "mention", "streak", "current_streak", "best", "best_streak", "stage", "stage_name", "next_stage", "remaining", "progress", "time_remaining", "server", "server_rank", "global_rank"]),
+    success: new Set(["user", "username", "mention", "streak", "current_streak", "best", "best_streak", "stage", "stage_name", "next_stage", "remaining", "progress", "time_remaining", "server", "server_rank", "global_rank"]),
+    stageUp: new Set(["user", "username", "mention", "streak", "current_streak", "best", "best_streak", "stage", "stage_name", "next_stage", "remaining", "progress", "time_remaining", "server", "server_rank", "global_rank"]),
+    milestone: new Set(["user", "username", "mention", "streak", "current_streak", "best", "best_streak", "stage", "stage_name", "next_stage", "remaining", "progress", "time_remaining", "server", "server_rank", "global_rank", "threshold"]),
+    reminder: new Set(["user", "username", "mention", "streak", "current_streak", "best", "best_streak", "stage", "stage_name", "next_stage", "remaining", "progress", "time_remaining", "server", "server_rank", "global_rank"]),
+  };
+  const LV_CARD_STYLE_KEYS = ["layout", "particles", "color", "bg", "animated", "showStats", "glowStrength", "particleDensity", "particleColor", "barStyle", "frame", "bgOverlay", "bgBlur", "animationEnabled", "animationStyle", "animationIntensity", "stats"];
+  const lvCardStyleSnapshot = (card) => Object.fromEntries(LV_CARD_STYLE_KEYS.map((key) => [key, clone(card[key])]));
   const lvDefaults = () => ({
     public: { enabled: false, slug: "" },
     general: { enabled: true, text: true, reaction: false, streak: true },
     points: { xpMultiplier: 1, minXp: 15, maxXp: 25, cooldown: 60, roleMult: [], chanMult: [], boosts: [], allowedChannels: [], bl: { channels: [], users: [], roles: [] } },
     voice: { enabled: true, xpPerMin: 20, muteBlock: true, deafBlock: true, minMembers: 2, dimEnabled: false, dimThreshold: 60, dimRate: 50, separate: true },
     rewards: { highestOnly: true, list: [] },
-    card: { layout: "vertical", particles: "none", color: "#38bdf8", bg: "", animated: true, showStats: true },
+    card: { layout: "vertical", particles: "none", color: "#38bdf8", bg: "", animated: true, showStats: true, glowStrength: 54, particleDensity: 46, particleColor: "accent", barStyle: "gradient", frame: "auto", bgOverlay: 28, bgBlur: 4, animationEnabled: true, animationStyle: "beam", animationIntensity: 62, stats: { messages: true, voice: true, streak: true, serverRank: true }, presets: [] },
     messages: {
       levelup: { on: true, channel: "", tpl: "مبروك {user}! وصلت إلى المستوى {level} في {server}." },
       milestone: { on: true, channel: "", tpl: "{user} حقق إنجازاً جديداً عند المستوى {level}." },
       overtake: { on: false, channel: "", tpl: "{passer} تجاوز {passed} وأصبح في المركز {rank}." },
+      role_promotion: { on: false, channel: "", tpl: "مبروك {mention}! حصلت على رتبة {role}." },
+    },
+    streak: {
+      enabled: true, channel: "", dailyXp: 50, maxCap: 500,
+      timezone: "Asia/Riyadh", resetTime: "00:00",
+      progressCardEnabled: true, successReaction: "🔥",
+      messages: {
+        duplicate: { enabled: true, message: "🔥 تم تسجيل ستريكك اليوم بالفعل.\nستريكك الحالي: {streak} يوم\nأفضل ستريك: {best} يوم\nالمرحلة: {stage_name}\n⏳ الستريك القادم بعد {time_remaining}." },
+        success: { enabled: true, message: "🔥 {streak} يوم · {stage_name}" },
+        stageUp: { enabled: true, message: "{user} وصل إلى مرحلة {stage_name} بعد {streak} يومًا متواصلًا." },
+        milestone: { enabled: true, message: "🎉 {user} حقق إنجازًا جديدًا عند {threshold} يومًا من الستريك." },
+        reminder: { enabled: true, time: "21:00", message: "🔥 لا تنسَ تسجيل ستريكك اليوم. ستريكك الحالي: {streak} يوم." },
+      },
+      stages: [], milestones: [],
     },
   });
   const lvMerge = (base, src) => {
@@ -6658,6 +7715,52 @@
     ["channels", "users", "roles"].forEach((k) => { p.bl[k] = lvStrs(p.bl[k]); });
     p.allowedChannels = lvStrs(p.allowedChannels);
     d.rewards.list = lvObjs(d.rewards.list, (r) => ({ level: typeof r.level === "number" ? r.level : "", role: String(r.role ?? ""), type: r.type === "voice" ? "voice" : "text" }));
+    const card = d.card;
+    card.presets = lvObjs(card.presets, (preset) => {
+      const snapshot = lvCardStyleSnapshot(lvMerge(lvDefaults().card, preset));
+      return { id: String(preset.id || `preset-${Math.random().toString(36).slice(2, 9)}`).slice(0, 80), name: String(preset.name || "إعداد محفوظ").slice(0, 40), ...snapshot };
+    }).slice(0, 8);
+    card.stats = lvMerge(lvDefaults().card.stats, card.stats);
+    const streakDefaults = lvDefaults().streak;
+    const streak = lvMerge(streakDefaults, d.streak);
+    streak.enabled = streak.enabled === true;
+    streak.channel = typeof streak.channel === "string" ? streak.channel : "";
+    streak.dailyXp = typeof streak.dailyXp === "number" ? streak.dailyXp : "";
+    streak.maxCap = typeof streak.maxCap === "number" ? streak.maxCap : "";
+    streak.timezone = "Asia/Riyadh";
+    streak.resetTime = "00:00";
+    streak.progressCardEnabled = streak.progressCardEnabled === true;
+    streak.successReaction = typeof streak.successReaction === "string" ? streak.successReaction : "";
+    streak.messages = lvMerge(streakDefaults.messages, streak.messages);
+    Object.keys(streakDefaults.messages).forEach((key) => {
+      const item = streak.messages[key];
+      streak.messages[key] = {
+        enabled: item.enabled === true,
+        message: typeof item.message === "string" ? item.message : "",
+        ...(key === "reminder" ? { time: typeof item.time === "string" ? item.time : "21:00" } : {}),
+      };
+    });
+    streak.stages = lvObjs(streak.stages, (stage) => ({
+      stage_key: String(stage.stage_key ?? ""),
+      threshold: typeof stage.threshold === "number" ? stage.threshold : "",
+      name: String(stage.name ?? ""),
+      message: typeof stage.message === "string" ? stage.message : null,
+      image: typeof stage.image === "string" ? stage.image : null,
+      color: typeof stage.color === "string" ? stage.color : "#5865f2",
+      reaction: typeof stage.reaction === "string" ? stage.reaction : null,
+      description: typeof stage.description === "string" ? stage.description : "",
+      glow: typeof stage.glow === "number" ? stage.glow : 0,
+      particle: typeof stage.particle === "string" ? stage.particle : "none",
+      enabled: stage.enabled === true,
+    }));
+    streak.milestones = lvObjs(streak.milestones, (milestone) => ({
+      threshold: typeof milestone.threshold === "number" ? milestone.threshold : "",
+      message: typeof milestone.message === "string" ? milestone.message : "",
+      image: typeof milestone.image === "string" ? milestone.image : null,
+      reaction: typeof milestone.reaction === "string" ? milestone.reaction : null,
+      enabled: milestone.enabled === true,
+    }));
+    d.streak = streak;
     return d;
   };
   function lvState() {
@@ -6761,10 +7864,15 @@
     target.id = id;
     return el("div", { class: "leveling-field" }, el("label", { for: id, text: label }), control, hint ? el("small", { text: hint }) : null);
   }
-  function lvSwitch(path, label, hint) {
+  function lvSwitch(path, label, hint, onChange) {
     const id = lvId();
     const b = el("button", { class: "leveling-switch", id, type: "button", role: "switch", "aria-checked": String(Boolean(lvGet(path))), "aria-labelledby": `${id}-l` }, el("i"));
-    b.addEventListener("click", () => { const v = !lvGet(path); lvSet(path, v); b.setAttribute("aria-checked", String(v)); });
+    b.addEventListener("click", () => {
+      const v = !lvGet(path);
+      lvSet(path, v);
+      b.setAttribute("aria-checked", String(v));
+      onChange?.(v);
+    });
     return el("div", { class: "leveling-row" }, el("span", { class: "leveling-row-copy" }, el("b", { id: `${id}-l`, text: label }), hint ? el("small", { text: hint }) : null), b);
   }
   function lvNum(path, label, min, max, hint, slider) {
@@ -6781,10 +7889,13 @@
     n.addEventListener("input", () => lvSet(path, n.value));
     return lvField(label, n, hint);
   }
-  function lvArea(path, label, hint) {
+  function lvArea(path, label, hint, onChange) {
     const n = el("textarea", { rows: 3, maxlength: 500, dir: "auto" });
     n.value = lvGet(path);
-    n.addEventListener("input", () => lvSet(path, n.value));
+    n.addEventListener("input", () => {
+      lvSet(path, n.value);
+      onChange?.(n.value);
+    });
     return lvField(label, n, hint);
   }
   function lvSelect(path, label, opts, hint, onChange) {
@@ -6911,7 +8022,13 @@
   }
   function lvPreviews() {
     const d = lvState().draft, me = state.session?.username || "عضو تجريبي";
-    const vars = { user: me, level: "12", server: state.guild?.name || "السيرفر", passer: me, passed: "ياسر", rank: "3" };
+    const vars = {
+      user: me, username: me, mention: `<@${state.session?.id || "123"}>`,
+      level: "12", old_level: "11", xp: "1,250", required_xp: "2,000",
+      progress: "62", rank: "3", total_members: "250", messages: "84",
+      voice_time: "3.5 س", streak: "7", server: state.guild?.name || "السيرفر",
+      period: "weekly", role: "Elite", passer: me, passed: "ياسر",
+    };
     document.querySelectorAll(".leveling-msg-preview").forEach((box) => {
       const m = d.messages[box.dataset.msgKey];
       if (!m) return;
@@ -7067,14 +8184,75 @@
     const cv = el("img", { class: "leveling-canvas", role: "img", alt: "معاينة بطاقة المستوى الحقيقية" });
     const color = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(lvGet(["card", "color"])) ? lvGet(["card", "color"]) : "#38bdf8" });
     color.addEventListener("input", () => lvSet(["card", "color"], color.value));
+    const particleColor = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(lvGet(["card", "particleColor"])) ? lvGet(["card", "particleColor"]) : (lvGet(["card", "color"]) || "#38bdf8") });
+    particleColor.addEventListener("input", () => lvSet(["card", "particleColor"], particleColor.value));
+    const particleColorControl = el("div", { class: "lv-particle-color-control" }, lvField("لون الجزيئات المخصص", particleColor),
+      el("button", { type: "button", class: "leveling-btn", text: "استخدام لون التمييز", onClick: () => lvSet(["card", "particleColor"], "accent") }));
     const bg = lvText(["card", "bg"], "رابط الخلفية (HTTPS فقط)", { type: "text", dir: "ltr", placeholder: "https://" }, "اختياري. يتحقق الخادم من الرابط ويحمّله عند إنشاء المعاينة.");
     bg.querySelector("input").addEventListener("input", (e) => e.target.setAttribute("aria-invalid", String(!lvBgOk(e.target.value.trim()))));
-    return el("div", { class: "leveling-split" },
-      el("div", { class: "leveling-stack" },
-        lvCard("تصميم البطاقة", "الإعدادات المحفوظة تتحكم في البطاقة التي ينشئها البوت", lvSelect(["card", "layout"], "القالب", Object.entries(LV_LAYOUTS).map(([k, v]) => [k, v[2]])),
-          lvSelect(["card", "particles"], "الجزيئات", Object.entries(LV_PARTS)), lvField("لون التمييز", color), bg, lvSwitch(["card", "animated"], "شريط تقدم لامع"), lvSwitch(["card", "showStats"], "عرض الإحصاءات في البطاقة", "يعمل مع القالبين العمودي والإحصائيات فقط، وبقية القوالب لا تعرض بلوك الإحصاءات"), lvIdentity(), el("p", { class: "leveling-bg-status", role: "status", "aria-live": "polite" }))),
-      lvCard("معاينة مباشرة", "تُنشأ بواسطة مولد بطاقة PRIME نفسه وتعرض بيانات حسابك الفعلية", el("div", { class: "leveling-canvas-wrap" }, cv),
-        el("p", { class: "leveling-render-status", role: "status", "aria-live": "polite", text: "جارٍ تحميل بطاقة PRIME…" })));
+    const gallery = el("div", { class: "lv-template-gallery", role: "group", "aria-label": "قوالب بطاقات الرتب" },
+      ...Object.entries(LV_LAYOUTS).map(([key, value], index) => el("button", {
+        type: "button", class: `lv-template${lvGet(["card", "layout"]) === key ? " is-active" : ""}`,
+      "aria-pressed": String(lvGet(["card", "layout"]) === key), onClick: (event) => {
+        lvSet(["card", "layout"], key);
+        gallery.querySelectorAll(".lv-template").forEach((button) => {
+          const selected = button === event.currentTarget;
+          button.classList.toggle("is-active", selected);
+          button.setAttribute("aria-pressed", String(selected));
+        });
+      },
+      }, el("span", { class: `lv-template-art lv-art-${key}`, "aria-hidden": "true" }, el("i"), el("b", { text: index < 4 ? "PR" : "P" }), el("em"), el("small", { text: "LEVEL 28" })),
+      el("span", { class: "lv-template-copy" }, el("b", { text: value[2] }), el("small", { text: `${value[0]} × ${value[1]}` })))));
+    const presetName = el("input", { type: "text", maxlength: 40, placeholder: "اسم الإعداد المحفوظ", "aria-label": "اسم الإعداد المحفوظ" });
+    const presets = Array.isArray(lvGet(["card", "presets"])) ? lvGet(["card", "presets"]) : [];
+    const presetList = presets.length ? el("div", { class: "lv-preset-list" }, ...presets.map((preset) => el("div", { class: "lv-preset-row" },
+      el("button", { type: "button", class: "lv-preset-apply", text: preset.name, title: "تطبيق الإعداد", onClick: () => {
+        Object.assign(lvState().draft.card, lvCardStyleSnapshot(lvMerge(lvDefaults().card, preset))); lvRender();
+      } }),
+      el("button", { type: "button", class: "lv-preset-delete", text: "حذف", "aria-label": `حذف الإعداد ${preset.name}`, onClick: () => {
+        lvSet(["card", "presets"], lvState().draft.card.presets.filter((item) => item.id !== preset.id)); lvRender();
+      } })))) : el("p", { class: "leveling-empty", text: "لا توجد إعدادات محفوظة بعد. احفظ توليفة مناسبة لتطبيقها لاحقاً." });
+    const savePreset = el("button", { type: "button", class: "leveling-btn", text: "حفظ كإعداد", onClick: () => {
+      const name = presetName.value.trim();
+      if (!name) { presetName.focus(); toast("اكتب اسماً للإعداد المحفوظ", "warn"); return; }
+      if (lvState().draft.card.presets.length >= 8) { toast("يمكن حفظ 8 إعدادات كحد أقصى. احذف إعداداً قبل إضافة آخر.", "warn"); return; }
+      lvState().draft.card.presets.push({ id: `card-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, name, ...lvCardStyleSnapshot(lvState().draft.card) });
+      lvTouch(); lvRender();
+    } });
+    const gif = el("img", { class: "lv-gif-image", alt: "اختبار متحرك لانتقال المستوى", hidden: true });
+    const gifStatus = el("p", { class: "lv-gif-status", role: "status", "aria-live": "polite", text: "اختبار مستقل لتأثير الإضاءة المتحرك؛ لا يحفظ الإعدادات ولا ينفّذ عمليات Discord." });
+    const gifButton = el("button", { type: "button", class: "leveling-btn lv-gif-button", text: "اختبار ترقية متحرك · GIF", onClick: async () => {
+      gifButton.disabled = true; gifStatus.textContent = "يجري إنشاء حركة الترقية من معاينة السيرفر…";
+      try {
+        const params = lvBuildCardPreviewParams(lvState().draft.card, "gif");
+        const response = await api(`api/guild/${state.guild.id}/leveling/card-preview?${params.toString()}`);
+        if (!response.ok) { const problem = await readJson(response, {}); throw Error(problem.error || "preview"); }
+        const next = URL.createObjectURL(await response.blob()), previous = gif.dataset.objectUrl;
+        gif.src = next; gif.dataset.objectUrl = next; gif.hidden = false;
+        if (previous) URL.revokeObjectURL(previous);
+        gifStatus.textContent = "هذه حركة ترقية فعلية من مولّد PRIME؛ المعاينة لا تحفظ ولا تغيّر إعدادات السيرفر.";
+      } catch (error) {
+        gifStatus.textContent = error.message === "unauth" ? "انتهت الجلسة؛ سجّل الدخول مجدداً." : "تعذر إنشاء حركة الترقية. أعد المحاولة بعد التحقق من إعدادات البطاقة.";
+      } finally { gifButton.disabled = false; }
+    } });
+    return el("div", { class: "lv-card-editor" },
+      lvCard("معرض القوالب", "ثمانية تخطيطات عملية؛ اختر القالب ثم اضبط تفاصيله أدناه.", gallery),
+      el("div", { class: "leveling-split" },
+        el("div", { class: "leveling-stack" },
+          lvCard("الهوية والتكوين", "تُحفظ هذه القيم ضمن إعدادات المستوى الحالية.",
+            lvGrid(lvSelect(["card", "particles"], "أثر الجزيئات", Object.entries(LV_PARTS)), lvSelect(["card", "barStyle"], "أسلوب شريط التقدم", [["gradient", "متدرّج"], ["solid", "مصمت"], ["segmented", "مقسّم"], ["neon", "مضيء"]])),
+            el("div", { class: "lv-color-row" }, lvField("لون التمييز", color), particleColorControl),
+            lvSelect(["card", "frame"], "إطار الرتبة والمستوى", [["auto", "تلقائي حسب المستوى"], ["none", "بلا إطار"], ["bronze", "برونزي"], ["silver", "فضي"], ["gold", "ذهبي"], ["diamond", "ماسي"]]),
+            lvSwitch(["card", "showStats"], "عرض الإحصاءات"), lvSwitch(["card", "animated"], "لمعان شريط التقدم"), lvIdentity(), bg,
+            el("p", { class: "leveling-bg-status", role: "status", "aria-live": "polite" }),
+            lvGrid(lvNum(["card", "glowStrength"], "قوة التوهج", 0, 100, "0 هادئ · 100 قوي", true), lvNum(["card", "particleDensity"], "كثافة الجزيئات", 0, 100, "", true), lvNum(["card", "bgOverlay"], "طبقة تعتيم الخلفية", 0, 85, "تحافظ على وضوح النص.", true), lvNum(["card", "bgBlur"], "تمويه الخلفية", 0, 18, "بالبكسل.", true))),
+          lvCard("الإحصاءات المعروضة", "تحكم مستقل بكل معلومة تظهر على البطاقة.", lvSwitch(["card", "stats", "messages"], "الرسائل"), lvSwitch(["card", "stats", "voice"], "الوقت الصوتي"), lvSwitch(["card", "stats", "streak"], "سلسلة النشاط"), lvSwitch(["card", "stats", "serverRank"], "ترتيب السيرفر")),
+          lvCard("حركة الترقية", "تأثيرات المستوى على البطاقة، لا عمليات Discord.", lvSwitch(["card", "animationEnabled"], "تفعيل حركة الترقية"),
+            lvGrid(lvSelect(["card", "animationStyle"], "نمط الحركة", [["beam", "شعاع"], ["aurora", "شفق"], ["burst", "اندفاع"]]), lvNum(["card", "animationIntensity"], "شدّة الحركة", 0, 100, "", true))),
+          lvCard("إعدادات قابلة لإعادة الاستخدام", "تُحفظ ضمن المسودة وتُرسل مع الحفظ المعتاد.", el("div", { class: "lv-preset-create" }, presetName, savePreset), presetList)),
+        el("div", { class: "leveling-stack lv-preview-column" },
+           lvCard("معاينة بطاقة الرتبة", "تتحدّث مع الإعدادات وبيانات الحساب الحالية؛ وتعرض GIF عند استخدام خلفية متحركة.", el("div", { class: "leveling-canvas-wrap" }, cv), el("p", { class: "leveling-render-status", role: "status", "aria-live": "polite", text: "جارٍ تحميل بطاقة PRIME…" })),
+          lvCard("اختبار حركة المستوى", "معاينة GIF مستقلة تعرض تأثير الإضاءة المتحرك على بطاقة المستوى؛ لا تحفظ الإعداد.", gifButton, el("div", { class: "lv-gif-wrap" }, gif), gifStatus))));
   }
   let lvBgImg = { url: "", img: null, failed: false };
   function lvBgStatus() {
@@ -7261,6 +8439,21 @@
     }
   }
   let lvDrawTimer = null, lvCardPreviewUrl = "";
+  function lvBuildCardPreviewParams(card, format) {
+    const params = new URLSearchParams({
+      layout: card.layout, particles: card.particles, color: card.color, bg: String(card.bg || "").trim(),
+      animated: String(Boolean(card.animated)), showStats: String(Boolean(card.showStats)),
+      glowStrength: String(card.glowStrength ?? 54), particleDensity: String(card.particleDensity ?? 46),
+      particleColor: String(card.particleColor || "accent"), barStyle: String(card.barStyle || "gradient"),
+      frame: String(card.frame || "auto"), bgOverlay: String(card.bgOverlay ?? 28), bgBlur: String(card.bgBlur ?? 4),
+      animationEnabled: String(Boolean(card.animationEnabled)), animationStyle: String(card.animationStyle || "beam"),
+      animationIntensity: String(card.animationIntensity ?? 62),
+      showMessages: String(Boolean(card.stats?.messages)), showVoice: String(Boolean(card.stats?.voice)),
+      showStreak: String(Boolean(card.stats?.streak)), showServerRank: String(Boolean(card.stats?.serverRank)),
+    });
+    if (format) params.set("format", format);
+    return params;
+  }
   function drawLvCard() {
     clearTimeout(lvDrawTimer);
     lvDrawTimer = setTimeout(async () => {
@@ -7272,14 +8465,7 @@
       if (status) status.textContent = "ينشئ الخادم معاينة بطاقة بحسابك ونقاطك الحقيقية…";
       lvBgStatus();
       try {
-        const params = new URLSearchParams({
-          layout: card.layout,
-          particles: card.particles,
-          color: card.color,
-          bg: String(card.bg || "").trim(),
-          animated: String(Boolean(card.animated)),
-          showStats: String(Boolean(card.showStats)),
-        });
+        const params = lvBuildCardPreviewParams(card, "auto");
         const response = await api(
           `api/guild/${state.guild.id}/leveling/card-preview?${params.toString()}`,
         );
@@ -7307,12 +8493,180 @@
       }
     }, 300);
   }
+  const LV_TEMPLATE_VARS = [
+    "{user}", "{username}", "{mention}", "{level}", "{old_level}", "{xp}",
+    "{required_xp}", "{progress}", "{rank}", "{total_members}", "{messages}",
+    "{voice_time}", "{streak}", "{server}", "{period}", "{role}", "{passer}", "{passed}",
+  ];
+  const LV_DEFAULT_MESSAGE_TEXTS = {
+    levelup: "مبروك {mention}! وصلت إلى المستوى {level} في {server}.",
+    milestone: "{mention} حقق إنجازاً جديداً عند المستوى {level}.",
+    overtake: "{mention} تجاوز {passed} وأصبح في المركز {rank}.",
+    role_promotion: "مبروك {mention}! حصلت على رتبة {role}.",
+  };
+  const lvPrimeMessageConfig = (key) => {
+    const s = lvState();
+    s.draft.prime ||= {};
+    const cfg = key === "levelup"
+      ? (s.draft.prime.levelup ||= {})
+      : ((s.draft.prime.notifications ||= {})[key] ||= {});
+    const fallback = LV_DEFAULT_MESSAGE_TEXTS[key] || "{message}";
+    cfg.message = typeof cfg.message === "string" ? cfg.message : fallback;
+    cfg.messages = Array.isArray(cfg.messages) && cfg.messages.length
+      ? cfg.messages : [{ id: "default", name: "الافتراضي", template: cfg.message }];
+    cfg.activeMessageId = cfg.activeMessageId || cfg.messages[0]?.id || "default";
+    return cfg;
+  };
+  const lvSyncActiveMessage = (key) => {
+    const cfg = lvPrimeMessageConfig(key);
+    let active = cfg.messages.find((item) => String(item.id) === String(cfg.activeMessageId));
+    if (!active) {
+      active = cfg.messages[0];
+      cfg.activeMessageId = active.id;
+    }
+    cfg.message = String(active.template || "");
+    const s = lvState();
+    if (!s.draft.messages[key]) s.draft.messages[key] = { on: false, channel: "", tpl: "" };
+    s.draft.messages[key].tpl = cfg.message;
+  };
+  const lvMessageSet = (key, field, value) => {
+    const s = lvState();
+    if (!s.draft.messages[key]) s.draft.messages[key] = { on: false, channel: "", tpl: "" };
+    s.draft.messages[key][field] = value;
+    const cfg = lvPrimeMessageConfig(key);
+    if (field === "on") {
+      if (key === "levelup") cfg.sendNotification = Boolean(value);
+      else cfg.enabled = Boolean(value);
+    }
+    if (field === "channel") cfg.channel = String(value || "");
+    if (field === "tpl") {
+      cfg.message = String(value || "");
+      const active = cfg.messages.find((item) => String(item.id) === String(cfg.activeMessageId));
+      if (active) active.template = cfg.message;
+    }
+    lvTouch();
+  };
+  const lvMessageManager = (key) => {
+    const cfg = lvPrimeMessageConfig(key);
+    const currentId = String(cfg.activeMessageId || cfg.messages[0]?.id || "default");
+    const select = el("select", {});
+    cfg.messages.forEach((item) => {
+      select.append(el("option", { value: String(item.id), text: String(item.name || item.id) }));
+    });
+    select.value = currentId;
+    select.addEventListener("change", () => {
+      cfg.activeMessageId = select.value;
+      lvSyncActiveMessage(key);
+      lvTouch();
+    });
+    const button = (label, handler, title) => el("button", {
+      type: "button", class: "btn leveling-msg-manager-btn", text: label, title,
+      onClick: handler,
+    });
+    return el("div", { class: "leveling-message-manager" },
+      el("div", { class: "leveling-manager-row" },
+        el("strong", { text: "مدير الرسائل" }),
+        select,
+        button("＋ إضافة", () => {
+          const name = window.prompt("اسم الرسالة الجديدة:");
+          if (!name?.trim()) return;
+          const template = window.prompt("نص الرسالة:", cfg.message || LV_DEFAULT_MESSAGE_TEXTS[key]);
+          if (template === null || !template.trim()) return;
+          if (cfg.messages.length >= 20) {
+            toast("الحد الأقصى 20 رسالة محفوظة.", "warn");
+            return;
+          }
+          const id = `m-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+          cfg.messages.push({ id, name: name.trim().slice(0, 80), template: template.trim().slice(0, 500) });
+          cfg.activeMessageId = id;
+          lvSyncActiveMessage(key);
+          lvTouch();
+        }, "إضافة رسالة محفوظة"),
+        button("✎ تعديل الاسم", () => {
+          const active = cfg.messages.find((item) => String(item.id) === String(select.value));
+          if (!active) return;
+          const name = window.prompt("الاسم الجديد:", active.name || "");
+          if (!name?.trim()) return;
+          active.name = name.trim().slice(0, 80);
+          lvTouch();
+        }, "تعديل اسم الرسالة الحالية"),
+        button("🗑 حذف", () => {
+          if (select.value === "default") {
+            toast("لا يمكن حذف الرسالة الافتراضية.", "warn");
+            return;
+          }
+          if (!window.confirm("حذف الرسالة المحفوظة؟")) return;
+          cfg.messages = cfg.messages.filter((item) => String(item.id) !== String(select.value));
+          cfg.activeMessageId = cfg.messages[0]?.id || "default";
+          lvSyncActiveMessage(key);
+          lvTouch();
+        }, "حذف الرسالة الحالية"),
+        button("↩ الافتراضي", () => {
+          const defaultText = LV_DEFAULT_MESSAGE_TEXTS[key];
+          let active = cfg.messages.find((item) => String(item.id) === "default");
+          if (!active) {
+            active = { id: "default", name: "الافتراضي", template: defaultText };
+            cfg.messages.unshift(active);
+          }
+          active.template = defaultText;
+          cfg.activeMessageId = "default";
+          lvSyncActiveMessage(key);
+          lvTouch();
+        }, "استعادة الرسالة الافتراضية"),
+      ),
+    );
+  };
   function lvTabMessages() {
-    const mk = (key, title, vars) => lvCard(title, `المتغيرات: ${vars}`, lvSwitch(["messages", key, "on"], "تفعيل الإشعار"),
-      lvSelect(["messages", key, "channel"], "القناة", lvChanOpts("القناة الحالية / غير محددة"), state.meta?.channels?.length ? "" : "غير متاح: قائمة القنوات لم تصل.", lvPreviews),
-      lvArea(["messages", key, "tpl"], "القالب", "الحد الأقصى 500 حرف"),
-      el("div", { class: "leveling-msg-preview", "data-msg-key": key }));
-    return el("div", { class: "leveling-stack" }, lvDemoTag("قوالب توضيحية محلية"), mk("levelup", "رسالة رفع المستوى", "{user} {level} {server}"), mk("milestone", "رسالة الإنجاز (توضيحية محلية فقط)", "{user} {level}"), mk("overtake", "رسالة التجاوز", "{passer} {passed} {rank}"));
+    const mk = (key, title, vars) => {
+      const primePath = key === "levelup"
+        ? ["prime", "levelup"]
+        : ["prime", "notifications", key];
+      const advanced = key === "levelup"
+        ? null
+        : el("div", { class: "leveling-stack" },
+            lvSwitch([...primePath, "sendAsEmbed"], "إرسال كـ Embed"),
+            lvSwitch([...primePath, "mentionUser"], "منشن العضو"),
+            lvSelect([...primePath, "mentionRole"], "منشن رتبة إضافية", lvRoleOpts("بدون رتبة")),
+            lvGrid(
+              lvText([...primePath, "embedTitle"], "عنوان الإمبد"),
+              lvText([...primePath, "embedColor"], "لون الإمبد", { type: "color" }),
+            ),
+            lvArea([...primePath, "embedDescription"], "وصف الإمبد", "يمكن استخدام {message} وباقي متغيرات PRIME"),
+            lvGrid(
+              lvText([...primePath, "embedFooter"], "تذييل الإمبد"),
+              lvText([...primePath, "embedImage"], "رابط صورة الإمبد", { dir: "ltr", placeholder: "https://..." }),
+            ),
+            lvSwitch([...primePath, "timestamp"], "إضافة توقيت"),
+          );
+      return lvCard(
+        title,
+        `يدعم: ${vars}`,
+        el("div", { class: "leveling-message-toolbar" },
+          lvSwitch(["messages", key, "on"], "تفعيل الإشعار", "يتزامن مع إعداد PRIME الفعلي", (value) => lvMessageSet(key, "on", value)),
+        ),
+        lvMessageManager(key),
+        lvSelect(["messages", key, "channel"], "القناة", lvChanOpts("القناة الحالية / غير محددة"),
+          state.meta?.channels?.length ? "" : "غير متاح: قائمة القنوات لم تصل.", () => lvMessageSet(key, "channel", lvGet(["messages", key, "channel"]))),
+        lvArea(["messages", key, "tpl"], "القالب", "الحد الأقصى 500 حرف", (value) => lvMessageSet(key, "tpl", value)),
+        el("div", { class: "leveling-template-vars" }, ...LV_TEMPLATE_VARS.map((token) =>
+          el("button", { type: "button", class: "leveling-chip", text: token, title: "نسخ المتغير",
+            onClick: async () => {
+              await navigator.clipboard?.writeText(token);
+              toast(`تم نسخ ${token}`, "info", 1600);
+            } }))),
+        advanced,
+        el("div", { class: "leveling-msg-preview", "data-msg-key": key }),
+      );
+    };
+    return el(
+      "div",
+      { class: "leveling-stack" },
+      lvDemoTag("الإعدادات هنا تُكتب إلى PRIME runtime وتبقى متوافقة مع الحقول القديمة"),
+      mk("levelup", "إشعار رفع المستوى", "{user} {mention} {level} {old_level} {xp} {server}"),
+      mk("milestone", "إشعار الإنجاز", "{user} {level} {xp} {progress}"),
+      mk("overtake", "إشعار التجاوز", "{passer} {passed} {rank} {user}"),
+      mk("role_promotion", "إشعار ترقية الرتبة", "{mention} {role} {level} {old_level}"),
+    );
   }
   function lvTabPrime() {
     const periodicPanel = (period, title, defaults) => {
@@ -7322,6 +8676,7 @@
         lvGrid(
           lvSelect([...key, "channel"], "قناة النشر", lvChanOpts("اختر قناة")),
           lvSelect([...key, "rewardRole"], "رتبة الفائزين", lvRoleOpts("بدون مكافأة")),
+          lvSelect([...key, "mode"], "مصدر XP للفترة", [["both", "النص + الصوت"], ["text", "النص فقط"], ["voice", "الصوت فقط"]]),
           lvText([...key, "time"], "وقت النشر", { type: "time" }),
           lvText([...key, "timezone"], "المنطقة الزمنية", { dir: "ltr", placeholder: "UTC" }),
           lvNum([...key, "winners"], "عدد الفائزين", 1, 20),
@@ -7392,6 +8747,209 @@
       el("p", { class: "leveling-unavail", text: "تُحفظ الإعدادات كوحدة واحدة عبر REST API، وتُطبق مباشرة بعد الحفظ." }),
     );
   }
+  function lvTabStreak() {
+    const streak = () => lvGet(["streak"]);
+    const set = (path, value) => {
+      const target = path.slice(0, -1).reduce((o, key) => o[key], streak());
+      target[path[path.length - 1]] = value;
+      lvTouch();
+    };
+    const field = (label, control, hint = "") => {
+      const id = control.id || lvId();
+      control.id = id;
+      return el("div", { class: "leveling-field streak-field" },
+        el("label", { for: id, text: label }), control,
+        hint ? el("small", { text: hint }) : null);
+    };
+    const textInput = (label, path, attrs = {}, hint = "") => {
+      const input = el("input", { type: "text", dir: "auto", ...attrs });
+      input.value = path.reduce((o, key) => o?.[key], streak()) ?? "";
+      input.addEventListener("input", () => set(path, input.value));
+      return field(label, input, hint);
+    };
+    const numberInput = (label, path, min, max, hint = "") => {
+      const input = el("input", { type: "number", min, max, step: "1", inputmode: "numeric" });
+      const value = path.reduce((o, key) => o?.[key], streak());
+      input.value = value ?? "";
+      input.addEventListener("input", () => set(path, input.value === "" ? "" : Number(input.value)));
+      return field(label, input, hint || `من ${min} إلى ${max}`);
+    };
+    const area = (label, path, hint = "") => {
+      const input = el("textarea", { rows: 3, maxlength: 500, dir: "auto" });
+      input.value = path.reduce((o, key) => o?.[key], streak()) ?? "";
+      input.addEventListener("input", () => {
+        const value = input.value;
+        const target = path.slice(0, -1).reduce((o, key) => o[key], streak());
+        target[path[path.length - 1]] = value;
+        const preview = input.closest(".streak-message")?.querySelector(".streak-preview-copy");
+        if (preview) preview.textContent = previewTemplate(value) || "لا يوجد نص للمعاينة.";
+        lvTouch();
+      });
+      return field(label, input, hint);
+    };
+    const select = (label, path, options, hint = "") => {
+      const input = el("select", {});
+      options.forEach(([value, title]) => input.append(el("option", { value, text: title })));
+      input.value = path.reduce((o, key) => o?.[key], streak()) ?? "";
+      input.addEventListener("change", () => set(path, input.value));
+      return field(label, input, hint);
+    };
+    const toggle = (label, path, hint = "") => {
+      const id = lvId();
+      const button = el("button", {
+        class: "leveling-switch", type: "button", role: "switch",
+        "aria-checked": String(Boolean(path.reduce((o, key) => o?.[key], streak()))),
+        "aria-label": label,
+      }, el("i"));
+      button.addEventListener("click", () => {
+        const value = !Boolean(path.reduce((o, key) => o?.[key], streak()));
+        set(path, value);
+        button.setAttribute("aria-checked", String(value));
+      });
+      return el("div", { class: "leveling-row streak-toggle-row" },
+        el("span", { class: "leveling-row-copy" }, el("b", { id: `${id}-label`, text: label }), hint ? el("small", { text: hint }) : null),
+        button);
+    };
+    const previewValues = {
+      user: "عضو تجريبي", username: "عضو تجريبي", mention: "@عضو",
+      streak: "7", current_streak: "7", best: "12", best_streak: "12",
+      stage: "spark", stage_name: "شرارة", next_stage: "جمر",
+      remaining: "2", progress: "71%", time_remaining: "12س 30د",
+      server: "PRIME", server_rank: "8", global_rank: "120", threshold: "30",
+    };
+    const previewTemplate = (value) => String(value || "").replace(
+      /\{(\w+)\}/g,
+      (token, key) => (key in previewValues ? previewValues[key] : token),
+    );
+    const preview = (value) => el("div", { class: "streak-preview", role: "note" },
+      el("span", { class: "streak-preview-label", text: "معاينة محلية · لا تُرسل إلى Discord" }),
+      el("p", { class: "streak-preview-copy", text: previewTemplate(value) || "لا يوجد نص للمعاينة." }));
+    const messageCard = (key, title, hint, toggleLabel = "تفعيل هذه الرسالة") => {
+      const msg = streak().messages[key];
+      return lvCard(title, hint,
+        el("div", { class: "streak-message" },
+          toggle(toggleLabel, ["messages", key, "enabled"]),
+          area("نص الرسالة", ["messages", key, "message"], "تُعرض المعاينة محلياً فقط."),
+          preview(msg.message)));
+    };
+    const archivedMessageCard = (key, title) => {
+      const item = streak().messages[key] || {};
+      return el("div", { class: "streak-archive-row", "data-testid": `streak-archived-message-${key}` },
+        el("div", {},
+          el("strong", { text: title }),
+          el("p", { text: item.message || "لا يوجد قالب محفوظ." })),
+        el("span", { class: "streak-archive-state", text: "محفوظ · لا يُرسل في التدفق الحالي" }));
+    };
+    const deliveryItem = (label, value, detail, testId) => el("div", {
+      class: "streak-policy",
+      "data-testid": testId,
+    },
+    el("span", { text: label }),
+    el("strong", { text: value }),
+    el("small", { text: detail }));
+    const stageRows = el("div", { class: "streak-rows" });
+    const renderStages = () => {
+      const rows = Array.isArray(streak().stages) ? streak().stages : [];
+      stageRows.replaceChildren(...(rows.length ? rows.map((stage, index) => {
+        const basePath = ["stages", index];
+        const card = el("article", { class: "streak-entity" });
+        const title = el("h4", { text: stage.name || `مرحلة ${index + 1}` });
+        const remove = el("button", { type: "button", class: "leveling-btn ghost streak-remove", text: "إزالة المرحلة", onClick: () => {
+          streak().stages.splice(index, 1); lvTouch(); renderStages();
+        } });
+        const makeText = (label, key, attrs = {}) => textInput(label, [...basePath, key], attrs);
+        const makeNumber = (label, key, min, max) => numberInput(label, [...basePath, key], min, max);
+        const nullableText = (label, key, attrs = {}) => {
+          const input = el("input", { type: "text", dir: "auto", ...attrs });
+          input.value = stage[key] ?? "";
+          input.addEventListener("input", () => set([...basePath, key], input.value || null));
+          return field(label, input);
+        };
+        const color = el("input", { type: "color", value: /^#[0-9a-f]{6}$/i.test(stage.color || "") ? stage.color : "#5865f2", "aria-label": "لون المرحلة" });
+        color.addEventListener("input", () => set([...basePath, "color"], color.value));
+         const particleChoices = [["none", "بدون"], ["sparks", "شرارات"], ["shine", "لمعان"], ["embers", "جمر"], ["snow", "ثلج"], ["petals", "بتلات"], ["neon", "نيون"]];
+        const particleSelect = select("تأثير الجزيئات", [...basePath, "particle"], particleChoices);
+        const header = el("div", { class: "streak-entity-head" },
+          el("div", {}, title, el("small", { text: `المعرّف الثابت: ${stage.stage_key}` })),
+          toggle("تفعيل المرحلة", [...basePath, "enabled"]),
+          remove);
+        card.append(header,
+          lvGrid(makeNumber("عتبة السلسلة", "threshold", 1, 2147483647), makeText("اسم المرحلة", "name", { maxlength: 80 })),
+          lvGrid(makeText("الوصف", "description", { maxlength: 400 }), makeNumber("قوة التوهج", "glow", 0, 100)),
+          lvGrid(field("اللون", color), particleSelect),
+           lvGrid(makeText("التفاعل", "reaction", { maxlength: 100 }), nullableText("رابط الصورة", "image", { dir: "ltr", maxlength: 4096, placeholder: "https://" })),
+           stage.message ? el("p", { class: "streak-archive-state", text: "قالب رسالة المرحلة محفوظ للتوافق، لكن لا يُرسل مع بطاقة PNG." }) : null);
+        return card;
+      }) : [el("p", { class: "leveling-empty", text: "لا توجد مراحل محفوظة حالياً. أضف مرحلة عند الحاجة." })]));
+    };
+    const milestoneRows = el("div", { class: "streak-rows" });
+    const renderMilestones = () => {
+      const rows = Array.isArray(streak().milestones) ? streak().milestones : [];
+      milestoneRows.replaceChildren(...(rows.length ? rows.map((milestone, index) => {
+        const savedState = milestone.enabled ? "مفعّل سابقاً" : "معطّل سابقاً";
+        return el("div", {
+          class: "streak-archive-row",
+          "data-testid": `streak-archived-milestone-${index}`,
+        },
+        el("div", {},
+          el("strong", { text: `إنجاز عند ${milestone.threshold} يوم` }),
+          el("p", { text: `الحالة المحفوظة: ${savedState}` })),
+        el("span", { class: "streak-archive-state", text: "محفوظ · لا ينتج عنه إشعار في التدفق الحالي" }));
+      }) : [el("p", { class: "leveling-empty", text: "لا توجد إنجازات محفوظة." })]));
+    };
+    const channelOpts = lvChanOpts("بدون قناة محددة");
+    const main = lvCard("إعدادات السلسلة", "تحكم في قناة التسجيل وحدود نقاط مكافأة الستريك ضمن إعدادات هذا السيرفر.",
+      lvGrid(select("قناة تسجيل السلسلة", ["channel"], channelOpts, "يُحتسب النشاط هنا، وتُرسل ردود التكرار في القناة نفسها."),
+         numberInput("نقاط النشاط اليومية", ["dailyXp"], 0, 100000),
+         numberInput("الحد الأعلى للسلسلة", ["maxCap"], 0, 10000000)),
+      lvGrid(
+        el("div", { class: "streak-policy" }, el("span", { text: "المنطقة الزمنية" }), el("strong", { dir: "ltr", text: streak().timezone || "Asia/Riyadh" }), el("small", { text: "سياسة منصة ثابتة · للعرض فقط" })),
+        el("div", { class: "streak-policy" }, el("span", { text: "وقت إعادة الضبط" }), el("strong", { dir: "ltr", text: streak().resetTime || "00:00" }), el("small", { text: "سياسة منصة ثابتة · للعرض فقط" })),
+      ),
+      textInput("تفاعل النجاح", ["successReaction"], { maxlength: 100, placeholder: "رمز التفاعل" }, "اسم أو رمز التفاعل المعتمد في بيانات السيرفر."));
+    const delivery = lvCard("سلوك الإرسال الحالي", "يعرض هذا الملخص السلوك المنفّذ فعلياً بواسطة البوت.",
+      el("div", { class: "streak-delivery-grid" },
+        deliveryItem("التسجيل الناجح", "تفاعل ثم بطاقة PNG", "لا تُرسل رسالة نصية أو Embed؛ البطاقة مستقلة.", "streak-success-delivery"),
+        deliveryItem("تكرار اليوم", "رد مع وقت إعادة الضبط", "يُحذف الرد والرسالة المكررة بعد 10 ثوانٍ.", "streak-duplicate-delivery"),
+        deliveryItem("التذكير اليومي", "رسالة خاصة اختيارية", "يصل فقط لمن فعّل التذكير، وفق الوقت والقالب أدناه.", "streak-reminder-delivery")));
+    const messages = lvCard("رسائل السلسلة", "يمكن تخصيص رد التكرار وتذكير المستخدمين الذين اختاروا الاشتراك. المعاينة محلية ولا ترسل إلى Discord.",
+      el("div", { class: "streak-message-grid" },
+        messageCard("duplicate", "نشاط مكرر", "الرد إلزامي؛ عند إيقاف القالب المخصص يستخدم البوت الرد القياسي مع العدّاد.", "استخدام القالب المخصص"),
+        lvCard("تذكير النشاط", "رسالة خاصة يومية للمستخدمين الذين فعّلوا التذكير؛ التوقيت وفق المنطقة الزمنية الثابتة.",
+          el("div", { class: "streak-message" },
+            toggle("تفعيل التذكير", ["messages", "reminder", "enabled"]),
+            lvGrid(textInput("وقت التذكير", ["messages", "reminder", "time"], { type: "time", dir: "ltr" }),
+              area("نص التذكير", ["messages", "reminder", "message"])),
+            preview(streak().messages.reminder.message))),
+      ));
+    const archivedMessages = lvCard("قوالب محفوظة للتوافق", "هذه القوالب تبقى محفوظة عند حفظ الإعدادات، لكنها لا تُرسل في مسار النشاط الذي يرسل بطاقة PNG فقط.",
+      el("div", { class: "streak-archive-list" },
+        archivedMessageCard("success", "قالب التسجيل الناجح"),
+        archivedMessageCard("stageUp", "قالب الانتقال بين المراحل"),
+        archivedMessageCard("milestone", "قالب الإنجاز")));
+    const stages = lvCard("مراحل السلسلة", "تظهر هذه المراحل على بطاقة PNG. رسائل المراحل القديمة تبقى محفوظة ولا تُرسل.",
+      el("div", { class: "streak-list-head" },
+        el("span", { class: "streak-count", text: `${streak().stages.length} مرحلة` }),
+        el("button", { type: "button", class: "leveling-btn", text: "إضافة مرحلة", onClick: () => {
+          const used = new Set(streak().stages.map((item) => String(item.stage_key)));
+          let key = `stage-${Date.now().toString(36)}`;
+          while (used.has(key)) key += "-1";
+          streak().stages.push({ stage_key: key, threshold: "", name: "", message: null, image: null, color: "#5865f2", reaction: null, description: "", glow: 0, particle: "none", enabled: true });
+          lvTouch(); lvRender();
+        } }), ),
+      stageRows);
+    const milestones = lvCard("إنجازات محفوظة", "تُعرض للرجوع إليها فقط؛ لا تُرسل إشعارات إنجاز في تدفق البطاقة الحالي.",
+      el("div", { class: "streak-list-head" },
+        el("span", { class: "streak-count", text: `${streak().milestones.length} إنجاز محفوظ` })),
+      milestoneRows);
+    renderStages(); renderMilestones();
+    return el("div", { class: "leveling-stack streak-panel", dir: "rtl" },
+      el("div", { class: "streak-intro" },
+        el("span", { class: "leveling-kicker", text: "PRIME / STREAK CONTROL" }),
+        el("h2", { text: "سلسلة النشاط" }),
+        el("p", { text: "تُحفظ إعدادات القناة والتفاعل والبطاقة وقوالب التكرار والتذكير ضمن المسودة المشتركة حتى تستخدم حفظ إعدادات السيرفر." })),
+      delivery, main, messages, archivedMessages, stages, milestones);
+  }
   const lvMin = (m) => `${lvFmt(Math.floor(m / 60))} س ${lvFmt(Math.floor(m % 60))} د`;
   function lvTabData() {
     const s = lvState(), analytics = s.analytics, totals = analytics?.totals || {};
@@ -7425,7 +8983,57 @@
     const pagination = board?.nextOffset != null
       ? el("button", { type: "button", class: "leveling-btn", text: "تحميل المزيد", onClick: () => lvLoadBoard(mode, board.nextOffset, true) })
       : null;
+    const resetCard = lvCard("إعادة ضبط بيانات التقدم",
+      "تحذف مستويات ونقاط ونشاط أعضاء هذا السيرفر وسجل نقاطهم التاريخي فقط. تبقى إعدادات المستويات ومكافآتها كما هي، ولا تتغير الرتب الموجودة في Discord. لا يمكن التراجع عن الحذف.",
+      state.session?.local_development
+        ? el("p", { class: "leveling-unavail", role: "status", text: "إعادة الضبط معطلة في جلسة التطوير المحلية؛ استخدم حساب مسؤول من Discord في بيئة الإنتاج." })
+        : null,
+      el("button", {
+        type: "button",
+        class: "leveling-btn danger",
+        text: "إعادة ضبط التقدم والسجل",
+        disabled: Boolean(state.session?.local_development),
+        onClick: async (event) => {
+          if (!window.confirm(
+            "تحذير: سيُحذف تقدم الرسائل والصوت، المستويات، النشاط، وسجل نقاط هذا السيرفر فقط. ستبقى الإعدادات ومكافآت الرتب محفوظة، ولن تتغير الرتب الممنوحة حالياً. لا يمكن التراجع. هل تريد المتابعة؟"
+          )) return;
+          const button = event.currentTarget;
+          button.disabled = true;
+          try {
+            const response = await writeApi(
+              `api/guild/${s.gid}/leveling/reset-progress`,
+              { confirmation: "RESET_LEVEL_PROGRESS" },
+            );
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok) {
+              const message = data.error === "level_admin_required"
+                ? "إعادة الضبط متاحة لمالك السيرفر أو المسؤولين فقط."
+                : data.error === "production_session_required"
+                  ? "إعادة الضبط غير متاحة في جلسة التطوير المحلية."
+                  : "تعذر إعادة ضبط تقدم المستويات.";
+              toast(message, "error");
+              return;
+            }
+            const analyticsResponse = await api(
+              `api/guild/${s.gid}/leveling/analytics`,
+            );
+            s.analytics = await readJson(analyticsResponse, null);
+            s.analyticsError = !analyticsResponse.ok;
+            await lvLoadBoard(s.dataMode, 0, false);
+            toast(
+              `تمت إعادة ضبط التقدم. أُعيد ضبط ${lvFmt(data.members_reset || 0)} سجل عضو.`,
+              "success",
+              6000,
+            );
+          } catch (error) {
+            if (error.message !== "unauth") toast("تعذر الاتصال بخادم إعدادات المستويات.", "error");
+          } finally {
+            button.disabled = Boolean(state.session?.local_development);
+          }
+        },
+      }));
     return el("div", { class: "leveling-stack" },
+      resetCard,
       lvCard("ترتيب الأعضاء الحقيقي", "مصدره سجلات نقاط السيرفر. الصفحات تستخدم ترتيباً مفهرساً للنص أو الصوت.", modeSelect,
         s.leaderboardError ? el("p", { class: "leveling-unavail", text: "تعذر تحميل ترتيب الأعضاء." }) : null,
         table, pagination),
@@ -7456,14 +9064,73 @@
       if (seen.has(k)) e.push("لا يمكن تكرار المستوى والنوع نفسهما."); seen.add(k);
     });
     if (!/^#[0-9a-f]{6}$/i.test(d.card.color)) e.push("لون البطاقة غير صالح.");
+    if (!LV_LAYOUTS[d.card.layout]) e.push("قالب بطاقة المستوى غير صالح.");
+    if (!Number.isInteger(d.card.glowStrength) || d.card.glowStrength < 0 || d.card.glowStrength > 100) e.push("قوة التوهج يجب أن تكون عدداً صحيحاً من 0 إلى 100.");
+    if (!Number.isInteger(d.card.particleDensity) || d.card.particleDensity < 0 || d.card.particleDensity > 100) e.push("كثافة الجزيئات يجب أن تكون عدداً صحيحاً من 0 إلى 100.");
+    if (!Number.isInteger(d.card.bgOverlay) || d.card.bgOverlay < 0 || d.card.bgOverlay > 85) e.push("تعتيم الخلفية يجب أن يكون عدداً صحيحاً من 0 إلى 85.");
+    if (!Number.isInteger(d.card.bgBlur) || d.card.bgBlur < 0 || d.card.bgBlur > 18) e.push("تمويه الخلفية يجب أن يكون عدداً صحيحاً من 0 إلى 18.");
+    if (!Number.isInteger(d.card.animationIntensity) || d.card.animationIntensity < 0 || d.card.animationIntensity > 100) e.push("شدة الحركة يجب أن تكون عدداً صحيحاً من 0 إلى 100.");
+    if (d.card.particleColor !== "accent" && !/^#[0-9a-f]{6}$/i.test(String(d.card.particleColor))) e.push("لون الجزيئات يجب أن يكون لون التمييز أو قيمة RGB سداسية.");
+    if (!["gradient", "solid", "segmented", "neon"].includes(d.card.barStyle)) e.push("أسلوب شريط التقدم غير صالح.");
+    if (!["auto", "none", "bronze", "silver", "gold", "diamond"].includes(d.card.frame)) e.push("إطار الرتبة غير صالح.");
+    if (!["beam", "aurora", "burst"].includes(d.card.animationStyle)) e.push("نمط الحركة غير صالح.");
     if (d.public.slug && !PUBLIC_SLUG_RE.test(d.public.slug)) e.push("أدخل معرّف رابط من 3 إلى 40 حرفاً: أحرف إنجليزية صغيرة وأرقام وشرطة مفردة بين الكلمات.");
     if (d.public.enabled && !d.public.slug) e.push("أدخل معرّف الرابط قبل إتاحة اللوحة للعامة.");
     if (!lvBgOk(String(d.card.bg).trim())) e.push("رابط الخلفية يجب أن يبدأ بـ https://.");
-    const allowed = { levelup: ["user", "level", "server"], milestone: ["user", "level"], overtake: ["passer", "passed", "rank"] };
+    const allowed = new Set(LV_TEMPLATE_VARS.map((token) => token.slice(1, -1)));
     Object.entries(d.messages).forEach(([k, m]) => {
       if (!String(m.tpl).trim() || m.tpl.length > 500) e.push("قوالب الرسائل مطلوبة وبحد أقصى 500 حرف.");
-      (String(m.tpl).match(/\{[^{}]*\}/g) || []).forEach((t) => { if (!allowed[k].includes(t.slice(1, -1))) e.push(`متغير غير مدعوم ${t} في قالب ${k}.`); });
+      (String(m.tpl).match(/\{[^{}]*\}/g) || []).forEach((t) => { if (!allowed.has(t.slice(1, -1))) e.push(`متغير غير مدعوم ${t} في قالب ${k}.`); });
     });
+    if (d.streak) {
+      const streakInt = (value, min, max) => typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+      const validStreakTemplate = (value, key, label) => {
+        const text = String(value ?? "");
+        if (!text.trim() || text.length > 500) {
+          e.push(`قالب ${label} مطلوب وبحد أقصى 500 حرف.`);
+          return;
+        }
+        if ((text.match(/{/g) || []).length !== (text.match(/}/g) || []).length) {
+          e.push(`الأقواس في قالب ${label} غير مكتملة.`);
+        }
+        const allowed = LV_STREAK_TEMPLATE_VARS[key] || new Set();
+        (text.match(/\{[^{}]*\}/g) || []).forEach((token) => {
+          if (!allowed.has(token.slice(1, -1))) e.push(`متغير غير مدعوم ${token} في قالب ${label}.`);
+        });
+      };
+      if (!streakInt(d.streak.dailyXp, 0, 100000) || !streakInt(d.streak.maxCap, 0, 10000000)) e.push("إعدادات نقاط السلسلة يجب أن تكون أعداداً صحيحة ضمن النطاق المحدد.");
+      if (d.streak.timezone !== "Asia/Riyadh" || d.streak.resetTime !== "00:00") e.push("المنطقة الزمنية ووقت إعادة الضبط ثابتان على توقيت الرياض ومنتصف الليل.");
+      if (typeof d.streak.successReaction !== "string" || d.streak.successReaction.length > 100) e.push("تفاعل نجاح السلسلة مطلوب وبحد أقصى 100 حرف.");
+      const stageKeys = new Set(), stageThresholds = new Set();
+      (Array.isArray(d.streak.stages) ? d.streak.stages : []).forEach((stage) => {
+        const label = stage.name || stage.stage_key;
+        const key = String(stage.stage_key || "");
+        if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(key) || stageKeys.has(key)) e.push(`معرّف المرحلة ${label} غير صالح أو مكرر.`);
+        stageKeys.add(key);
+        if (!streakInt(stage.threshold, 1, 2147483647) || stageThresholds.has(stage.threshold)) e.push(`أدخل عتبة صحيحة وغير مكررة للمرحلة ${label}.`);
+        stageThresholds.add(stage.threshold);
+        if (!String(stage.name || "").trim() || stage.name.length > 80) e.push(`اسم المرحلة ${label} مطلوب وبحد أقصى 80 حرفاً.`);
+        if (!streakInt(stage.glow, 0, 100) || !/^#[0-9a-f]{6}$/i.test(String(stage.color || ""))) e.push(`راجع قوة التوهج واللون للمرحلة ${label}.`);
+        if (!Object.hasOwn(LV_PARTS, stage.particle)) e.push(`تأثير الجزيئات للمرحلة ${label} غير صالح.`);
+        if (String(stage.description || "").length > 400 || String(stage.reaction || "").length > 100) e.push(`الوصف أو التفاعل في المرحلة ${label} أطول من المسموح.`);
+        if (stage.image && !/^https:\/\//i.test(stage.image)) e.push(`رابط صورة المرحلة ${label} يجب أن يبدأ بـ https://.`);
+        if (stage.message) validStreakTemplate(stage.message, "stageUp", `المرحلة ${label}`);
+      });
+      const milestoneThresholds = new Set();
+      (Array.isArray(d.streak.milestones) ? d.streak.milestones : []).forEach((milestone, index) => {
+        if (!streakInt(milestone.threshold, 1, 2147483647) || milestoneThresholds.has(milestone.threshold)) e.push(`أدخل عتبة صحيحة وغير مكررة للإنجاز ${index + 1} قبل الحفظ.`);
+        milestoneThresholds.add(milestone.threshold);
+        if (String(milestone.reaction || "").length > 100) e.push(`تفاعل الإنجاز ${index + 1} أطول من المسموح.`);
+        if (milestone.image && !/^https:\/\//i.test(milestone.image)) e.push(`رابط صورة الإنجاز ${index + 1} يجب أن يبدأ بـ https://.`);
+        if (milestone.message) validStreakTemplate(milestone.message, "milestone", `الإنجاز ${index + 1}`);
+      });
+      Object.entries(d.streak.messages || {}).forEach(([key, item]) => {
+        if (!LV_STREAK_TEMPLATE_VARS[key]) return;
+        validStreakTemplate(item?.message, key, key);
+      });
+      const reminderTime = String(d.streak.messages?.reminder?.time || "");
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(reminderTime)) e.push("وقت تذكير السلسلة غير صالح.");
+    }
     return [...new Set(e)];
   }
   function lvActions() {
@@ -7514,7 +9181,7 @@
         toast("أُعيدت التعديلات إلى آخر إعدادات محمّلة من السيرفر", "info");
       } }), box);
   }
-  const LV_PANELS = { general: lvTabGeneral, public: lvTabPublic, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, prime: lvTabPrime, data: lvTabData };
+  const LV_PANELS = { general: lvTabGeneral, public: lvTabPublic, points: lvTabPoints, voice: lvTabVoice, rewards: lvTabRewards, card: lvTabCard, messages: lvTabMessages, prime: lvTabPrime, streak: lvTabStreak, data: lvTabData };
   function lvRender() {
     const root = $(".leveling-view");
     if (!root) return;
@@ -7583,6 +9250,7 @@
     else if (view === "tickets") main.append(ticketsViewNextGen());
     else if (view === "commands") main.append(commandsView());
     else if (view === "gaming") main.append(gamingView());
+    else if (view === "subscriptions") main.append(subscriptionDashboardView());
     else if (view === "clan") main.append(clanOpsView());
     else if (view === "broadcast") main.append(broadcastView());
     else if (view === "onboarding") main.append(onboardingView());
@@ -8067,6 +9735,15 @@
       categories: [],
     };
     state.economy = { wealth: [], settings: null, multipliers: {} };
+    state.subscriptionDashboard = {
+      ...state.subscriptionDashboard,
+      data: null,
+      loading: false,
+      error: "",
+      guildId: id,
+      query: "",
+      status: "all",
+    };
     state.ticketSearch = "";
     state.ticketStatusFilter = "all";
     state.selfRoleBuilder = null;

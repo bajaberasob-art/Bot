@@ -54,9 +54,13 @@ from database import (
     complete_reminder,
     create_reminder,
     get_due_reminders,
+    claim_due_streak_reminders,
     get_user_reminders,
+    set_streak_reminder,
 )
 from interaction_runtime import mark_modal_callback
+from prime_level_controls import render_template
+from streak_experience import build_streak_context
 
 
 logger = logging.getLogger(__name__)
@@ -2452,6 +2456,85 @@ class Community(commands.Cog):
                     )
             if delivered:
                 await complete_reminder(int(item["id"]))
+        streak_experience_cache = {}
+        for item in await claim_due_streak_reminders():
+            try:
+                user = (
+                    self.bot.get_user(int(item["user_id"]))
+                    or await self.bot.fetch_user(int(item["user_id"]))
+                )
+                guild_id = int(item["guild_id"])
+                if guild_id not in streak_experience_cache:
+                    try:
+                        streak_experience_cache[guild_id] = (
+                            await database.get_level_streak_experience_config(guild_id)
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[STREAK REMINDER] تعذر تحميل إعدادات العرض للسيرفر %s",
+                            guild_id,
+                        )
+                        streak_experience_cache[guild_id] = {"stages": []}
+                try:
+                    ranks = await database.get_streak_ranks(
+                        guild_id, int(item["user_id"])
+                    )
+                except Exception:
+                    logger.exception(
+                        "[STREAK REMINDER] تعذر تحميل ترتيب العضو %s",
+                        item["user_id"],
+                    )
+                    ranks = {"server_rank": 1, "global_rank": 1}
+                context = build_streak_context(
+                    user,
+                    self.bot.get_guild(guild_id),
+                    {
+                        "current_streak": int(item["current_streak"]),
+                        "best_streak": int(item["best_streak"]),
+                    },
+                    streak_experience_cache[guild_id]["stages"],
+                    ranks,
+                )
+                await user.send(
+                    render_template(
+                        item["reminder_message"], context["values"],
+                    )[:1900],
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                # The daily delivery key is claimed before sending, so a retry
+                # or restart cannot send the same reminder twice.
+                logger.info(
+                    "[STREAK REMINDER] تعذر إرسال الخاص للمستخدم %s",
+                    item["user_id"],
+                    exc_info=True,
+                )
+
+    @commands.command(
+        name="streakreminders",
+        help="تفعيل أو إيقاف تذكير الستريك اليومي الخاص بك.",
+    )
+    @commands.guild_only()
+    async def streak_reminders(self, ctx, enabled: bool):
+        """Let each member opt in without enabling unsolicited DMs by default."""
+        reminder = await set_streak_reminder(
+            ctx.guild.id, ctx.author.id, enabled
+        )
+        if reminder["enabled"]:
+            if reminder.get("delivery_enabled"):
+                response = (
+                    "تم تفعيل تذكير الستريك اليومي الساعة "
+                    f"{reminder['reminder_time']} بتوقيت الرياض. "
+                    "لإيقافه استخدم الأمر مع `false`."
+                )
+            else:
+                response = (
+                    "تم حفظ اشتراكك، لكن إرسال تذكيرات الستريك متوقف حالياً "
+                    "من إعدادات هذا السيرفر."
+                )
+        else:
+            response = "تم إيقاف تذكير الستريك اليومي."
+        await ctx.send(response)
 
     @reminder_task.before_loop
     async def before_reminder(self):

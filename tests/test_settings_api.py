@@ -1,6 +1,7 @@
 import json
 import os
 import time
+from datetime import datetime, timezone
 from io import BytesIO
 from types import SimpleNamespace
 import unittest
@@ -431,6 +432,8 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((status, snapshot["revision"], snapshot["configured"]), (200, 0, False))
         self.assertIsNone(await database.get_level_settings(FakeGuild.id))
+        self.assertEqual(snapshot["draft"]["streak"]["timezone"], "Asia/Riyadh")
+        self.assertEqual(snapshot["draft"]["streak"]["resetTime"], "00:00")
 
         invalid = json.loads(json.dumps(snapshot["draft"]))
         invalid["points"]["roleMult"] = [{"id": str(CHANNELS[0].id), "mult": 2}]
@@ -441,6 +444,19 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 400)
         self.assertIn("role", data["fields"]["_"])
+        self.assertIsNone(await database.get_level_settings(FakeGuild.id))
+
+        invalid_reminder = json.loads(json.dumps(snapshot["draft"]))
+        invalid_reminder["streak"]["messages"]["reminder"]["time"] = "25:99"
+        status, data = await call(
+            settings_save,
+            request(
+                "POST", "/api/guild/x/leveling/settings", "s10",
+                {"revision": 0, "draft": invalid_reminder}, self.headers,
+            ),
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("reminder time", data["fields"]["_"])
         self.assertIsNone(await database.get_level_settings(FakeGuild.id))
 
         draft = json.loads(json.dumps(snapshot["draft"]))
@@ -458,6 +474,11 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
             "level": 5, "role": str(ROLES[1].id), "type": "text",
         }]
         draft["messages"]["levelup"]["channel"] = str(CHANNELS[0].id)
+        draft["streak"]["messages"]["reminder"] = {
+            "enabled": False,
+            "time": "22:30",
+            "message": "تذكير مخصص لـ {user}: {current_streak} يوم",
+        }
         bot_permissions = getattr(FakeGuild.me, "guild_permissions", None)
         FakeGuild.me.guild_permissions = SimpleNamespace(manage_roles=True)
         try:
@@ -473,6 +494,14 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
                 FakeGuild.me.guild_permissions = bot_permissions
         self.assertEqual((status, saved["revision"], saved["configured"]), (200, 1, True))
         self.assertEqual(
+            saved["draft"]["streak"]["messages"]["reminder"],
+            {
+                "enabled": False,
+                "time": "22:30",
+                "message": "تذكير مخصص لـ {user}: {current_streak} يوم",
+            },
+        )
+        self.assertEqual(
             saved["draft"]["public"],
             {"enabled": True, "slug": "phase-nine-board"},
         )
@@ -481,6 +510,14 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["web_slug"], "phase-nine-board")
         self.assertEqual(stored["text_xp_enabled"], 0)
         self.assertEqual(stored["voice_min_members"], 1)
+        self.assertEqual(
+            stored["prime_controls"]["streak"]["messages"]["reminder"],
+            {
+                "enabled": False,
+                "time": "22:30",
+                "message": "تذكير مخصص لـ {user}: {current_streak} يوم",
+            },
+        )
         self.assertEqual(stored["text_allowed_channels"], [str(CHANNELS[1].id)])
         self.assertEqual(stored["timed_xp_boosts"][0]["label"], "اختبار")
         self.assertEqual(
@@ -565,6 +602,75 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((text_status, text["rows"][0]["user_id"], text["rows"][0]["rank"]), (200, "102", 2))
         self.assertEqual((voice_status, voice["rows"][0]["user_id"], voice["rows"][0]["rank"]), (200, "102", 2))
 
+    async def test_leveling_reset_requires_production_admin_confirmation_and_is_guild_scoped(self):
+        now = datetime.now(timezone.utc)
+        for guild_id, user_id in ((FakeGuild.id, 101), (FakeGuild.id + 1, 201)):
+            await database.award_text_xp(guild_id, user_id, 120, now, cooldown_seconds=0)
+            await database.award_voice_xp(guild_id, user_id, 90, 0, 60, awarded_at=now)
+        await database.update_level_settings(
+            FakeGuild.id, {"xp_multiplier": 2.5, "web_leaderboard_enabled": 1}
+        )
+        await database.add_level_reward(FakeGuild.id, "text", 2, ROLES[1].id)
+        reset = leveling_handler("POST", "reset-progress")
+        request_path = f"/api/guild/{GID}/leveling/reset-progress"
+
+        status, _ = await call(
+            reset, request("POST", request_path, "s10", {}, self.headers),
+        )
+        self.assertEqual(status, 400)
+        self.assertIsNotNone(await database.get_user_level(FakeGuild.id, 101))
+
+        # Manage Server alone passes dashboard access but not level-admin access.
+        original_get_member = FakeGuild.get_member
+        FakeGuild.get_member = lambda self, uid: (
+            SimpleNamespace(
+                id=uid, guild_permissions=SimpleNamespace(
+                    administrator=False, manage_guild=True, value=32,
+                ), roles=[],
+            )
+            if uid == 12 else original_get_member(self, uid)
+        )
+        ws.GRANT_CACHE.clear()
+        try:
+            ws.SESSIONS["s-manage-only"] = {
+                **ws.SESSIONS["s10"],
+                "id": "12",
+            }
+            status, _ = await call(
+                reset,
+                request("POST", request_path, "s-manage-only",
+                        {"confirmation": "RESET_LEVEL_PROGRESS"}, self.headers),
+            )
+            self.assertEqual(status, 403)
+        finally:
+            FakeGuild.get_member = original_get_member
+            ws.SESSIONS.pop("s-manage-only", None)
+            ws.GRANT_CACHE.clear()
+
+        status, result = await call(
+            reset,
+            request("POST", request_path, "s10",
+                    {"confirmation": "RESET_LEVEL_PROGRESS"}, self.headers),
+        )
+        self.assertEqual((status, result["members_reset"]), (200, 1))
+        self.assertIsNone(await database.get_user_level(FakeGuild.id, 101))
+        self.assertIsNotNone(await database.get_user_level(FakeGuild.id + 1, 201))
+        settings = await database.get_level_settings(FakeGuild.id)
+        self.assertEqual(settings["xp_multiplier"], 2.5)
+        self.assertEqual(len(await database.get_level_rewards(FakeGuild.id)), 1)
+
+        ws.SESSIONS["s-local"] = {
+            **ws.SESSIONS["s10"],
+            "_local_dev": True,
+            "id": "0",
+        }
+        status, _ = await call(
+            reset,
+            request("POST", request_path, "s-local",
+                    {"confirmation": "RESET_LEVEL_PROGRESS"}, self.headers),
+        )
+        self.assertEqual(status, 403)
+
     async def test_rank_card_preview_uses_authenticated_identity_and_real_renderer(self):
         sid = "card-admin"
         user_id = "100000000000000010"
@@ -586,6 +692,65 @@ class SettingsApiTests(unittest.IsolatedAsyncioTestCase):
                          (200, "image/png", b"existing-rank-card"))
         renderer.assert_awaited_once()
         self.assertEqual(renderer.await_args.args[0].id, int(user_id))
+
+    async def test_gif_card_preview_validates_and_passes_design_without_saving(self):
+        sid = "card-gif-admin"
+        user_id = "100000000000000010"
+        ws.SESSIONS[sid] = {
+            "id": user_id, "username": "admin", "avatar": "",
+            "csrf": "card-gif-csrf", "guilds": [{"id": GID}],
+            "expires_at": time.time() + 60,
+        }
+        with patch("leveling_api.generate_level_up_gif", new_callable=AsyncMock) as renderer:
+            renderer.return_value = BytesIO(b"animated-card")
+            response = await leveling_handler("GET", "card-preview")(
+                request(
+                    "GET",
+                    f"/api/guild/{GID}/leveling/card-preview?format=gif&layout=spotlight"
+                    "&glowStrength=77&particleDensity=21&frame=diamond&showMessages=false",
+                    sid,
+                )
+            )
+        self.assertEqual((response.status, response.content_type, response.body),
+                         (200, "image/gif", b"animated-card"))
+        settings = renderer.await_args.args[-1]
+        self.assertEqual(settings["card_layout"], "spotlight")
+        self.assertEqual(settings["card_design"]["glowStrength"], 77)
+        self.assertEqual(settings["card_design"]["particleDensity"], 21)
+        self.assertEqual(settings["card_design"]["frame"], "diamond")
+        self.assertFalse(settings["card_design"]["stats"]["messages"])
+        self.assertIsNone(await database.get_level_settings(FakeGuild.id))
+
+    async def test_auto_card_preview_returns_gif_for_animated_background(self):
+        sid = "card-auto-admin"
+        user_id = "100000000000000010"
+        ws.SESSIONS[sid] = {
+            "id": user_id, "username": "admin", "avatar": "",
+            "csrf": "card-auto-csrf", "guilds": [{"id": GID}],
+            "expires_at": time.time() + 60,
+        }
+        with (
+            patch("leveling_api.has_animated_background", new=AsyncMock(return_value=True)),
+            patch("leveling_api.generate_level_up_gif", new_callable=AsyncMock) as renderer,
+        ):
+            renderer.return_value = BytesIO(b"animated-background-card")
+            response = await leveling_handler("GET", "card-preview")(
+                request(
+                    "GET",
+                    f"/api/guild/{GID}/leveling/card-preview?format=auto"
+                    "&bg=https%3A%2F%2Fexample.com%2Fanimated.gif",
+                    sid,
+                )
+            )
+        self.assertEqual(
+            (response.status, response.content_type, response.body),
+            (200, "image/gif", b"animated-background-card"),
+        )
+        renderer.assert_awaited_once()
+        self.assertEqual(
+            renderer.await_args.args[-1]["card_bg_url"],
+            "https://example.com/animated.gif",
+        )
 
 
 if __name__ == "__main__":

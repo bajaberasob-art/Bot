@@ -16,6 +16,8 @@ from PIL import Image, ImageOps
 logger = logging.getLogger("RankCard")
 MAX_BYTES = 6 * 1024 * 1024
 MAX_PIXELS = 16_000_000
+MAX_ANIMATED_FRAMES = 30
+MAX_ANIMATED_PIXELS = 24_000_000
 CACHE_BYTES = 24 * 1024 * 1024
 CACHE_ITEMS = 64
 CACHE_TTL = 3600
@@ -62,7 +64,7 @@ class PublicResolver(aiohttp.abc.AbstractResolver):
 
 
 def normalize_image(data):
-    """Reject oversized/invalid images; store a bounded, decoded first frame."""
+    """Reject oversized images and preserve small, bounded animated GIFs."""
     if not data or len(data) > MAX_BYTES:
         raise ValueError("image byte limit")
     with warnings.catch_warnings():
@@ -72,6 +74,18 @@ def normalize_image(data):
                 raise ValueError("unsupported image format")
             if source.width * source.height > MAX_PIXELS:
                 raise ValueError("image pixel limit")
+            frame_count = getattr(source, "n_frames", 1)
+            if (
+                source.format == "GIF"
+                and 1 < frame_count <= MAX_ANIMATED_FRAMES
+                and source.width * source.height * frame_count <= MAX_ANIMATED_PIXELS
+            ):
+                # Decode each frame before retaining the compressed bytes. The
+                # frame and aggregate-pixel limits bound work in the card worker.
+                for index in range(frame_count):
+                    source.seek(index)
+                    source.convert("RGB").load()
+                return bytes(data)
             source.seek(0)
             image = ImageOps.exif_transpose(source).convert("RGB")
             image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)

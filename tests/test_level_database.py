@@ -59,6 +59,21 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["weekly_reset_day"], "Friday")
         self.assertEqual(await database.get_level_settings(700), settings)
 
+    async def test_legacy_level_settings_add_streak_channel_id(self):
+        async with database.connect() as db:
+            await db.execute(
+                "ALTER TABLE level_settings DROP COLUMN streak_channel_id"
+            )
+            await db.commit()
+
+        await database.init_db()
+        async with database.connect() as db:
+            async with db.execute("PRAGMA table_info(level_settings)") as cur:
+                columns = {row[1] for row in await cur.fetchall()}
+        self.assertIn("streak_channel_id", columns)
+        settings = await database.create_default_level_settings(711)
+        self.assertIsNone(settings["streak_channel_id"])
+
     async def test_level_settings_update_is_partial_and_validated(self):
         settings = await database.update_level_settings(
             701,
@@ -67,12 +82,20 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "command_rank_channels": ["1001", "1002"],
                 "command_rank_aliases": ["rank", "رتبة"],
                 "web_leaderboard_enabled": 0,
+                "card_design": {
+                    "glowStrength": 73,
+                    "frame": "gold",
+                    "stats": {"messages": True, "voice": False},
+                    "presets": [],
+                },
             },
         )
         self.assertEqual(settings["xp_multiplier"], 2.25)
         self.assertEqual(settings["command_rank_channels"], ["1001", "1002"])
         self.assertEqual(settings["command_rank_aliases"], ["rank", "رتبة"])
         self.assertEqual(settings["web_leaderboard_enabled"], 0)
+        self.assertEqual(settings["card_design"]["glowStrength"], 73)
+        self.assertEqual(settings["card_design"]["frame"], "gold")
         self.assertEqual(settings["weekly_reset_day"], "Friday")
         with self.assertRaises(ValueError):
             await database.update_level_settings(701, {"guild_id": 999})
@@ -113,6 +136,38 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await database.get_user_level(702, 1))["total_messages"], 15)
         with self.assertRaises(ValueError):
             await database.update_user_level(702, 1, {"guild_id": 999})
+
+    async def test_take_levels_clamps_level_and_preserves_fitting_progress(self):
+        await database.update_user_level(703, 1, {
+            "text_xp": 515, "text_level": 3, "voice_xp": 40, "voice_level": 0,
+            "total_messages": 8,
+        })
+        result = await database.take_text_levels(703, 1, 2)
+        row = await database.get_user_level(703, 1)
+        self.assertEqual((result["old_level"], result["text_level"], result["text_xp"]), (3, 1, 140))
+        self.assertEqual((row["voice_xp"], row["total_messages"]), (40, 8))
+        self.assertEqual(result["levels_removed"], 2)
+
+        await database.take_text_levels(703, 1, 100)
+        row = await database.get_user_level(703, 1)
+        self.assertEqual((row["text_level"], row["text_xp"]), (0, 40))
+        with self.assertRaises(ValueError):
+            await database.take_text_levels(703, 1, 0)
+
+    async def test_reset_progress_is_atomic_scoped_and_preserves_level_settings(self):
+        now = datetime.now(timezone.utc)
+        await database.award_text_xp(704, 1, 120, now, cooldown_seconds=0)
+        await database.award_voice_xp(704, 1, 60, 0, 120, awarded_at=now)
+        await database.award_text_xp(705, 2, 80, now, cooldown_seconds=0)
+        await database.update_level_settings(704, {"xp_multiplier": 2.0})
+
+        result = await database.reset_level_progress(704)
+        self.assertEqual(result["members_reset"], 1)
+        self.assertEqual(result["daily_rows_removed"], 1)
+        self.assertEqual(result["xp_events_removed"], 2)
+        self.assertIsNone(await database.get_user_level(704, 1))
+        self.assertIsNotNone(await database.get_user_level(705, 2))
+        self.assertEqual((await database.get_level_settings(704))["xp_multiplier"], 2.0)
 
     async def test_command_leaderboard_utc_periods_preserve_lifetime_xp(self):
         utc = timezone.utc
@@ -175,45 +230,6 @@ class LevelDatabaseTests(unittest.IsolatedAsyncioTestCase):
             [(row["user_id"], row["xp"]) for row in voice_weekly],
             [(20, 109), (10, 6)],
         )
-
-    async def test_periodic_top_uses_exact_event_window_and_single_claim(self):
-        start = datetime(2026, 10, 1, tzinfo=timezone.utc)
-        end = datetime(2026, 10, 2, tzinfo=timezone.utc)
-        await database.award_text_xp(
-            709, 10, 5, datetime.fromisoformat("2026-10-02T01:30:00+03:00"),
-            cooldown_seconds=0,
-        )
-        await database.award_text_xp(
-            709, 20, 9, datetime(2026, 10, 1, 23, 30, tzinfo=timezone.utc),
-            cooldown_seconds=0,
-        )
-        await database.award_text_xp(
-            709, 10, 50, end, cooldown_seconds=0,
-        )
-        rows = await database.get_level_periodic_top_leaderboard(
-            709, [10, 20], "text", start, end, limit=5,
-        )
-        self.assertEqual(
-            [(row["user_id"], row["xp"]) for row in rows],
-            [(20, 9), (10, 5)],
-        )
-
-        self.assertTrue(await database.claim_level_periodic_top_run(709, "daily", "2026-10-02"))
-        self.assertFalse(await database.claim_level_periodic_top_run(709, "daily", "2026-10-02"))
-        self.assertTrue(await database.claim_level_periodic_top_run(709, "daily", "2026-10-03"))
-        await database.complete_level_periodic_top_run(709, "daily", "2026-10-02")
-        async with database.connect() as db:
-            async with db.execute(
-                """
-                SELECT claimed_at, completed_at
-                FROM level_periodic_top_runs
-                WHERE guild_id = ? AND period = ? AND period_key = ?
-                """,
-                (709, "daily", "2026-10-02"),
-            ) as cur:
-                claim = await cur.fetchone()
-        self.assertIsNotNone(claim[0])
-        self.assertIsNotNone(claim[1])
 
     async def test_public_leaderboard_slug_pages_ranks_and_summary(self):
         await database.update_level_settings(

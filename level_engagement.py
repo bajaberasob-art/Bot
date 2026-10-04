@@ -1,8 +1,8 @@
-"""Phase 4 reaction and streak entry points; no commands or announcement UI."""
+"""Message-streak core and engagement entry points; no announcement UI."""
 import asyncio
 import logging
 from collections import OrderedDict
-from datetime import timezone
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
@@ -26,6 +26,71 @@ class EngagementXP:
         cache.move_to_end(key)
         while len(cache) > self._reaction_cache_capacity:
             cache.popitem(last=False)
+
+    async def record_message_streak(self, message):
+        """Record an eligible message in the existing leveling/streak service."""
+        guild = getattr(message, "guild", None)
+        author = getattr(message, "author", None)
+        if guild is None or author is None or getattr(author, "bot", True):
+            return {"status": "ignored"}
+        if getattr(message, "webhook_id", None) is not None:
+            return {"status": "ignored"}
+        message_type = getattr(message, "type", discord.MessageType.default)
+        if message_type not in {
+            discord.MessageType.default,
+            discord.MessageType.reply,
+        }:
+            return {"status": "ignored"}
+
+        channel = getattr(message, "channel", None)
+        channel_id = getattr(channel, "id", None)
+        activity_at = getattr(message, "created_at", None)
+        if channel_id is None or not isinstance(activity_at, datetime):
+            return {"status": "ignored"}
+
+        settings = await database.get_level_settings(guild.id)
+        if (
+            settings is None
+            or not settings.get("is_enabled")
+            or not settings.get("streak_enabled")
+        ):
+            return {"status": "disabled"}
+        streak_channel_id = settings.get("streak_channel_id")
+        if streak_channel_id is None:
+            return {"status": "channel_not_configured"}
+        if int(streak_channel_id) != int(channel_id):
+            return {"status": "wrong_channel"}
+
+        # The database rechecks live settings under its write transaction before
+        # the unique daily claim and state update.
+        result = await database.record_level_streak_activity(
+            guild.id, author.id, channel_id, activity_at
+        )
+        if result.get("status") == "success" and result.get("streak_updated"):
+            try:
+                experience = await database.get_level_streak_experience_config(
+                    guild.id, settings,
+                )
+                result["experience_events"] = (
+                    await database.record_streak_experience_events(
+                        guild.id,
+                        author.id,
+                        result.get("previous_streak", 0),
+                        result.get("current_streak", 0),
+                        result["activity_date"],
+                        stages=experience["stages"],
+                        milestones=experience["milestones"],
+                    )
+                )
+            except Exception:
+                # The committed daily claim must remain valid if experience
+                # notification bookkeeping has a transient failure.
+                logger.exception(
+                    "Streak experience event reservation failed guild=%s user=%s",
+                    guild.id, author.id,
+                )
+                result["experience_events"] = {"stages": [], "milestones": []}
+        return result
 
     @staticmethod
     def _reaction_int(settings, field, default, maximum):
@@ -144,7 +209,7 @@ class EngagementXP:
             logger.exception("Reaction XP failed guild=%s reactor=%s", *key)
 
     async def claim_daily_streak(self, member, channel=None, claimed_at=None):
-        """Internal claim entry point for later commands; UTC calendar dates.
+        """Internal claim entry point for later commands; Riyadh calendar dates.
 
         No chat or reaction event automatically invokes a claim.
         """

@@ -7,9 +7,10 @@ import os
 import re
 import time
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 # Koyeb can mount a persistent volume anywhere through DB_PATH. Keep the
 # legacy filename as a local-development fallback when it already exists so
@@ -26,6 +27,18 @@ DB_NAME = (
 logger = logging.getLogger("DatabaseEngine")
 DB_TIMEOUT = 30.0
 WAL_CHECKPOINT_INTERVAL = 30 * 60
+STREAK_TIMEZONE = ZoneInfo("Asia/Riyadh")
+STREAK_DEFAULT_REMINDER_TIME = "21:00"
+DEFAULT_STREAK_STAGES = (
+    (1, "spark", "شرارة", None, "#F5C84C", "⚡", "بداية رحلتك اليومية.", 48, "sparks"),
+    (3, "ember", "جمرة", None, "#F27A3D", "🔥", "استمر، بدأت جمرة الالتزام تتوهج.", 56, "embers"),
+    (7, "flame", "شعلة", None, "#FF5B36", "🔥", "أسبوع كامل من الحضور المتواصل.", 64, "embers"),
+    (14, "blaze", "لهيب", None, "#F04438", "🔥", "أسبوعان من الثبات والعزيمة.", 72, "sparks"),
+    (30, "volcano", "بركان", None, "#E94B35", "🌋", "شهر من الالتزام اليومي.", 82, "embers"),
+    (100, "legend", "أسطورة", None, "#B88CFF", "👑", "إنجاز استثنائي؛ أصبحت أسطورة.", 90, "shine"),
+    (365, "eternal", "خالد", None, "#65D8D0", "♾️", "عام كامل من الستريك المتواصل.", 96, "neon"),
+)
+STREAK_PARTICLES = {"none", "sparks", "shine", "embers", "snow", "petals", "neon"}
 
 # -------------------------------------------------------------
 # إعدادات السيرفر: المخطط، القيم الافتراضية، والتحقق
@@ -207,6 +220,172 @@ class _Connection:
 
 def connect(row_factory=None) -> _Connection:
     return _Connection(row_factory)
+
+
+async def _apply_streak_database_migration(db: aiosqlite.Connection) -> None:
+    """Add streak state and the daily ledger without replacing existing rows.
+
+    `activity_date` is the server-selected Asia/Riyadh calendar date.
+    Timestamps retain their timezone offset for auditability.
+    """
+    savepoint = "phase1_streak_database"
+    await db.execute(f"SAVEPOINT {savepoint}")
+    try:
+        async with db.execute("PRAGMA table_info(user_levels)") as cur:
+            columns = {row[1] for row in await cur.fetchall()}
+        if not columns:
+            raise RuntimeError("user_levels must exist before streak migration")
+        required = {"guild_id", "user_id", "current_streak", "last_daily_claim"}
+        missing = required - columns
+        if missing:
+            raise RuntimeError(
+                "user_levels is missing required streak state columns: "
+                + ", ".join(sorted(missing))
+            )
+
+        if "best_streak" not in columns:
+            await db.execute(
+                "ALTER TABLE user_levels ADD COLUMN "
+                "best_streak INTEGER NOT NULL DEFAULT 0 "
+                "CHECK (best_streak >= 0)"
+            )
+
+        # Existing lifetime history has no best-streak ledger. Preserve the
+        # known lower bound (the current streak) without lowering any value
+        # already present in a database that has partially adopted this schema.
+        await db.execute(
+            """
+            UPDATE user_levels
+            SET best_streak = CASE
+                WHEN COALESCE(current_streak, 0) > COALESCE(best_streak, 0)
+                    THEN COALESCE(current_streak, 0)
+                ELSE COALESCE(best_streak, 0)
+            END
+            WHERE best_streak IS NULL
+               OR best_streak < 0
+               OR COALESCE(current_streak, 0) > COALESCE(best_streak, 0)
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS streak_daily_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                activity_date TEXT NOT NULL,
+                first_activity_at TEXT NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (guild_id, user_id, activity_date)
+            )
+            """
+        )
+        await db.execute(f"RELEASE SAVEPOINT {savepoint}")
+    except BaseException:
+        await db.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        await db.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+
+
+async def _apply_streak_experience_migration(db: aiosqlite.Connection) -> None:
+    """Add durable experience configuration and delivery guards without rebuilding data."""
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS streak_stages (
+            stage_key TEXT PRIMARY KEY,
+            threshold INTEGER NOT NULL UNIQUE CHECK (threshold > 0),
+            name TEXT NOT NULL,
+            message TEXT DEFAULT NULL,
+            image TEXT DEFAULT NULL,
+            color TEXT NOT NULL DEFAULT '#F5C84C',
+            reaction TEXT DEFAULT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            glow INTEGER NOT NULL DEFAULT 0 CHECK (glow BETWEEN 0 AND 100),
+            particle TEXT NOT NULL DEFAULT 'none',
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))
+        )
+    """)
+    async with db.execute("PRAGMA table_info(streak_stages)") as cur:
+        stage_columns = {row[1] for row in await cur.fetchall()}
+    if "message" not in stage_columns:
+        await db.execute(
+            "ALTER TABLE streak_stages ADD COLUMN message TEXT DEFAULT NULL"
+        )
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS streak_milestones (
+            threshold INTEGER PRIMARY KEY CHECK (threshold > 0),
+            message TEXT NOT NULL DEFAULT '',
+            image TEXT DEFAULT NULL,
+            reaction TEXT DEFAULT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS streak_experience_events (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            event_key TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('stage', 'milestone')),
+            threshold INTEGER NOT NULL,
+            activity_date TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, user_id, event_key)
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS streak_reminder_settings (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+            reminder_time TEXT NOT NULL DEFAULT '21:00',
+            enabled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS streak_reminder_deliveries (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            reminder_date TEXT NOT NULL,
+            claimed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, user_id, reminder_date)
+        )
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_streak_reminder_settings_enabled
+        ON streak_reminder_settings(enabled, reminder_time)
+    """)
+    await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_streak_experience_user
+        ON streak_experience_events(guild_id, user_id, event_type)
+    """)
+    await db.executemany(
+        """
+        INSERT OR IGNORE INTO streak_stages
+            (threshold, stage_key, name, image, color, reaction,
+             description, glow, particle)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        DEFAULT_STREAK_STAGES,
+    )
+
+
+async def migrate_streak_database() -> None:
+    """Run only the additive streak migration against the configured SQLite DB."""
+    async with connect() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'user_levels'"
+            ) as cur:
+                if await cur.fetchone() is None:
+                    raise RuntimeError(
+                        "user_levels is absent; initialize the existing schema first"
+                    )
+            await _apply_streak_database_migration(db)
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
 
 
 async def checkpoint_wal() -> tuple:
@@ -518,6 +697,7 @@ async def init_db() -> None:
                     boost_multiplier REAL DEFAULT 1.0,
                     boost_expires_at TIMESTAMP DEFAULT NULL,
                     streak_enabled BOOLEAN DEFAULT 1,
+                    streak_channel_id INTEGER DEFAULT NULL,
                     streak_daily_xp INTEGER DEFAULT 50,
                     streak_max_cap INTEGER DEFAULT 500,
                     reaction_xp_reactor BOOLEAN DEFAULT 1,
@@ -545,6 +725,7 @@ async def init_db() -> None:
                     card_animated_bar BOOLEAN DEFAULT 1,
                     card_color TEXT DEFAULT '#1E293B',
                     card_bg_url TEXT DEFAULT NULL,
+                    card_design TEXT NOT NULL DEFAULT '{}',
                     levelup_channel_id INTEGER DEFAULT NULL,
                     levelup_channel_type TEXT DEFAULT 'channel',
                     levelup_format TEXT DEFAULT 'embed',
@@ -576,12 +757,14 @@ async def init_db() -> None:
                 "timed_xp_boosts": "TEXT DEFAULT '[]'",
                 "voice_min_members": "INTEGER DEFAULT 2",
                 "card_show_stats": "BOOLEAN DEFAULT 1",
+                "card_design": "TEXT NOT NULL DEFAULT '{}'",
                 "levelup_enabled": "BOOLEAN DEFAULT 1",
                 "milestone_alert_enabled": "BOOLEAN DEFAULT 1",
                 "milestone_channel_id": "INTEGER DEFAULT NULL",
                 "milestone_template": "TEXT DEFAULT '{user} حقق إنجازاً جديداً عند المستوى {level}.'",
                 "overtake_channel_id": "INTEGER DEFAULT NULL",
                 "prime_controls": "TEXT NOT NULL DEFAULT '{}'",
+                "streak_channel_id": "INTEGER DEFAULT NULL",
             }
             for column, declaration in level_additive_columns.items():
                 if column not in level_columns:
@@ -613,6 +796,8 @@ async def init_db() -> None:
                     PRIMARY KEY (guild_id, user_id)
                 );
             """)
+            await _apply_streak_database_migration(db)
+            await _apply_streak_experience_migration(db)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS level_xp_daily (
                     guild_id INTEGER NOT NULL,
@@ -634,6 +819,306 @@ async def init_db() -> None:
                     CHECK (text_xp > 0 OR voice_xp > 0)
                 );
             """)
+            # Subscription records are additive to existing XP and streak
+            # state. The ledgers are append-only; retries are deduplicated by
+            # their stable operation/event keys.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    subscription_id TEXT PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    plan_id TEXT DEFAULT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'expired', 'cancelled')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK (end_date > start_date)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_history (
+                    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_key TEXT NOT NULL UNIQUE,
+                    idempotency_key TEXT UNIQUE,
+                    request_hash TEXT NOT NULL DEFAULT '',
+                    subscription_id TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL
+                        CHECK (event_type IN ('created', 'renewed', 'expired', 'cancelled')),
+                    actor_id INTEGER,
+                    previous_status TEXT,
+                    status TEXT NOT NULL
+                        CHECK (status IN ('active', 'expired', 'cancelled')),
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (subscription_id)
+                        REFERENCES subscriptions(subscription_id) ON DELETE RESTRICT
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_renewals (
+                    transaction_id TEXT PRIMARY KEY,
+                    subscription_id TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    previous_end_date TEXT NOT NULL,
+                    new_end_date TEXT NOT NULL,
+                    duration_days INTEGER NOT NULL CHECK (duration_days > 0),
+                    actor_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (subscription_id)
+                        REFERENCES subscriptions(subscription_id) ON DELETE RESTRICT
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_xp_transactions (
+                    transaction_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    subscription_id TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'subscription'
+                        CHECK (source = 'subscription'),
+                    source_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL
+                        CHECK (event_type IN ('created', 'renewal')),
+                    amount INTEGER NOT NULL CHECK (amount >= 0),
+                    base_amount INTEGER NOT NULL DEFAULT 0,
+                    level_basis INTEGER NOT NULL DEFAULT 0,
+                    level_step INTEGER NOT NULL DEFAULT 5,
+                    random_bonus INTEGER NOT NULL DEFAULT 0,
+                    cap_amount INTEGER NOT NULL DEFAULT 0,
+                    timestamp TEXT NOT NULL,
+                    UNIQUE (source, source_id, event_type),
+                    FOREIGN KEY (subscription_id)
+                        REFERENCES subscriptions(subscription_id) ON DELETE RESTRICT
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_notifications (
+                    notification_id TEXT PRIMARY KEY,
+                    event_key TEXT NOT NULL UNIQUE,
+                    subscription_id TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL
+                        CHECK (event_type IN ('created', 'renewal', 'expiring', 'expired')),
+                    reference_end_date TEXT NOT NULL,
+                    reminder_hours INTEGER DEFAULT NULL,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'cancelled')),
+                    created_at TEXT NOT NULL,
+                    claimed_at TEXT DEFAULT NULL,
+                    completed_at TEXT DEFAULT NULL,
+                    last_error TEXT DEFAULT NULL,
+                    FOREIGN KEY (subscription_id)
+                        REFERENCES subscriptions(subscription_id) ON DELETE RESTRICT
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_guild_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    xp_enabled INTEGER NOT NULL DEFAULT 1 CHECK (xp_enabled IN (0, 1)),
+                    notifications_enabled INTEGER NOT NULL DEFAULT 1
+                        CHECK (notifications_enabled IN (0, 1)),
+                    new_xp_base INTEGER NOT NULL DEFAULT 100 CHECK (new_xp_base >= 0),
+                    renewal_xp_base INTEGER NOT NULL DEFAULT 150 CHECK (renewal_xp_base >= 0),
+                    notification_templates TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            """)
+            # Phase 6 expands the existing subscription settings in place. Keep
+            # every change additive: production databases already contain live
+            # subscription, XP, reminder, and audit records.
+            async with db.execute(
+                "PRAGMA table_info(subscription_guild_settings)"
+            ) as cur:
+                subscription_setting_columns = {
+                    row[1] for row in await cur.fetchall()
+                }
+            subscription_setting_migrations = {
+                "enabled": "INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))",
+                "new_subscription_enabled": "INTEGER NOT NULL DEFAULT 1 CHECK (new_subscription_enabled IN (0, 1))",
+                "renewal_enabled": "INTEGER NOT NULL DEFAULT 1 CHECK (renewal_enabled IN (0, 1))",
+                "expiry_enabled": "INTEGER NOT NULL DEFAULT 1 CHECK (expiry_enabled IN (0, 1))",
+                "expiry_detection_enabled": "INTEGER NOT NULL DEFAULT 1 CHECK (expiry_detection_enabled IN (0, 1))",
+                "reminders_enabled": "INTEGER NOT NULL DEFAULT 1 CHECK (reminders_enabled IN (0, 1))",
+                "default_duration_days": "INTEGER NOT NULL DEFAULT 30 CHECK (default_duration_days BETWEEN 1 AND 36500)",
+                "renewal_duration_days": "INTEGER NOT NULL DEFAULT 30 CHECK (renewal_duration_days BETWEEN 1 AND 36500)",
+                "default_plan_id": "TEXT DEFAULT NULL",
+                "level_step_xp": "INTEGER NOT NULL DEFAULT 5 CHECK (level_step_xp BETWEEN 0 AND 100000)",
+                "new_xp_jitter": "INTEGER NOT NULL DEFAULT 20 CHECK (new_xp_jitter BETWEEN 0 AND 100000)",
+                "renewal_xp_jitter": "INTEGER NOT NULL DEFAULT 30 CHECK (renewal_xp_jitter BETWEEN 0 AND 100000)",
+                "new_xp_cap": "INTEGER NOT NULL DEFAULT 2000 CHECK (new_xp_cap BETWEEN 0 AND 100000)",
+                "renewal_xp_cap": "INTEGER NOT NULL DEFAULT 3000 CHECK (renewal_xp_cap BETWEEN 0 AND 100000)",
+                "xp_multiplier": "REAL NOT NULL DEFAULT 1.0 CHECK (xp_multiplier BETWEEN 0 AND 100)",
+                "expiry_action": "TEXT NOT NULL DEFAULT 'expire' CHECK (expiry_action IN ('expire', 'cancel', 'keep_active'))",
+                "notification_rules_json": "TEXT NOT NULL DEFAULT '{}'",
+                "notification_claim_timeout_minutes": "INTEGER NOT NULL DEFAULT 10 CHECK (notification_claim_timeout_minutes BETWEEN 1 AND 120)",
+                "revision": "INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)",
+            }
+            for column, definition in subscription_setting_migrations.items():
+                if column not in subscription_setting_columns:
+                    await db.execute(
+                        f"ALTER TABLE subscription_guild_settings "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+
+            async with db.execute(
+                "PRAGMA table_info(subscription_notifications)"
+            ) as cur:
+                notification_columns = {row[1] for row in await cur.fetchall()}
+            if "reminder_id" not in notification_columns:
+                await db.execute(
+                    "ALTER TABLE subscription_notifications "
+                    "ADD COLUMN reminder_id TEXT DEFAULT NULL"
+                )
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_plans (
+                    plan_id TEXT PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    duration_days INTEGER NOT NULL CHECK (duration_days BETWEEN 1 AND 36500),
+                    price_cents INTEGER DEFAULT NULL CHECK (price_cents IS NULL OR price_cents >= 0),
+                    currency TEXT NOT NULL DEFAULT 'USD'
+                        CHECK (length(currency) = 3),
+                    xp_enabled INTEGER NOT NULL DEFAULT 1 CHECK (xp_enabled IN (0, 1)),
+                    new_xp_base INTEGER DEFAULT NULL CHECK (new_xp_base IS NULL OR new_xp_base BETWEEN 0 AND 100000),
+                    renewal_xp_base INTEGER DEFAULT NULL CHECK (renewal_xp_base IS NULL OR renewal_xp_base BETWEEN 0 AND 100000),
+                    xp_multiplier REAL DEFAULT NULL CHECK (xp_multiplier IS NULL OR xp_multiplier BETWEEN 0 AND 100),
+                    notifications_enabled INTEGER NOT NULL DEFAULT 1 CHECK (notifications_enabled IN (0, 1)),
+                    reminders_enabled INTEGER NOT NULL DEFAULT 1 CHECK (reminders_enabled IN (0, 1)),
+                    expiry_action TEXT DEFAULT NULL
+                        CHECK (expiry_action IS NULL OR expiry_action IN ('expire', 'cancel', 'keep_active')),
+                    notification_overrides_json TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    created_by INTEGER DEFAULT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (guild_id, normalized_name)
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_reminder_rules (
+                    reminder_id TEXT PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    hours_before INTEGER NOT NULL CHECK (hours_before BETWEEN 1 AND 876000),
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    dm_enabled INTEGER NOT NULL DEFAULT 1 CHECK (dm_enabled IN (0, 1)),
+                    channel_enabled INTEGER NOT NULL DEFAULT 0 CHECK (channel_enabled IN (0, 1)),
+                    channel_id INTEGER DEFAULT NULL,
+                    template_id TEXT DEFAULT NULL,
+                    conditions_json TEXT NOT NULL DEFAULT '{}',
+                    created_by INTEGER DEFAULT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_templates (
+                    template_id TEXT PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL,
+                    event_type TEXT NOT NULL
+                        CHECK (event_type IN ('created', 'renewal', 'expiring', 'expired')),
+                    content TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+                    created_by INTEGER DEFAULT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (guild_id, normalized_name)
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_admin_audit (
+                    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_key TEXT NOT NULL UNIQUE,
+                    idempotency_key TEXT UNIQUE,
+                    request_hash TEXT NOT NULL DEFAULT '',
+                    subscription_id TEXT NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    before_json TEXT NOT NULL DEFAULT '{}',
+                    after_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (subscription_id)
+                        REFERENCES subscriptions(subscription_id) ON DELETE RESTRICT
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS subscription_control_audit (
+                    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    entity_type TEXT NOT NULL
+                        CHECK (entity_type IN ('settings', 'plan', 'reminder', 'template')),
+                    entity_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    before_json TEXT NOT NULL DEFAULT '{}',
+                    after_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_plans_guild_enabled "
+                "ON subscription_plans(guild_id, enabled, name);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_reminders_due "
+                "ON subscription_reminder_rules(guild_id, enabled, hours_before);"
+            )
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_reminders_unique_enabled_hours "
+                "ON subscription_reminder_rules(guild_id, hours_before) WHERE enabled = 1;"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_templates_guild_event "
+                "ON subscription_templates(guild_id, event_type, enabled);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_admin_audit_guild_history "
+                "ON subscription_admin_audit(guild_id, subscription_id, created_at);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_control_audit_guild_history "
+                "ON subscription_control_audit(guild_id, created_at);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscriptions_member_status "
+                "ON subscriptions(guild_id, user_id, status, end_date);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscriptions_expiry "
+                "ON subscriptions(status, end_date);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_history_member "
+                "ON subscription_history(guild_id, user_id, created_at);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_xp_period "
+                "ON subscription_xp_transactions(guild_id, timestamp, event_type);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subscription_notifications_due "
+                "ON subscription_notifications(status, created_at);"
+            )
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS level_periodic_top_runs (
                     guild_id INTEGER NOT NULL,
@@ -1856,6 +2341,7 @@ _LEVEL_SETTINGS_JSON_FIELDS = {
     "text_allowed_channels",
     "timed_xp_boosts",
     "prime_controls",
+    "card_design",
 }
 _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "is_enabled",
@@ -1878,6 +2364,7 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "boost_multiplier",
     "boost_expires_at",
     "streak_enabled",
+    "streak_channel_id",
     "streak_daily_xp",
     "streak_max_cap",
     "reaction_xp_reactor",
@@ -1906,6 +2393,7 @@ _LEVEL_SETTINGS_MUTABLE_FIELDS = {
     "card_animated_bar",
     "card_color",
     "card_bg_url",
+    "card_design",
     "card_show_stats",
     "levelup_channel_id",
     "levelup_enabled",
@@ -1944,7 +2432,7 @@ def _decode_level_settings(row: Any) -> Optional[Dict[str, Any]]:
     result = dict(row)
     for key in _LEVEL_SETTINGS_JSON_FIELDS:
         value = result.get(key)
-        default = "{}" if key == "prime_controls" else "[]"
+        default = "{}" if key in {"prime_controls", "card_design"} else "[]"
         result[key] = json.loads(value or default)
     return result
 
@@ -1954,7 +2442,7 @@ def _encode_level_setting(key: str, value: Any) -> Any:
         return value
     if isinstance(value, str):
         value = json.loads(value)
-    if key == "prime_controls":
+    if key in {"prime_controls", "card_design"}:
         if not isinstance(value, dict):
             raise ValueError(f"{key} must be a JSON object")
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -2000,6 +2488,23 @@ async def update_level_settings(
     if unknown:
         raise ValueError(f"unknown level setting: {sorted(unknown)[0]}")
     data = dict(data)
+    if "streak_channel_id" in data and data["streak_channel_id"] is not None:
+        raw_channel_id = data["streak_channel_id"]
+        if isinstance(raw_channel_id, bool):
+            raise ValueError("streak_channel_id must be a positive Discord channel ID")
+        try:
+            channel_id = int(raw_channel_id)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "streak_channel_id must be a positive Discord channel ID"
+            ) from exc
+        if channel_id <= 0 or channel_id > 9_223_372_036_854_775_807:
+            raise ValueError("streak_channel_id is outside the SQLite integer range")
+        if isinstance(raw_channel_id, float) and not raw_channel_id.is_integer():
+            raise ValueError("streak_channel_id must be a whole number")
+        if isinstance(raw_channel_id, str) and not raw_channel_id.strip().isdecimal():
+            raise ValueError("streak_channel_id must be a positive Discord channel ID")
+        data["streak_channel_id"] = channel_id
     if "voice_min_two_members" in data and "voice_min_members" not in data:
         legacy_minimum = data["voice_min_two_members"]
         if legacy_minimum not in (False, True, 0, 1):
@@ -2294,6 +2799,664 @@ def _level_utc(value):
     return value.astimezone(timezone.utc)
 
 
+def _level_streak_local(value):
+    """Normalize an instant to the fixed streak calendar (midnight Riyadh)."""
+    if not isinstance(value, datetime):
+        value = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(STREAK_TIMEZONE)
+
+
+async def record_level_streak_activity(
+    guild_id: int,
+    user_id: int,
+    channel_id: int,
+    activity_at: datetime,
+) -> Dict[str, Any]:
+    """Atomically record one eligible member activity for a Riyadh calendar day.
+
+    The ledger's UNIQUE key is the final duplicate guard. BEGIN IMMEDIATE keeps
+    insertion, streak calculation, and state updates in one serialized SQLite
+    transaction across bot instances and restarts.
+    """
+    guild_id, user_id, channel_id = int(guild_id), int(user_id), int(channel_id)
+    local_activity = _level_streak_local(activity_at)
+    activity_day = local_activity.date()
+    activity_date = activity_day.isoformat()
+    first_activity_at = local_activity.isoformat()
+
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                """
+                SELECT is_enabled, streak_enabled, streak_channel_id
+                FROM level_settings WHERE guild_id = ?
+                """,
+                (guild_id,),
+            ) as cur:
+                settings = await cur.fetchone()
+            if (
+                settings is None
+                or not settings["is_enabled"]
+                or not settings["streak_enabled"]
+            ):
+                await db.rollback()
+                return {"status": "disabled"}
+            configured_channel = settings["streak_channel_id"]
+            if configured_channel is None:
+                await db.rollback()
+                return {"status": "channel_not_configured"}
+            if int(configured_channel) != channel_id:
+                await db.rollback()
+                return {"status": "wrong_channel"}
+
+            async with db.execute(
+                """
+                SELECT current_streak, best_streak, last_daily_claim
+                FROM user_levels WHERE guild_id = ? AND user_id = ?
+                """,
+                (guild_id, user_id),
+            ) as cur:
+                user_row = await cur.fetchone()
+            async with db.execute(
+                """
+                SELECT MAX(activity_date) FROM streak_daily_activity
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (guild_id, user_id),
+            ) as cur:
+                latest_ledger_row = await cur.fetchone()
+
+            latest_ledger_day = (
+                date.fromisoformat(latest_ledger_row[0])
+                if latest_ledger_row and latest_ledger_row[0]
+                else None
+            )
+            legacy_claim_day = (
+                _level_streak_local(user_row["last_daily_claim"]).date()
+                if user_row and user_row["last_daily_claim"]
+                else None
+            )
+            latest_persisted_day = max(
+                (day for day in (latest_ledger_day, legacy_claim_day) if day is not None),
+                default=None,
+            )
+
+            # A legacy manual claim on this date still occupies the day, but it
+            # must not manufacture a message-activity ledger row.
+            if (
+                legacy_claim_day is not None
+                and legacy_claim_day == activity_day
+                and latest_ledger_day != activity_day
+            ):
+                await db.rollback()
+                return {
+                    "status": "duplicate",
+                    "reason": "already_claimed",
+                    "current_streak": int(user_row["current_streak"] or 0) if user_row else 0,
+                    "best_streak": int(user_row["best_streak"] or 0) if user_row else 0,
+                    "activity_date": activity_date,
+                }
+
+            cursor = await db.execute(
+                """
+                INSERT INTO streak_daily_activity (
+                    guild_id, user_id, activity_date, first_activity_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id, activity_date) DO NOTHING
+                """,
+                (guild_id, user_id, activity_date, first_activity_at),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                return {
+                    "status": "duplicate",
+                    "reason": "already_claimed",
+                    "current_streak": int(user_row["current_streak"] or 0) if user_row else 0,
+                    "best_streak": int(user_row["best_streak"] or 0) if user_row else 0,
+                    "activity_date": activity_date,
+                }
+
+            current_streak = int(user_row["current_streak"] or 0) if user_row else 0
+            previous_streak = current_streak
+            best_streak = max(
+                int(user_row["best_streak"] or 0) if user_row else 0,
+                current_streak,
+            )
+            if latest_persisted_day is not None and latest_persisted_day > activity_day:
+                # Delayed/replayed older events may fill history, but cannot
+                # roll the live streak state backwards.
+                await db.commit()
+                return {
+                    "status": "success",
+                    "current_streak": current_streak,
+                    "best_streak": best_streak,
+                    "activity_date": activity_date,
+                    "streak_updated": False,
+                    "previous_streak": previous_streak,
+                }
+
+            if latest_persisted_day == activity_day - timedelta(days=1):
+                current_streak = max(0, current_streak) + 1
+            else:
+                current_streak = 1
+            best_streak = max(0, best_streak, current_streak)
+
+            await db.execute(
+                "INSERT OR IGNORE INTO user_levels (guild_id, user_id) VALUES (?, ?)",
+                (guild_id, user_id),
+            )
+            await db.execute(
+                """
+                UPDATE user_levels
+                SET current_streak = ?, best_streak = ?, last_daily_claim = ?
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (
+                    current_streak, best_streak, first_activity_at,
+                    guild_id, user_id,
+                ),
+            )
+            await db.commit()
+            return {
+                "status": "success",
+                "current_streak": current_streak,
+                "best_streak": best_streak,
+                "activity_date": activity_date,
+                "last_daily_claim": first_activity_at,
+                "streak_updated": True,
+                "previous_streak": previous_streak,
+            }
+        except BaseException:
+            await db.rollback()
+            raise
+
+
+def _validated_streak_image(value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or len(value) > 4096:
+        raise ValueError("streak image must be a public HTTPS URL")
+    parts = urlparse(value)
+    if parts.scheme != "https":
+        raise ValueError("streak image must use HTTPS")
+    from cogs.card_images import validate_url
+    return validate_url(value)
+
+
+async def get_streak_stages(include_disabled: bool = False) -> list[Dict[str, Any]]:
+    query = "SELECT * FROM streak_stages"
+    if not include_disabled:
+        query += " WHERE enabled = 1"
+    query += " ORDER BY threshold ASC, stage_key ASC"
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(query) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def upsert_streak_stage(stage: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(stage, dict):
+        raise ValueError("streak stage must be a mapping")
+    key = str(stage.get("stage_key") or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", key):
+        raise ValueError("stage_key must be a short lowercase identifier")
+    threshold = stage.get("threshold")
+    if isinstance(threshold, bool):
+        raise ValueError("threshold must be a positive whole number")
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("threshold must be a positive whole number") from exc
+    if threshold <= 0 or (isinstance(stage.get("threshold"), float)
+                          and not stage["threshold"].is_integer()):
+        raise ValueError("threshold must be a positive whole number")
+    name = str(stage.get("name") or "").strip()
+    if not name or len(name) > 80:
+        raise ValueError("stage name must contain 1 to 80 characters")
+    message = stage.get("message")
+    message = str(message).strip() if message is not None else None
+    if message is not None and len(message) > 1900:
+        raise ValueError("stage-up message must be at most 1900 characters")
+    color = str(stage.get("color") or "")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        raise ValueError("stage color must be a six-digit hex color")
+    image = _validated_streak_image(stage.get("image"))
+    reaction = stage.get("reaction")
+    reaction = str(reaction).strip() if reaction is not None else None
+    if reaction is not None and len(reaction) > 100:
+        raise ValueError("stage reaction is too long")
+    description = str(stage.get("description") or "").strip()
+    if len(description) > 400:
+        raise ValueError("stage description is too long")
+    glow = stage.get("glow", 0)
+    if isinstance(glow, bool):
+        raise ValueError("glow must be an integer from 0 to 100")
+    try:
+        glow = int(glow)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("glow must be an integer from 0 to 100") from exc
+    if not 0 <= glow <= 100 or (
+        isinstance(stage.get("glow"), float) and not stage["glow"].is_integer()
+    ):
+        raise ValueError("glow must be an integer from 0 to 100")
+    particle = str(stage.get("particle") or "none")
+    if particle not in STREAK_PARTICLES:
+        raise ValueError("unsupported streak particle effect")
+    enabled = stage.get("enabled", True)
+    if enabled not in (True, False, 0, 1):
+        raise ValueError("enabled must be boolean")
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            """
+            INSERT INTO streak_stages
+                (stage_key, threshold, name, message, image, color, reaction,
+                 description, glow, particle, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stage_key) DO UPDATE SET
+                threshold = excluded.threshold,
+                name = excluded.name,
+                message = excluded.message,
+                image = excluded.image,
+                color = excluded.color,
+                reaction = excluded.reaction,
+                description = excluded.description,
+                glow = excluded.glow,
+                particle = excluded.particle,
+                enabled = excluded.enabled
+            """,
+            (
+                key, threshold, name, message, image, color.upper(), reaction,
+                description, glow, particle, int(bool(enabled)),
+            ),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM streak_stages WHERE stage_key = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("streak stage disappeared after saving")
+    return dict(row)
+
+
+async def get_streak_milestones(include_disabled: bool = False) -> list[Dict[str, Any]]:
+    query = "SELECT * FROM streak_milestones"
+    if not include_disabled:
+        query += " WHERE enabled = 1"
+    query += " ORDER BY threshold ASC"
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(query) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def get_level_streak_experience_config(
+    guild_id: int, settings: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return guild-scoped presentation rules, falling back to Phase 3 rows."""
+    settings = settings if settings is not None else await get_level_settings(guild_id)
+    from prime_level_controls import controls_with_defaults
+
+    controls = controls_with_defaults(
+        settings.get("prime_controls") if settings else None, settings or {},
+    )
+    streak = controls["streak"]
+    stages = streak.get("stages")
+    milestones = streak.get("milestones")
+    if stages is None:
+        stages = await get_streak_stages()
+    else:
+        stages = [
+            dict(stage) for stage in stages
+            if isinstance(stage, dict) and stage.get("enabled", True)
+        ]
+    if milestones is None:
+        milestones = await get_streak_milestones()
+    else:
+        milestones = [
+            dict(item) for item in milestones
+            if isinstance(item, dict) and item.get("enabled", True)
+        ]
+    return {
+        "controls": streak,
+        "stages": stages,
+        "milestones": milestones,
+    }
+
+
+async def upsert_streak_milestone(milestone: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(milestone, dict):
+        raise ValueError("streak milestone must be a mapping")
+    threshold = milestone.get("threshold")
+    if isinstance(threshold, bool):
+        raise ValueError("threshold must be a positive whole number")
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("threshold must be a positive whole number") from exc
+    if threshold <= 0 or (
+        isinstance(milestone.get("threshold"), float)
+        and not milestone["threshold"].is_integer()
+    ):
+        raise ValueError("threshold must be a positive whole number")
+    message = str(milestone.get("message") or "").strip()
+    if len(message) > 1900:
+        raise ValueError("milestone message must be at most 1900 characters")
+    image = _validated_streak_image(milestone.get("image"))
+    reaction = milestone.get("reaction")
+    reaction = str(reaction).strip() if reaction is not None else None
+    if reaction is not None and len(reaction) > 100:
+        raise ValueError("milestone reaction is too long")
+    enabled = milestone.get("enabled", True)
+    if enabled not in (True, False, 0, 1):
+        raise ValueError("enabled must be boolean")
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            """
+            INSERT INTO streak_milestones
+                (threshold, message, image, reaction, enabled)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(threshold) DO UPDATE SET
+                message = excluded.message,
+                image = excluded.image,
+                reaction = excluded.reaction,
+                enabled = excluded.enabled
+            """,
+            (threshold, message, image, reaction, int(bool(enabled))),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT * FROM streak_milestones WHERE threshold = ?", (threshold,)
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("streak milestone disappeared after saving")
+    return dict(row)
+
+
+async def record_streak_experience_events(
+    guild_id: int,
+    user_id: int,
+    previous_streak: int,
+    current_streak: int,
+    activity_date: str,
+    stages: Optional[list[Dict[str, Any]]] = None,
+    milestones: Optional[list[Dict[str, Any]]] = None,
+) -> Dict[str, list[Dict[str, Any]]]:
+    """Reserve each attained stage/milestone once per user, even across restarts."""
+    previous_streak = max(0, int(previous_streak))
+    current_streak = max(0, int(current_streak))
+    if stages is None:
+        stages = await get_streak_stages()
+    if milestones is None:
+        milestones = await get_streak_milestones()
+    created = {"stages": [], "milestones": []}
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            for stage in stages:
+                threshold = int(stage["threshold"])
+                if previous_streak < threshold <= current_streak:
+                    cursor = await db.execute(
+                        """
+                        INSERT OR IGNORE INTO streak_experience_events
+                            (guild_id, user_id, event_key, event_type,
+                             threshold, activity_date)
+                        VALUES (?, ?, ?, 'stage', ?, ?)
+                        """,
+                        (
+                            int(guild_id), int(user_id),
+                            f"stage:{stage['stage_key']}", threshold,
+                            str(activity_date),
+                        ),
+                    )
+                    if cursor.rowcount == 1:
+                        created["stages"].append(stage)
+            for milestone in milestones:
+                threshold = int(milestone["threshold"])
+                if previous_streak < threshold <= current_streak:
+                    cursor = await db.execute(
+                        """
+                        INSERT OR IGNORE INTO streak_experience_events
+                            (guild_id, user_id, event_key, event_type,
+                             threshold, activity_date)
+                        VALUES (?, ?, ?, 'milestone', ?, ?)
+                        """,
+                        (
+                            int(guild_id), int(user_id),
+                            f"milestone:{threshold}", threshold,
+                            str(activity_date),
+                        ),
+                    )
+                    if cursor.rowcount == 1:
+                        created["milestones"].append(milestone)
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return created
+
+
+async def get_streak_ranks(guild_id: int, user_id: int) -> Dict[str, int]:
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            "SELECT current_streak FROM user_levels WHERE guild_id = ? AND user_id = ?",
+            (int(guild_id), int(user_id)),
+        ) as cur:
+            row = await cur.fetchone()
+        score = max(0, int(row["current_streak"] or 0)) if row else 0
+        async with db.execute(
+            """
+            SELECT COUNT(*) + 1 AS rank
+            FROM (
+                SELECT user_id, MAX(COALESCE(current_streak, 0)) AS best
+                FROM user_levels WHERE guild_id = ? GROUP BY user_id
+            )
+            WHERE best > ?
+            """,
+            (int(guild_id), score),
+        ) as cur:
+            server_rank = int((await cur.fetchone())["rank"])
+        async with db.execute(
+            """
+            SELECT COUNT(*) + 1 AS rank
+            FROM (
+                SELECT user_id, MAX(COALESCE(current_streak, 0)) AS best
+                FROM user_levels GROUP BY user_id
+            )
+            WHERE best > ?
+            """,
+            (score,),
+        ) as cur:
+            global_rank = int((await cur.fetchone())["rank"])
+    return {"server_rank": server_rank, "global_rank": global_rank}
+
+
+async def set_streak_reminder(
+    guild_id: int, user_id: int, enabled: bool
+) -> Dict[str, Any]:
+    if enabled not in (True, False, 0, 1):
+        raise ValueError("enabled must be boolean")
+    enabled_at = datetime.now(timezone.utc).isoformat()
+    async with connect(aiosqlite.Row) as db:
+        await db.execute(
+            """
+            INSERT INTO streak_reminder_settings
+                (guild_id, user_id, enabled, reminder_time, enabled_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                reminder_time = excluded.reminder_time,
+                enabled_at = excluded.enabled_at
+            """,
+            (
+                int(guild_id), int(user_id), int(bool(enabled)),
+                STREAK_DEFAULT_REMINDER_TIME, enabled_at,
+            ),
+        )
+        await db.commit()
+    settings = await get_level_settings(guild_id) or {}
+    from prime_level_controls import controls_with_defaults
+
+    controls = controls_with_defaults(
+        settings.get("prime_controls"), settings,
+    )
+    reminder = controls["streak"]["messages"]["reminder"]
+    reminder_time = reminder.get("time") or STREAK_DEFAULT_REMINDER_TIME
+    delivery_enabled = bool(
+        settings.get("is_enabled", True)
+        and settings.get("streak_enabled", True)
+        and settings.get("streak_channel_id")
+        and reminder.get("enabled") is True
+    )
+    return {
+        "enabled": bool(enabled),
+        "reminder_time": reminder_time,
+        "delivery_enabled": delivery_enabled,
+        "timezone": "Asia/Riyadh",
+    }
+
+
+async def claim_due_streak_reminders(
+    now: Optional[datetime] = None, limit: int = 100
+) -> list[Dict[str, Any]]:
+    """Atomically reserve opt-in reminders due today; never reserve a claimed day."""
+    from prime_level_controls import controls_with_defaults
+
+    local_now = _level_streak_local(now or datetime.now(timezone.utc))
+    today = local_now.date().isoformat()
+    max_results = max(1, min(int(limit), 1000))
+    rows_out = []
+    reminder_configs = {}
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                """
+                SELECT r.guild_id, r.user_id, r.enabled_at, s.prime_controls,
+                       u.current_streak, u.best_streak, u.last_daily_claim
+                FROM streak_reminder_settings AS r
+                JOIN level_settings AS s ON s.guild_id = r.guild_id
+                JOIN user_levels AS u
+                  ON u.guild_id = r.guild_id AND u.user_id = r.user_id
+                WHERE r.enabled = 1 AND s.is_enabled = 1
+                  AND s.streak_enabled = 1 AND s.streak_channel_id IS NOT NULL
+                  AND COALESCE(u.current_streak, 0) > 0
+                ORDER BY r.enabled_at, r.guild_id, r.user_id
+                """
+            ) as cur:
+                subscriptions = await cur.fetchall()
+            for subscription in subscriptions:
+                if len(rows_out) >= max_results:
+                    break
+                guild_id = int(subscription["guild_id"])
+                if guild_id not in reminder_configs:
+                    try:
+                        stored_controls = json.loads(
+                            subscription["prime_controls"] or "{}"
+                        )
+                        if not isinstance(stored_controls, dict):
+                            raise ValueError("controls are not an object")
+                        controls = controls_with_defaults(stored_controls)
+                        reminder_config = (
+                            controls["streak"]["messages"]["reminder"]
+                        )
+                        if not isinstance(reminder_config, dict):
+                            raise ValueError("reminder controls are not an object")
+                        reminder_configs[guild_id] = {
+                            "enabled": reminder_config.get("enabled") is True,
+                            "time": reminder_config.get("time"),
+                            "message": reminder_config.get("message"),
+                        }
+                    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                        logger.warning(
+                            "Skipping invalid streak reminder controls guild=%s",
+                            guild_id,
+                            exc_info=True,
+                        )
+                        reminder_configs[guild_id] = {"enabled": False}
+                reminder_config = reminder_configs[guild_id]
+                if not reminder_config.get("enabled"):
+                    continue
+                reminder_time = reminder_config.get("time")
+                reminder_message = reminder_config.get("message")
+                if (
+                    not isinstance(reminder_time, str)
+                    or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", reminder_time)
+                    or not isinstance(reminder_message, str)
+                    or not reminder_message.strip()
+                    or len(reminder_message) > 500
+                ):
+                    logger.warning(
+                        "Skipping invalid streak reminder schedule guild=%s",
+                        guild_id,
+                    )
+                    continue
+                try:
+                    hour, minute = (
+                        int(part) for part in reminder_time.split(":", 1)
+                    )
+                    due_local = datetime(
+                        local_now.year, local_now.month, local_now.day,
+                        hour, minute, tzinfo=STREAK_TIMEZONE,
+                    )
+                    enabled_local = _level_streak_local(subscription["enabled_at"])
+                except (TypeError, ValueError, OverflowError):
+                    logger.warning(
+                        "Skipping invalid streak reminder schedule guild=%s user=%s",
+                        subscription["guild_id"], subscription["user_id"],
+                    )
+                    continue
+                if local_now < due_local or enabled_local > due_local:
+                    continue
+                last_claim = subscription["last_daily_claim"]
+                if last_claim and _level_streak_local(last_claim).date().isoformat() == today:
+                    continue
+                async with db.execute(
+                    """
+                    SELECT 1 FROM streak_daily_activity
+                    WHERE guild_id = ? AND user_id = ? AND activity_date = ?
+                    """,
+                    (
+                        int(subscription["guild_id"]),
+                        int(subscription["user_id"]),
+                        today,
+                    ),
+                ) as cur:
+                    if await cur.fetchone():
+                        continue
+                cursor = await db.execute(
+                    """
+                    INSERT OR IGNORE INTO streak_reminder_deliveries
+                        (guild_id, user_id, reminder_date)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        int(subscription["guild_id"]),
+                        int(subscription["user_id"]),
+                        today,
+                    ),
+                )
+                if cursor.rowcount == 1:
+                    rows_out.append(
+                        {
+                            "guild_id": int(subscription["guild_id"]),
+                            "user_id": int(subscription["user_id"]),
+                            "reminder_date": today,
+                            "current_streak": int(subscription["current_streak"] or 0),
+                            "best_streak": int(subscription["best_streak"] or 0),
+                            "reminder_time": reminder_time,
+                            "reminder_message": reminder_message,
+                        }
+                    )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return rows_out
+
+
 async def _record_level_daily_xp(
     db, guild_id, user_id, awarded_at, *, text_xp=0, voice_xp=0,
 ):
@@ -2564,7 +3727,7 @@ async def claim_level_streak(
     guild_id: int, user_id: int, claimed_at: datetime,
     multiplier: float = 1.0, detect_overtakes: bool = True,
 ) -> Dict[str, Any]:
-    """Exactly one streak claim per UTC date, committed with its text XP.
+    """Exactly one streak claim per Riyadh date, committed with its text XP.
 
     Bonus = min(streak_daily_xp * consecutive_days * multiplier, streak_max_cap).
     All gating and previous-claim comparisons happen under the write lock.
@@ -2587,13 +3750,22 @@ async def claim_level_streak(
                 (int(guild_id), int(user_id)),
             ) as cur:
                 row = await cur.fetchone()
-            previous_day = _level_utc(row["last_daily_claim"]).date() if row and row["last_daily_claim"] else None
-            today = claimed_at.date()
+            previous_day = (
+                _level_streak_local(row["last_daily_claim"]).date()
+                if row and row["last_daily_claim"] else None
+            )
+            today = _level_streak_local(claimed_at).date()
             if previous_day and previous_day >= today:
                 await db.rollback()
                 return {"status": "already_claimed"}
             consecutive = previous_day == today - timedelta(days=1)
             streak = (max(0, int(row["current_streak"] or 0)) + 1) if row and consecutive else 1
+            previous_streak = int(row["current_streak"] or 0) if row else 0
+            best_streak = max(
+                int(row["best_streak"] or 0) if row else 0,
+                previous_streak,
+                streak,
+            )
             base, cap = int(settings["streak_daily_xp"]), int(settings["streak_max_cap"])
             if base < 0 or cap < 0:
                 raise ValueError("negative streak reward configuration")
@@ -2605,15 +3777,24 @@ async def claim_level_streak(
                 db, guild_id, user_id, claimed_at, text_xp=xp
             )
             await db.execute(
-                """UPDATE user_levels SET current_streak = ?, last_daily_claim = ?
+                """UPDATE user_levels
+                   SET current_streak = ?, best_streak = ?, last_daily_claim = ?
                    WHERE guild_id = ? AND user_id = ?""",
-                (streak, claimed_at.isoformat(), int(guild_id), int(user_id)),
+                (
+                    streak, best_streak, claimed_at.isoformat(),
+                    int(guild_id), int(user_id),
+                ),
             )
             await db.commit()
         except BaseException:
             await db.rollback()
             raise
-    result.update(status="claimed", current_streak=streak, last_daily_claim=claimed_at.isoformat())
+    result.update(
+        status="claimed",
+        current_streak=streak,
+        best_streak=best_streak,
+        last_daily_claim=claimed_at.isoformat(),
+    )
     return result
 
 
@@ -2694,6 +3875,139 @@ async def update_user_level(
     if result is None:
         raise RuntimeError("user level row disappeared after update")
     return result
+
+
+async def grant_text_levels(
+    guild_id: int,
+    user_id: int,
+    levels: int,
+) -> Dict[str, int]:
+    """Atomically grant exact text levels while preserving current progress.
+
+    Admin grants change lifetime text XP/level only; they are not message XP
+    awards and do not fabricate message counts or period XP history.
+    """
+    if isinstance(levels, bool) or not isinstance(levels, int) or not 1 <= levels <= 100:
+        raise ValueError("levels must be an integer from 1 to 100")
+    from level_progression import level_from_xp, total_xp_for_level
+
+    guild_id, user_id = int(guild_id), int(user_id)
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT text_xp FROM user_levels WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            ) as cur:
+                row = await cur.fetchone()
+            old_xp = max(0, int(row["text_xp"] or 0)) if row else 0
+            old_level = level_from_xp(old_xp)
+            current_progress = old_xp - total_xp_for_level(old_level)
+            new_level = old_level + levels
+            new_xp = total_xp_for_level(new_level) + current_progress
+            if new_xp > 2**63 - 1:
+                raise ValueError("resulting XP exceeds the supported storage limit")
+            await db.execute(
+                """
+                INSERT INTO user_levels (guild_id, user_id, text_xp, text_level)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                    text_xp = excluded.text_xp,
+                    text_level = excluded.text_level
+                """,
+                (guild_id, user_id, new_xp, new_level),
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return {
+        "guild_id": guild_id,
+        "user_id": user_id,
+        "old_xp": old_xp,
+        "old_level": old_level,
+        "text_xp": new_xp,
+        "text_level": new_level,
+        "xp_awarded": new_xp - old_xp,
+        "levels_awarded": levels,
+    }
+
+
+async def take_text_levels(
+    guild_id: int,
+    user_id: int,
+    levels: int,
+) -> Dict[str, int]:
+    """Atomically remove text levels while preserving as much level progress as fits."""
+    if isinstance(levels, bool) or not isinstance(levels, int) or not 1 <= levels <= 100:
+        raise ValueError("levels must be an integer from 1 to 100")
+    from level_progression import level_from_xp, total_xp_for_level, xp_required
+
+    guild_id, user_id = int(guild_id), int(user_id)
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            async with db.execute(
+                "SELECT text_xp FROM user_levels WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            ) as cur:
+                row = await cur.fetchone()
+            old_xp = max(0, int(row["text_xp"] or 0)) if row else 0
+            old_level = level_from_xp(old_xp)
+            progress = old_xp - total_xp_for_level(old_level)
+            new_level = max(0, old_level - levels)
+            new_progress = min(progress, xp_required(new_level) - 1)
+            new_xp = total_xp_for_level(new_level) + new_progress
+            if row and new_xp != old_xp:
+                await db.execute(
+                    """
+                    UPDATE user_levels
+                    SET text_xp = ?, text_level = ?
+                    WHERE guild_id = ? AND user_id = ?
+                    """,
+                    (new_xp, new_level, guild_id, user_id),
+                )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return {
+        "guild_id": guild_id,
+        "user_id": user_id,
+        "old_xp": old_xp,
+        "old_level": old_level,
+        "text_xp": new_xp,
+        "text_level": new_level,
+        "xp_removed": old_xp - new_xp,
+        "levels_removed": old_level - new_level,
+    }
+
+
+async def reset_level_progress(guild_id: int) -> Dict[str, int]:
+    """Clear one guild's progression and XP history, retaining configuration."""
+    guild_id = int(guild_id)
+    if guild_id <= 0:
+        raise ValueError("guild_id must be positive")
+
+    async with connect(aiosqlite.Row) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            deleted = {}
+            for table in ("user_levels", "level_xp_daily", "level_xp_events"):
+                cursor = await db.execute(
+                    f"DELETE FROM {table} WHERE guild_id = ?", (guild_id,)
+                )
+                deleted[table] = max(0, cursor.rowcount)
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+    return {
+        "guild_id": guild_id,
+        "members_reset": deleted["user_levels"],
+        "daily_rows_removed": deleted["level_xp_daily"],
+        "xp_events_removed": deleted["level_xp_events"],
+    }
 
 
 async def get_level_rewards(guild_id: int) -> List[Dict[str, Any]]:
@@ -3220,8 +4534,8 @@ async def get_level_periodic_top_leaderboard(
         "text": ("text_xp", "text_level"),
         "voice": ("voice_xp", "voice_level"),
     }
-    if mode not in columns:
-        raise ValueError("leaderboard mode must be text or voice")
+    if mode not in {"text", "voice", "both"}:
+        raise ValueError("leaderboard mode must be text, voice, or both")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
         raise ValueError("leaderboard limit must be from 1 to 20")
     if not human_ids:
@@ -3229,18 +4543,32 @@ async def get_level_periodic_top_leaderboard(
     start_utc, end_utc = _level_utc(start), _level_utc(end)
     if end_utc <= start_utc:
         raise ValueError("leaderboard period end must be after start")
-    xp_column, level_column = columns[mode]
     eligible = json.dumps(sorted({int(value) for value in human_ids}))
+    if mode == "both":
+        select_xp = "SUM(e.text_xp + e.voice_xp)"
+        where_xp = "(e.text_xp > 0 OR e.voice_xp > 0)"
+        period_level = "MAX(u.text_level, u.voice_level)"
+        lifetime_xp = "(u.text_xp + u.voice_xp)"
+    else:
+        xp_column, level_column = columns[mode]
+        select_xp = f"SUM(e.{xp_column})"
+        where_xp = f"e.{xp_column} > 0"
+        period_level = f"u.{level_column}"
+        lifetime_xp = f"u.{xp_column}"
     async with connect(aiosqlite.Row) as db:
         async with db.execute(
             f"""
-            SELECT e.user_id, u.{level_column} AS level,
-                   CAST(SUM(e.{xp_column}) AS INTEGER) AS xp,
-                   u.{xp_column} AS total_xp
+            SELECT e.user_id,
+                   {period_level} AS level,
+                   CAST({select_xp} AS INTEGER) AS xp,
+                   {lifetime_xp} AS total_xp,
+                   COALESCE(u.total_messages, 0) AS total_messages,
+                   COALESCE(u.total_voice_seconds, 0) AS total_voice_seconds,
+                   COALESCE(u.current_streak, 0) AS current_streak
             FROM level_xp_events e
             JOIN user_levels u
               ON u.guild_id = e.guild_id AND u.user_id = e.user_id
-            WHERE e.guild_id = ? AND e.{xp_column} > 0
+            WHERE e.guild_id = ? AND {where_xp}
               AND e.awarded_at >= ? AND e.awarded_at < ?
               AND e.user_id IN (SELECT value FROM json_each(?))
             GROUP BY e.user_id
@@ -3257,22 +4585,60 @@ async def get_level_periodic_top_leaderboard(
 async def claim_level_periodic_top_run(
     guild_id: int, period: str, period_key: str,
 ) -> bool:
+    """Claim a scheduled TOP run once, with crash-recovery for stale claims."""
     if period not in {"daily", "weekly", "monthly"}:
         raise ValueError("invalid periodic TOP period")
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    stale_before = now - timedelta(minutes=15)
     async with connect(aiosqlite.Row) as db:
-        cursor = await db.execute(
-            """
-            INSERT OR IGNORE INTO level_periodic_top_runs
-                (guild_id, period, period_key, claimed_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                int(guild_id), period, str(period_key),
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        await db.commit()
-        return cursor.rowcount == 1
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO level_periodic_top_runs
+                    (guild_id, period, period_key, claimed_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (int(guild_id), period, str(period_key), now_iso),
+            )
+            if cursor.rowcount == 1:
+                await db.commit()
+                return True
+            async with db.execute(
+                """
+                SELECT claimed_at, completed_at
+                FROM level_periodic_top_runs
+                WHERE guild_id = ? AND period = ? AND period_key = ?
+                """,
+                (int(guild_id), period, str(period_key)),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None or row["completed_at"]:
+                await db.commit()
+                return False
+            claimed_at = datetime.fromisoformat(
+                str(row["claimed_at"]).replace("Z", "+00:00")
+            )
+            if claimed_at.tzinfo is None:
+                claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+            if claimed_at > stale_before:
+                await db.commit()
+                return False
+            await db.execute(
+                """
+                UPDATE level_periodic_top_runs
+                SET claimed_at = ?, completed_at = NULL
+                WHERE guild_id = ? AND period = ? AND period_key = ?
+                """,
+                (now_iso, int(guild_id), str(period), str(period_key)),
+            )
+            await db.commit()
+            return True
+        except BaseException:
+            if db.in_transaction:
+                await db.rollback()
+            raise
 
 
 async def complete_level_periodic_top_run(

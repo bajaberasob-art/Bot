@@ -72,14 +72,26 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
             Image.new("RGB", (8, 8)).save(result, "PNG")
             result.seek(0)
             return result
+        async def fake_animated_generator(*args):
+            self.generated.append(args)
+            result = io.BytesIO()
+            Image.new("RGB", (8, 8)).save(result, "GIF")
+            result.seek(0)
+            return result
         self.card_patch = patch("cogs.rank_commands.generate_rank_card", side_effect=fake_generator)
         self.generator = self.card_patch.start()
+        self.gif_patch = patch(
+            "cogs.rank_commands.generate_level_up_gif",
+            side_effect=fake_animated_generator,
+        )
+        self.gif_generator = self.gif_patch.start()
         self.views = []
 
     async def asyncTearDown(self):
         for view in self.views:
             view.stop()
         self.card_patch.stop()
+        self.gif_patch.stop()
         self.clock_patch.stop()
         await self.bot.close()
         database.DB_NAME = self.original_db
@@ -103,6 +115,12 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
     async def rank(self, interaction, member=None):
         await self.cog.rank_slash.callback(self.cog, interaction, member)
 
+    async def give_level(self, interaction, member, levels):
+        await self.cog.give_level_slash.callback(self.cog, interaction, member, levels)
+
+    async def take_level(self, interaction, member, levels):
+        await self.cog.take_level_slash.callback(self.cog, interaction, member, levels)
+
     async def top(self, interaction, mode="text", period=None):
         if period is None:
             await self.cog.top_slash.callback(self.cog, interaction, mode)
@@ -124,6 +142,7 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         await database.update_level_settings(888, {
             "card_layout": "ring", "card_color": "#ef55ba", "card_particles": "petals",
             "card_bg_url": "https://example.com/bg.png", "card_animated_bar": False,
+            "card_design": {"animationEnabled": False},
         })
         itx = self.interaction()
         await self.rank(itx)
@@ -156,6 +175,130 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await database.get_user_level(888, 1))
         self.assertIsNone(await database.get_level_settings(888))
 
+    async def test_give_level_adds_levels_and_preserves_progress_and_other_stats(self):
+        await self.seed(
+            2, text=155, voice=500, total_messages=41,
+            total_voice_seconds=9000, current_streak=4,
+        )
+        interaction = self.interaction()
+        await self.give_level(interaction, self.members[2], 2)
+
+        row = await database.get_user_level(888, 2)
+        self.assertEqual((row["text_level"], row["text_xp"]), (3, 530))
+        self.assertEqual((row["voice_xp"], row["total_messages"]), (500, 41))
+        self.assertEqual((row["total_voice_seconds"], row["current_streak"]), (9000, 4))
+        self.assertIn(
+            "مستواه النصي الآن 3",
+            interaction.response.send_message.call_args.args[0],
+        )
+        self.assertTrue(interaction.response.send_message.call_args.kwargs["ephemeral"])
+
+    async def test_give_level_denies_manage_guild_without_admin(self):
+        command = self.bot.tree.get_command("give_level")
+        self.assertEqual([option.name for option in command.parameters], ["member", "levels"])
+        self.assertIsNone(command.default_permissions)
+        interaction = self.interaction()
+        interaction.user.guild_permissions = discord.Permissions(manage_guild=True)
+        with self.assertRaises(app_commands.CheckFailure):
+            await command._check_can_run(interaction)
+
+    async def test_trusted_admin_role_can_use_level_mutation_commands(self):
+        command = self.bot.tree.get_command("give_level")
+        interaction = self.interaction()
+        interaction.user.roles = [SimpleNamespace(id=987654321, name="level-staff")]
+        with patch.dict(os.environ, {"ADMIN_ROLE_IDS": "987654321"}):
+            self.assertTrue(await command._check_can_run(interaction))
+
+    async def test_take_level_preserves_progress_and_does_not_change_other_stats(self):
+        await self.seed(
+            2, text=515, voice=500, total_messages=41,
+            total_voice_seconds=9000, current_streak=4,
+        )
+        interaction = self.interaction()
+        await self.take_level(interaction, self.members[2], 2)
+        row = await database.get_user_level(888, 2)
+        self.assertEqual((row["text_level"], row["text_xp"]), (1, 140))
+        self.assertEqual((row["voice_xp"], row["total_messages"]), (500, 41))
+        self.assertEqual((row["total_voice_seconds"], row["current_streak"]), (9000, 4))
+        self.assertIn("مستواه النصي الآن 1", interaction.response.send_message.call_args.args[0])
+        self.assertIn("لم يتم تغيير رتب المكافآت", interaction.response.send_message.call_args.args[0])
+
+    async def test_take_level_never_drops_below_zero_or_creates_missing_record(self):
+        await self.seed(2, text=90)
+        interaction = self.interaction()
+        await self.take_level(interaction, self.members[2], 100)
+        row = await database.get_user_level(888, 2)
+        self.assertEqual((row["text_level"], row["text_xp"]), (0, 90))
+
+        interaction = self.interaction()
+        await self.take_level(interaction, self.members[3], 5)
+        self.assertIsNone(await database.get_user_level(888, 3))
+
+    async def test_level_mutations_require_administrator_or_trusted_role(self):
+        command = self.bot.tree.get_command("take_level")
+        interaction = self.interaction()
+        interaction.user.guild_permissions = discord.Permissions(manage_guild=True)
+        with self.assertRaises(app_commands.CheckFailure):
+            await command._check_can_run(interaction)
+        interaction.user.guild_permissions = discord.Permissions(administrator=True)
+        self.assertTrue(await command._check_can_run(interaction))
+
+    async def test_rank_card_animation_follows_dashboard_setting(self):
+        await database.update_level_settings(888, {
+            "card_design": {"animationEnabled": True, "animationIntensity": 62},
+        })
+        interaction = self.interaction()
+        await self.rank(interaction)
+        self.gif_generator.assert_awaited_once()
+        self.assertEqual(
+            interaction.followup.send.call_args.kwargs["file"].filename,
+            "prime-rank.gif",
+        )
+
+        self.clock += 8
+        self.gif_generator.reset_mock()
+        await database.update_level_settings(888, {
+            "card_design": {"animationEnabled": False, "animationIntensity": 62},
+        })
+        interaction = self.interaction()
+        await self.rank(interaction)
+        self.generator.assert_awaited_once()
+        self.gif_generator.assert_not_awaited()
+        self.assertEqual(
+            interaction.followup.send.call_args.kwargs["file"].filename,
+            "prime-rank.png",
+        )
+
+    async def test_zero_animation_intensity_keeps_rank_card_static(self):
+        await database.update_level_settings(888, {
+            "card_design": {"animationEnabled": True, "animationIntensity": 0},
+        })
+        interaction = self.interaction()
+        await self.rank(interaction)
+        self.generator.assert_awaited_once()
+        self.gif_generator.assert_not_awaited()
+        self.assertEqual(
+            interaction.followup.send.call_args.kwargs["file"].filename,
+            "prime-rank.png",
+        )
+
+    async def test_animated_background_keeps_rank_card_as_gif_when_lights_are_off(self):
+        await database.update_level_settings(888, {
+            "card_bg_url": "https://example.com/animated.gif",
+            "card_design": {"animationEnabled": False, "animationIntensity": 0},
+        })
+        interaction = self.interaction()
+        with patch(
+            "cogs.card_generator.has_animated_background",
+            new=AsyncMock(return_value=True),
+        ):
+            await self.rank(interaction)
+        self.gif_generator.assert_awaited_once()
+        self.assertEqual(
+            interaction.followup.send.call_args.kwargs["file"].filename,
+            "prime-rank.gif",
+        )
+
     async def test_prefix_aliases_share_command_and_handler(self):
         rank = self.bot.get_command("rank")
         for alias in ("rank", "level", "lvl", "لفل", "رانك"):
@@ -167,7 +310,7 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.generated), 5)
         self.assertEqual(self.channel.send.await_count, 5)
 
-    async def test_top_prefix_aliases_use_the_same_daily_text_flow(self):
+    async def test_top_prefix_aliases_use_the_same_lifetime_flow(self):
         top = self.bot.get_command("top")
         for alias in ("top", "توب", "متصدرين"):
             self.assertIs(self.bot.get_command(alias), top)
@@ -178,10 +321,15 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.channel.send.await_count, 3)
         for call in self.channel.send.await_args_list:
             kwargs = call.kwargs
-            self.assertIn("DAILY", kwargs["embeds"][0].title)
+            self.assertIn("PRIME TOP", kwargs["embeds"][0].title)
             self.assertEqual(kwargs["view"].mode, "text")
-            self.assertEqual(kwargs["view"].period, "daily")
-
+            self.assertEqual(len(kwargs["view"].children), 2)
+    async def test_image_only_contract_never_allows_an_empty_response(self):
+        await database.update_level_settings(888, {"prime_controls": {"rank": {
+            "imageOnly": True, "showCard": False, "showCustomMessage": False, "sendEmbed": False,
+        }}})
+        await self.rank(self.interaction())
+        self.assertEqual(len(self.generated), 1)
     async def test_rank_cooldown_shared_between_slash_and_arabic_prefix(self):
         await self.rank(self.interaction())
         message = SimpleNamespace(author=self.members[1], guild=self.guild, channel=self.channel, _state=None)
@@ -200,6 +348,9 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_avatar_uses_real_phase5_generator(self):
         self.members[1].display_avatar = None
         data = io.BytesIO()
+        await database.update_level_settings(888, {
+            "card_design": {"animationEnabled": False},
+        })
         with patch("cogs.rank_commands.generate_rank_card", wraps=card_generator.generate_rank_card):
             itx = self.interaction()
             # Capture PNG before Discord.File closes its BytesIO.
@@ -218,7 +369,10 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
             return avatar.getvalue() if url and "cdn.discordapp.com" in url else None
         for layout in card_generator.LAYOUTS:
             self.clock += 8
-            await database.update_level_settings(888, {"card_layout": layout})
+            await database.update_level_settings(888, {
+                "card_layout": layout,
+                "card_design": {"animationEnabled": False},
+            })
             itx = self.interaction()
             captured = []
             async def capture(content=None, **kwargs):
@@ -248,7 +402,7 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("عضو 2", names)
         text = "\n".join(embed.description for embed in text_embeds)
         self.assertNotIn("100,000", text)
-        self.assertIn("DAILY", text_embeds[0].title)
+        self.assertIn("PRIME TOP", text_embeds[0].title)
         self.clock += 5
         voice_embeds = self.embeds(await self.top(self.interaction(), "voice"))
         self.assertEqual(len(voice_embeds), 10)
@@ -323,7 +477,7 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("غير جاهزة", itx.followup.send.call_args.args[0])
 
     async def test_database_and_card_errors_are_contained(self):
-        for target in ("database.get_level_settings", "cogs.rank_commands.generate_rank_card"):
+        for target in ("database.get_level_settings", "cogs.rank_commands.generate_level_up_gif"):
             self.clock += 8
             itx = self.interaction()
             with patch(target, new=AsyncMock(side_effect=RuntimeError("test failure"))):
@@ -363,7 +517,8 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         await database.award_voice_xp(888, 1, 1000, 0, 0, awarded_at=now)
         reply = await self.top(self.interaction())
         view = reply["view"]
-        self.assertEqual(view.period, "daily")
+        self.assertEqual(view.mode, "text")
+        self.assertEqual(len(view.children), 2)
         other = self.interaction(2)
         self.assertFalse(await view.interaction_check(other))
         click = self.interaction()
@@ -378,27 +533,9 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.clock += 2
         await view.text_button.callback(self.interaction())
         self.assertEqual(view.text_button.style, discord.ButtonStyle.primary)
-        self.clock += 2
-        weekly_click = self.interaction()
-        await view.weekly_button.callback(weekly_click)
-        self.assertEqual(view.period, "weekly")
-        self.assertEqual(view.weekly_button.style, discord.ButtonStyle.primary)
-        self.assertIn("WEEKLY", weekly_click.message.edit.call_args.kwargs["embeds"][0].title)
-        self.clock += 2
-        monthly_click = self.interaction()
-        await view.monthly_button.callback(monthly_click)
-        self.assertEqual(view.period, "monthly")
-        self.assertEqual(view.monthly_button.style, discord.ButtonStyle.primary)
-        self.clock += 2
-        all_click = self.interaction()
-        await view.all_time_button.callback(all_click)
-        self.assertEqual(view.period, "all_time")
-        self.assertEqual(view.all_time_button.style, discord.ButtonStyle.primary)
-        self.assertIn("ALL", all_click.message.edit.call_args.kwargs["embeds"][0].title)
         await view.on_timeout()
         self.assertTrue(all(child.disabled for child in view.children))
-
-    async def test_level_up_notice_attaches_stat_card_for_text_and_voice(self):
+    async def test_text_and_voice_level_up_notices_attach_animated_cards(self):
         await self.seed(
             1, text=155, voice=270, total_messages=41,
             total_voice_seconds=9000, current_streak=12,
@@ -414,12 +551,12 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         async def fake_level_card(*args):
             self.generated.append(args)
             result = io.BytesIO()
-            Image.new("RGB", (8, 8)).save(result, "PNG")
+            Image.new("RGB", (8, 8)).save(result, "GIF")
             result.seek(0)
             return result
 
         levels = Levels(self.bot)
-        with patch("cogs.levels.generate_rank_card", side_effect=fake_level_card) as generator:
+        with patch("cogs.levels.generate_level_up_gif", side_effect=fake_level_card) as generator:
             await levels.on_lona_text_level_up(
                 SimpleNamespace(guild=self.guild, member=self.members[1])
             )
@@ -430,7 +567,7 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generator.await_count, 2)
         for args in self.generated:
             card_settings = args[6]
-            self.assertTrue(card_settings["card_show_stats"])
+            self.assertFalse(card_settings["card_show_stats"])
             self.assertEqual(
                 (card_settings["total_messages"], card_settings["total_voice_seconds"],
                  card_settings["current_streak"]),
@@ -439,8 +576,55 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(args[0], self.members[1])
         self.assertEqual(self.channel.send.await_count, 2)
         for call in self.channel.send.await_args_list:
-            self.assertEqual(call.kwargs["file"].filename, "prime-level-up.png")
-            self.assertEqual(call.kwargs["embed"].image.url, "attachment://prime-level-up.png")
+            self.assertEqual(call.kwargs["file"].filename, "prime-level-up.gif")
+            self.assertEqual(call.kwargs["embed"].image.url, "attachment://prime-level-up.gif")
+
+    async def test_disabling_level_up_animation_keeps_the_png_notice(self):
+        await self.seed(1, text=155, total_messages=4)
+        await database.update_level_settings(888, {
+            "levelup_channel_id": 456,
+            "card_design": {"animationEnabled": False},
+        })
+        self.guild.get_channel = lambda channel_id: self.channel if channel_id == 456 else None
+        levels = Levels(self.bot)
+        result = io.BytesIO()
+        Image.new("RGB", (8, 8)).save(result, "PNG")
+        result.seek(0)
+        with patch("cogs.levels.generate_rank_card", new=AsyncMock(return_value=result)) as renderer:
+            await levels.on_lona_text_level_up(
+                SimpleNamespace(guild=self.guild, member=self.members[1])
+            )
+        renderer.assert_awaited_once()
+        call = self.channel.send.await_args
+        self.assertEqual(call.kwargs["file"].filename, "prime-level-up.png")
+        self.assertEqual(call.kwargs["embed"].image.url, "attachment://prime-level-up.png")
+
+    async def test_animated_background_keeps_level_up_notice_as_gif_when_lights_are_off(self):
+        await self.seed(1, text=155, total_messages=4)
+        await database.update_level_settings(888, {
+            "levelup_channel_id": 456,
+            "card_bg_url": "https://example.com/animated.gif",
+            "card_design": {"animationEnabled": False, "animationIntensity": 0},
+        })
+        self.guild.get_channel = lambda channel_id: self.channel if channel_id == 456 else None
+        levels = Levels(self.bot)
+        result = io.BytesIO()
+        Image.new("RGB", (8, 8)).save(result, "GIF")
+        result.seek(0)
+        with (
+            patch("cogs.levels.has_animated_background", new=AsyncMock(return_value=True)),
+            patch(
+                "cogs.levels.generate_level_up_gif",
+                new=AsyncMock(return_value=result),
+            ) as renderer,
+        ):
+            await levels.on_lona_text_level_up(
+                SimpleNamespace(guild=self.guild, member=self.members[1])
+            )
+        renderer.assert_awaited_once()
+        call = self.channel.send.await_args
+        self.assertEqual(call.kwargs["file"].filename, "prime-level-up.gif")
+        self.assertEqual(call.kwargs["embed"].image.url, "attachment://prime-level-up.gif")
 
     async def test_button_rechecks_disabled_top_settings_and_global_policy(self):
         reply = await self.top(self.interaction())
@@ -464,10 +648,14 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         async def unrelated(interaction: discord.Interaction):
             pass
         self.bot.tree.add_command(unrelated)
-        self.assertEqual({c.name for c in self.bot.tree.get_commands()}, {"rank", "top", "unrelated"})
+        self.assertEqual(
+            {c.name for c in self.bot.tree.get_commands()},
+            {"rank", "top", "give_level", "take_level", "unrelated"},
+        )
         self.assertIsNone(self.bot.tree.get_command("rank").default_permissions)
         self.assertTrue(self.bot.tree.get_command("rank").guild_only)
         self.assertTrue(await self.bot.tree.get_command("rank")._check_can_run(self.interaction()))
+        self.assertIsNone(self.bot.tree.get_command("give_level").default_permissions)
 
     async def test_indexed_queries_large_human_list_and_scope(self):
         await self.seed(1, text=50, voice=30)
@@ -501,8 +689,11 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
         self.guild.members.append(target)
         message = SimpleNamespace(author=self.members[1], guild=self.guild, channel=self.channel, _state=None)
         ctx = SimpleNamespace(message=message, guild=self.guild, bot=self.bot)
-        await self.bot.get_command("رانك").callback(self.cog, ctx, f"<@{uid}>")
-        self.assertIs(self.generated[0][0], target)
+        command = self.bot.get_command("لفل")
+        for mention in (f"<@{uid}>", f"<@!{uid}>"):
+            self.clock += 8
+            await command.callback(self.cog, ctx, mention)
+            self.assertIs(self.generated[-1][0], target)
 
     async def test_invalid_prefix_target_never_silently_shows_self(self):
         ctx = SimpleNamespace(message=SimpleNamespace(author=self.members[1], guild=self.guild,
@@ -530,19 +721,20 @@ class RankCommandTests(unittest.IsolatedAsyncioTestCase):
 class SelectiveRegistrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_development_guild_registration_is_scoped(self):
         local = {name: SimpleNamespace(to_dict=lambda tree, name=name: {
-            "name": name, "description": name, "type": 1, "options": []}) for name in ("rank", "top")}
+            "name": name, "description": name, "type": 1, "options": []})
+            for name in ("rank", "top", "give_level", "take_level")}
         bot = SimpleNamespace(
             application_id=123, tree=SimpleNamespace(fetch_commands=AsyncMock(return_value=[]),
                                                     get_command=local.get),
             http=SimpleNamespace(upsert_global_command=AsyncMock(), upsert_guild_command=AsyncMock()))
         self.assertTrue(await publish_rank_commands(bot, guild=discord.Object(id=888)))
-        self.assertEqual(bot.http.upsert_guild_command.await_count, 2)
+        self.assertEqual(bot.http.upsert_guild_command.await_count, 4)
         bot.http.upsert_global_command.assert_not_awaited()
         self.assertEqual(bot.http.upsert_guild_command.call_args.args[:2], (123, 888))
 
-    async def test_only_rank_and_top_upserted_and_unchanged_restart_is_read_only(self):
+    async def test_only_level_commands_upserted_and_unchanged_restart_is_read_only(self):
         payloads = {name: {"name": name, "description": name, "type": 1, "options": []}
-                    for name in ("rank", "top")}
+                    for name in ("rank", "top", "give_level", "take_level")}
         local = {name: SimpleNamespace(to_dict=lambda tree, name=name: payloads[name]) for name in payloads}
         bot = SimpleNamespace(
             application_id=123, tree=SimpleNamespace(fetch_commands=AsyncMock(return_value=[]),
@@ -551,11 +743,11 @@ class SelectiveRegistrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(await publish_rank_commands(bot))
         self.assertEqual([call.args[1]["name"] for call in bot.http.upsert_global_command.call_args_list],
-                         ["rank", "top"])
+                         ["rank", "top", "give_level", "take_level"])
         bot.http.upsert_global_command.reset_mock()
         bot.tree.fetch_commands.return_value = [
             SimpleNamespace(name=name, to_dict=lambda name=name: payloads[name])
-            for name in ("rank", "top")
+            for name in ("rank", "top", "give_level", "take_level")
         ] + [SimpleNamespace(name="unrelated", to_dict=lambda: {"name": "unrelated"})]
         self.assertTrue(await publish_rank_commands(bot))
         bot.http.upsert_global_command.assert_not_awaited()

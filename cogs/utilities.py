@@ -102,7 +102,17 @@ async def dynamic_prefix(
                 prefix = configured.strip()[:5]
         except Exception:
             LOGGER.exception("[PREFIX] تعذر قراءة بادئة السيرفر %s", message.guild.id)
-    return commands.when_mentioned_or(prefix)(bot, message)
+    prefixes = commands.when_mentioned_or(prefix)(bot, message)
+    if message.guild is not None and is_bare_rank_mention(message.content):
+        # Keep the no-prefix exception narrowly scoped to the exact Arabic rank
+        # alias followed by a Discord member mention.
+        return ["", *prefixes]
+    return prefixes
+
+
+def is_bare_rank_mention(content: str | None) -> bool:
+    """Match only the requested prefixless ``لفل @member`` message form."""
+    return bool(re.fullmatch(r"لفل\s+<@!?[0-9]+>", str(content or "").strip()))
 
 
 class CommandIntercepted(commands.CheckFailure):
@@ -749,6 +759,10 @@ class Utilities(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
+            return
+        if is_bare_rank_mention(message.content):
+            # The bot's normal prefix-command dispatcher owns this exact
+            # built-in alias; do not also route it through dashboard shortcuts.
             return
         guild_id = int(message.guild.id)
         if await self._dispatch_policy_alias(message):
