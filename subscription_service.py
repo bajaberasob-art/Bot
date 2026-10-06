@@ -2663,12 +2663,14 @@ async def list_subscriptions(
     user_id: int | None = None,
     limit: int = 20,
     now: datetime | str | None = None,
+    process_due: bool = True,
 ) -> list[dict[str, Any]]:
     guild_id = _positive_id(guild_id, "guild_id")
     if user_id is not None:
         user_id = _positive_id(user_id, "user_id")
     limit = max(1, min(int(limit), 100))
-    await process_due_subscriptions(now, guild_id=guild_id)
+    if process_due:
+        await process_due_subscriptions(now, guild_id=guild_id)
     query = "SELECT * FROM subscriptions WHERE guild_id = ?"
     params: list[Any] = [guild_id]
     if user_id is not None:
@@ -2776,6 +2778,7 @@ async def get_subscription_analytics(
     guild_id: int,
     *,
     now: datetime | str | None = None,
+    process_due: bool = True,
 ) -> dict[str, int]:
     guild_id = _positive_id(guild_id, "guild_id")
     now_dt = _utc(now)
@@ -2789,7 +2792,8 @@ async def get_subscription_analytics(
     ).isoformat()
     tomorrow = (now_dt.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).isoformat()
     expiring_horizon = (now_dt + timedelta(days=7)).isoformat()
-    await process_due_subscriptions(now_dt, guild_id=guild_id)
+    if process_due:
+        await process_due_subscriptions(now_dt, guild_id=guild_id)
     async with database.connect(aiosqlite.Row) as db:
         async with db.execute(
             """

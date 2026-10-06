@@ -213,6 +213,36 @@ class CardTests(unittest.IsolatedAsyncioTestCase):
                                           (0, float("nan"), None, 0)]:
             self.assertEqual(cards.calculate_progress(level, xp, cost)[2], expected)
 
+    def test_rtl_progress_bar_fills_from_the_right_and_keeps_zero_empty(self):
+        card = cards.Card((100, 50), "#26cbab", None, "none")
+        card.bar((10, 10, 40, 8), 0.25, style="solid", direction="rtl")
+        self.assertEqual(card.image.getpixel((49 * cards.SCALE, 14 * cards.SCALE)),
+                         (38, 203, 171))
+        self.assertNotEqual(card.image.getpixel((12 * cards.SCALE, 14 * cards.SCALE)),
+                            (38, 203, 171))
+
+        empty = cards.Card((100, 50), "#26cbab", None, "none")
+        empty.bar((10, 10, 40, 8), 0.0, style="solid", direction="rtl")
+        self.assertNotEqual(empty.image.getpixel((49 * cards.SCALE, 14 * cards.SCALE)),
+                            (38, 203, 171))
+
+    def test_streak_emblem_uses_scaled_coordinates(self):
+        card = cards.Card(
+            (1000, 300), "#42B9FF", None, "none", {"glowStrength": 0},
+        )
+        theme = cards._streak_card_theme({"stage_key": "spark"})
+        cards._draw_streak_emblem(card, (908, 226), 34, None, "⚡", theme)
+
+        # The emblem belongs in the lower-right panel, not the center track.
+        self.assertEqual(
+            card.image.getpixel((454 * cards.SCALE, 113 * cards.SCALE)),
+            (7, 7, 11),
+        )
+        self.assertEqual(
+            card.image.getpixel((908 * cards.SCALE, 209 * cards.SCALE)),
+            (66, 185, 255),
+        )
+
     async def test_level_zero_and_high_level_render(self):
         self.validate(await self.render(level=0, xp=0, required=100, rank=0, total=0))
         self.validate(await self.render(level=100000, xp=total_xp_for_level(100000)+100,

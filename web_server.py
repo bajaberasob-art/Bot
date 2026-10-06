@@ -19,6 +19,9 @@ import discord
 from aiohttp import web
 
 import subscription_service
+import prime_ai_service
+import prime_ai_control
+import prime_ai_runtime
 from database import (
     LOG_ROUTING_ALL_KEYS,
     LOG_ROUTING_KEYS,
@@ -69,6 +72,8 @@ from database import (
     get_ticket_blacklist,
     save_ticket_blacklist,
     delete_ticket_blacklist,
+    get_user_dashboard_theme,
+    save_user_dashboard_theme,
     get_clan_applications,
     update_clan_application,
     get_clan_roster,
@@ -850,11 +855,13 @@ def pwa_svg() -> str:
 
 
 def service_worker_source() -> str:
-    return """const CACHE = "prime-dashboard-shell-v13";
+    return """const CACHE = "prime-dashboard-shell-v17";
 const STATIC = [
   "./",
   "./static/app.css",
+  "./static/ai-control.css",
   "./static/leveling-card-assets.css?v=phase7",
+  "./static/ai-control.js",
   "./static/app.js",
   "./manifest.json",
   "./icon.svg",
@@ -1314,6 +1321,132 @@ async def api_health(req):
         return json_error(401, "unauthorized")
     bot = request_bot(req)
     return web.json_response({"ok": True, "online": bot_is_connected(bot)})
+
+
+_THEME_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_THEME_PREF_FIELDS = {
+    "preset", "primary", "secondary", "background", "surface", "surfaceAlt",
+    "text", "muted", "border", "buttonStyle",
+}
+_THEME_BUTTON_STYLES = {"solid", "soft", "outline"}
+
+
+def _dashboard_theme_session(req, *, write=False):
+    session = current_session(req)
+    if not session:
+        raise web.HTTPUnauthorized(
+            text=json.dumps({"error": "unauthorized"}),
+            content_type="application/json",
+        )
+    if write and (not same_origin(req) or not csrf_ok(req, session)):
+        raise web.HTTPForbidden(
+            text=json.dumps({"error": "csrf"}),
+            content_type="application/json",
+        )
+    limit = SAVE_LIMIT if write else READ_LIMIT
+    wait = rate_limited(("user-theme", session["id"], "write" if write else "read"), limit)
+    if wait:
+        raise web.HTTPTooManyRequests(
+            text=json.dumps({"error": "rate_limited", "retry_after": int(wait) + 1}),
+            content_type="application/json",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
+    return session
+
+
+@routes.get('/api/design-system/tokens')
+async def api_design_system_tokens(req):
+    _dashboard_theme_session(req)
+    token_path = PROJECT_DIR / "artifacts" / "prime-design-system" / "tokens.json"
+    try:
+        tokens = json.loads(token_path.read_text("utf-8"))
+        if not isinstance(tokens, dict):
+            raise ValueError("invalid design tokens")
+        colors = tokens.get("color")
+        required_colors = {
+            "dark": (
+                "primary", "secondary", "accent", "background", "foreground",
+                "border", "card", "popover", "primaryForeground",
+                "mutedForeground", "destructive", "chart2", "chart3",
+                "chart4", "chart5",
+            ),
+            "light": ("primaryForeground",),
+        }
+        if not isinstance(colors, dict) or any(
+            not isinstance(colors.get(mode), dict)
+            or any(
+                not isinstance(colors[mode].get(role), dict)
+                or not isinstance(colors[mode][role].get("$value"), str)
+                or not _THEME_COLOR_RE.fullmatch(colors[mode][role]["$value"])
+                for role in roles
+            )
+            for mode, roles in required_colors.items()
+        ):
+            raise ValueError("missing color tokens")
+        typography = tokens.get("typography", {}).get("fontFamily", {})
+        if any(
+            not isinstance(typography.get(name, {}).get("$value"), list)
+            or not typography[name]["$value"]
+            or any(not isinstance(family, str) for family in typography[name]["$value"])
+            for name in ("sans", "mono")
+        ):
+            raise ValueError("missing font tokens")
+        if not all(
+            isinstance(tokens.get(group, {}).get("base", {}).get("$value"), str)
+            for group in ("radius", "spacing")
+        ):
+            raise ValueError("missing layout tokens")
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        logger.exception("Unable to load PRIME Design System tokens")
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": "design_tokens_unavailable"}),
+            content_type="application/json",
+        ) from error
+    return web.json_response({
+        "color": tokens["color"],
+        "typography": tokens.get("typography", {}),
+        "radius": tokens.get("radius", {}),
+        "spacing": tokens.get("spacing", {}),
+    })
+
+
+@routes.get('/api/user/theme')
+async def api_get_user_theme(req):
+    session = _dashboard_theme_session(req)
+    theme = await get_user_dashboard_theme(session["id"])
+    return web.json_response({"theme": theme})
+
+
+@routes.post('/api/user/theme')
+async def api_save_user_theme(req):
+    session = _dashboard_theme_session(req, write=True)
+    body = await read_json_body(req)
+    if "theme" not in body:
+        return json_error(400, "validation", fields={"theme": "مطلوب"})
+    theme = body["theme"]
+    if theme is None:
+        await save_user_dashboard_theme(session["id"], None)
+        return web.json_response({"ok": True, "theme": None})
+    if not isinstance(theme, dict) or set(theme) != _THEME_PREF_FIELDS:
+        return json_error(400, "validation", fields={"theme": "إعدادات المظهر غير مكتملة"})
+    errors = {}
+    preset = theme.get("preset")
+    if not isinstance(preset, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", preset):
+        errors["preset"] = "قالب غير صالح"
+    for key in _THEME_PREF_FIELDS - {"preset", "buttonStyle"}:
+        value = theme.get(key)
+        if not isinstance(value, str) or not _THEME_COLOR_RE.fullmatch(value):
+            errors[key] = "أدخل لوناً بصيغة HEX صالحة"
+    if theme.get("buttonStyle") not in _THEME_BUTTON_STYLES:
+        errors["buttonStyle"] = "نمط الزر غير صالح"
+    if errors:
+        return json_error(400, "validation", fields=errors)
+    clean = {
+        key: (value.lower() if key not in {"preset", "buttonStyle"} else value)
+        for key, value in theme.items()
+    }
+    await save_user_dashboard_theme(session["id"], clean)
+    return web.json_response({"ok": True, "theme": clean})
 
 
 @routes.get('/api/guild/{guild_id}/meta')
@@ -4582,6 +4715,625 @@ async def api_get_self_role_panels(req):
     return web.json_response({"panels": panels})
 
 
+def _prime_ai_public_settings(settings: dict) -> dict:
+    return {
+        "enabled": bool(settings["enabled"]),
+        "system_prompt": settings["system_prompt"],
+        "allowed_channel_ids": list(settings["allowed_channel_ids"]),
+        "provider": settings["provider"],
+        "revision": int(settings["revision"]),
+        "updated_at": settings["updated_at"],
+    }
+
+
+def _validate_prime_ai_references(guild, config: dict) -> dict:
+    channels = {
+        str(channel.id): channel
+        for channel in getattr(guild, "channels", ())
+        if getattr(channel, "id", None) is not None
+    }
+    channel_ids = set(channels)
+    role_ids = {
+        str(role.id)
+        for role in getattr(guild, "roles", ())
+        if getattr(role, "id", None) is not None
+    }
+    access = config.get("access", {})
+    for key in ("allowed_channels", "blocked_channels"):
+        if any(str(value) not in channel_ids for value in access.get(key, [])):
+            raise ValueError(f"invalid_{key}")
+    for key in ("allowed_roles", "blocked_roles"):
+        if any(str(value) not in role_ids for value in access.get(key, [])):
+            raise ValueError(f"invalid_{key}")
+    for action_id, policy in config.get("actions", {}).items():
+        for key, allowed_ids in policy.items():
+            if key == "allowed_channels" and any(
+                str(value) not in channel_ids for value in allowed_ids
+            ):
+                raise ValueError(f"invalid_action_channel_{action_id}")
+            if key == "allowed_roles" and any(
+                str(value) not in role_ids for value in allowed_ids
+            ):
+                raise ValueError(f"invalid_action_role_{action_id}")
+    for channel_id in config.get("channel_personas", {}):
+        if str(channel_id) not in channel_ids:
+            raise ValueError("invalid_channel_persona")
+    for role_id in config.get("role_overrides", {}):
+        if str(role_id) not in role_ids:
+            raise ValueError("invalid_role_override")
+    moderation_ids = config.get("moderation", {}).get("channel_ids", [])
+    if any(str(value) not in channel_ids for value in moderation_ids):
+        raise ValueError("invalid_moderation_channels")
+    if any(
+        not isinstance(channels[str(value)], (discord.TextChannel, discord.Thread))
+        for value in moderation_ids
+    ):
+        raise ValueError("invalid_moderation_channels")
+    alert_channel_id = config.get("moderation", {}).get("alert_channel_id", "")
+    if alert_channel_id and str(alert_channel_id) not in channel_ids:
+        raise ValueError("invalid_moderation_alert_channel")
+    if alert_channel_id and not isinstance(
+        channels[str(alert_channel_id)], (discord.TextChannel, discord.Thread)
+    ):
+        raise ValueError("invalid_moderation_alert_channel")
+    return config
+
+
+async def _is_prime_ai_bot_owner(user_id: int, guild) -> bool:
+    bot = bot_ref
+    checker = getattr(bot, "is_owner", None) if bot else None
+    if not callable(checker):
+        return False
+    member = guild.get_member(int(user_id))
+    if member is None:
+        try:
+            member = await guild.fetch_member(int(user_id))
+        except Exception:
+            return False
+    try:
+        return bool(await checker(member))
+    except Exception:
+        logger.exception("Could not verify PRIME AI bot-owner access.")
+        return False
+
+
+@routes.get('/api/guild/{guild_id}/ai')
+async def api_get_prime_ai(req):
+    _, guild = await authorize(req)
+    try:
+        settings = _prime_ai_public_settings(
+            await prime_ai_service.get_settings(guild.id)
+        )
+        memories = await prime_ai_service.list_memories(guild.id)
+        channels = [
+            {"id": str(channel.id), "name": str(channel.name)}
+            for channel in sorted(
+                getattr(guild, "text_channels", []),
+                key=lambda channel: (
+                    int(getattr(channel, "position", 0) or 0),
+                    str(getattr(channel, "name", "")),
+                ),
+            )[:500]
+        ]
+        return web.json_response({
+            "settings": settings,
+            "channels": channels,
+            "memories": memories,
+        })
+    except Exception:
+        logger.exception(
+            "Failed to read PRIME AI settings for guild %s", guild.id
+        )
+        return json_error(503, "ai_storage_unavailable")
+
+
+@routes.get('/api/guild/{guild_id}/ai/control')
+async def api_get_prime_ai_control(req):
+    session, guild = await authorize(req)
+    try:
+        snapshot = await prime_ai_control.get_control_settings(guild.id)
+        skills = await prime_ai_control.get_public_skills(guild.id)
+        is_bot_owner = await _is_prime_ai_bot_owner(int(session["id"]), guild)
+        memories = await prime_ai_service.list_memories(
+            guild.id,
+            include_disabled=True,
+            limit=500,
+        )
+        if is_bot_owner:
+            memories = await prime_ai_service.list_memories(
+                guild.id, include_disabled=True, limit=500
+            ) + await prime_ai_service.list_memories(
+                0, scope="GLOBAL", include_disabled=True, limit=500
+            )
+        operations = await prime_ai_control.list_operations(guild.id)
+        analytics = await prime_ai_control.get_analytics(guild.id)
+        channels = [
+            {
+                "id": str(item.id),
+                "name": str(item.name),
+                "type": type(item).__name__,
+                "text_based": isinstance(
+                    item, (discord.TextChannel, discord.Thread)
+                ),
+            }
+            for item in list(getattr(guild, "channels", ()))[:500]
+            if hasattr(item, "name")
+        ]
+        roles = [
+            {"id": str(item.id), "name": str(item.name)}
+            for item in list(getattr(guild, "roles", ()))[:500]
+        ]
+        return web.json_response({
+            "control": snapshot,
+            "skills": skills,
+            "action_registry": [
+                {
+                    "id": action_id,
+                    "action_id": item["action_id"],
+                    "name": item["name"],
+                    "description": item["description"],
+                    "category": item["category"],
+                    "risk": item["risk"],
+                    "discord_permission": item["discord_permission"],
+                    "prime_permission": item["prime_permission"],
+                    "enabled": bool(
+                        snapshot["config"]["actions"][action_id]["enabled"]
+                    ),
+                    "confirmation_required": item["confirmation_required"],
+                    "audit_required": item["audit_required"],
+                    "dashboard_config": item["dashboard_config"],
+                }
+                for action_id, item in prime_ai_control.ACTION_REGISTRY.items()
+            ],
+            "memories": memories,
+            "operations": operations,
+            "analytics": analytics,
+            "channels": channels,
+            "roles": roles,
+            "is_bot_owner": is_bot_owner,
+            "provider_status": (
+                "configured" if os.getenv("GEMINI_API_KEY", "").strip() else "missing"
+            ),
+        })
+    except Exception:
+        logger.exception("Failed to read PRIME AI control center for guild %s", guild.id)
+        return json_error(503, "ai_storage_unavailable")
+
+
+@routes.post('/api/guild/{guild_id}/ai/control')
+async def api_save_prime_ai_control(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    if not isinstance(body.get("config"), dict):
+        return json_error(400, "validation", fields={"config": "إعدادات التحكم غير صالحة."})
+    revision = body.get("revision")
+    try:
+        normalized = prime_ai_control.normalize_control_settings(body["config"])
+        _validate_prime_ai_references(guild, normalized)
+        saved = await prime_ai_control.save_control_settings(
+            guild.id,
+            int(session["id"]),
+            normalized,
+            revision,
+        )
+    except prime_ai_control.ControlSettingsConflict as conflict:
+        return json_error(409, "conflict", control=conflict.current)
+    except ValueError as error:
+        return json_error(400, "validation", fields={"_": str(error)})
+    except Exception:
+        logger.exception("Failed to save PRIME AI control settings for guild %s", guild.id)
+        return json_error(503, "ai_storage_unavailable")
+    return web.json_response({"ok": True, "control": saved})
+
+
+@routes.post('/api/guild/{guild_id}/ai/skills/{skill_key}')
+async def api_save_prime_ai_skill(req):
+    session, guild = await authorize(req, write=True)
+    skill_key = str(req.match_info.get("skill_key", ""))[:80]
+    body = await read_json_body(req)
+    revision = body.get("revision")
+    payload = body.get("settings")
+    if not isinstance(payload, dict):
+        return json_error(400, "validation", fields={"settings": "إعدادات المهارة غير صالحة."})
+    try:
+        channels = {str(item.id) for item in getattr(guild, "channels", ())}
+        roles = {str(item.id) for item in getattr(guild, "roles", ())}
+        if any(str(item) not in channels for item in payload.get("allowed_channels", [])):
+            raise ValueError("invalid_skill_channels")
+        if any(str(item) not in roles for item in payload.get("allowed_roles", [])):
+            raise ValueError("invalid_skill_roles")
+        skill = await prime_ai_control.save_skill(
+            guild.id,
+            int(session["id"]),
+            skill_key,
+            payload,
+            revision,
+        )
+    except prime_ai_control.ControlSettingsConflict as conflict:
+        return json_error(409, "conflict", skill=conflict.current)
+    except ValueError as error:
+        return json_error(400, "validation", fields={"_": str(error)})
+    except Exception:
+        logger.exception("Failed to save PRIME AI skill %s in guild %s", skill_key, guild.id)
+        return json_error(503, "ai_storage_unavailable")
+    return web.json_response({"ok": True, "skill": prime_ai_control.public_skill(skill)})
+
+
+@routes.post('/api/guild/{guild_id}/ai/memories/{memory_id}/edit')
+async def api_edit_prime_ai_memory(req):
+    session, guild = await authorize(req, write=True)
+    raw_memory_id = req.match_info.get("memory_id", "")
+    if not str(raw_memory_id).isascii() or not str(raw_memory_id).isdigit():
+        return json_error(404, "not_found")
+    body = await read_json_body(req)
+    content = body.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return json_error(400, "validation", fields={"content": "اكتب محتوى الذاكرة."})
+    scope = str(body.get("scope", "SERVER")).upper()
+    scope_id = str(body.get("scope_id", ""))
+    local_memories = await prime_ai_service.list_memories(
+        guild.id, include_disabled=True, limit=500
+    )
+    global_memories = await prime_ai_service.list_memories(
+        0, scope="GLOBAL", include_disabled=True, limit=500
+    )
+    memory_id = int(raw_memory_id)
+    is_global = any(int(item["id"]) == memory_id for item in global_memories)
+    source_guild_id = 0 if is_global else guild.id
+    if is_global and not await _is_prime_ai_bot_owner(int(session["id"]), guild):
+        return json_error(403, "forbidden")
+    if not is_global and not any(int(item["id"]) == memory_id for item in local_memories):
+        return json_error(404, "not_found")
+    destination_guild_id = 0 if scope == "GLOBAL" else guild.id
+    if destination_guild_id == 0 and not await _is_prime_ai_bot_owner(int(session["id"]), guild):
+        return json_error(403, "forbidden")
+    if scope == "CHANNEL" and scope_id not in {str(item.id) for item in getattr(guild, "channels", ())}:
+        return json_error(400, "validation", fields={"scope_id": "القناة ليست ضمن هذا الخادم."})
+    if scope == "ROLE" and scope_id not in {str(item.id) for item in getattr(guild, "roles", ())}:
+        return json_error(400, "validation", fields={"scope_id": "الرتبة ليست ضمن هذا الخادم."})
+    if scope == "USER":
+        member = guild.get_member(int(scope_id or 0))
+        if member is None and scope_id.isdigit():
+            try:
+                member = await guild.fetch_member(int(scope_id))
+            except Exception:
+                member = None
+        if member is None:
+            return json_error(400, "validation", fields={"scope_id": "العضو ليس ضمن هذا الخادم."})
+    try:
+        memory = await prime_ai_service.edit_memory(
+            destination_guild_id,
+            int(session["id"]),
+            memory_id,
+            content,
+            scope=scope,
+            scope_id=scope_id,
+            expires_in_days=body.get("expires_in_days"),
+            enabled=body.get("enabled", True),
+            source_guild_id=source_guild_id,
+        )
+    except ValueError as error:
+        return json_error(400, "validation", fields={"_": str(error)})
+    except Exception:
+        logger.exception("Failed to edit PRIME AI memory in guild %s", guild.id)
+        return json_error(503, "ai_storage_unavailable")
+    return web.json_response({"ok": True, "memory": memory})
+
+
+@routes.post('/api/guild/{guild_id}/ai/memories/clear')
+async def api_clear_prime_ai_memories(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    target_guild_id = guild.id
+    if str(body.get("scope", "")).upper() == "GLOBAL":
+        if not await _is_prime_ai_bot_owner(int(session["id"]), guild):
+            return json_error(403, "forbidden")
+        target_guild_id = 0
+    try:
+        deleted = await prime_ai_service.clear_memories(target_guild_id, int(session["id"]))
+    except Exception:
+        logger.exception("Failed to clear PRIME AI memories in guild %s", guild.id)
+        return json_error(503, "ai_storage_unavailable")
+    return web.json_response({"ok": True, "deleted": deleted})
+
+
+@routes.post('/api/guild/{guild_id}/ai/sandbox')
+async def api_prime_ai_sandbox(req):
+    await authorize(req, write=True)
+    return json_error(410, "phase3_read_only")
+
+
+@routes.get('/api/guild/{guild_id}/ai/operations')
+async def api_prime_ai_operations(req):
+    _, guild = await authorize(req)
+    return web.json_response({"operations": await prime_ai_control.list_operations(guild.id)})
+
+
+@routes.get('/api/guild/{guild_id}/ai/moderation')
+async def api_prime_ai_moderation(req):
+    _, guild = await authorize(req)
+    return web.json_response({"events": await prime_ai_control.list_moderation(guild.id)})
+
+
+@routes.get('/api/guild/{guild_id}/ai/analytics')
+async def api_prime_ai_analytics(req):
+    _, guild = await authorize(req)
+    return web.json_response(await prime_ai_control.get_analytics(guild.id))
+
+
+@routes.post('/api/guild/{guild_id}/ai/settings')
+async def api_save_prime_ai_settings(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    fields = {}
+    if not isinstance(body.get("enabled"), bool):
+        fields["enabled"] = "قيمة التفعيل غير صالحة."
+    if not isinstance(body.get("system_prompt"), str):
+        fields["system_prompt"] = "التعليمات مطلوبة بصيغة نصية."
+    elif len(body["system_prompt"]) > prime_ai_service.MAX_SYSTEM_PROMPT:
+        fields["system_prompt"] = (
+            f"الحد الأقصى {prime_ai_service.MAX_SYSTEM_PROMPT} حرف."
+        )
+    revision = body.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        fields["revision"] = "رقم مراجعة الإعدادات غير صالح."
+
+    channel_ids = body.get("allowed_channel_ids")
+    if not isinstance(channel_ids, list) or len(channel_ids) > 100:
+        fields["allowed_channel_ids"] = "قائمة القنوات غير صالحة."
+    else:
+        available_ids = {
+            str(channel.id)
+            for channel in getattr(guild, "text_channels", [])
+        }
+        clean_channels = []
+        for channel_id in channel_ids:
+            if (
+                not isinstance(channel_id, str)
+                or not channel_id.isascii()
+                or not channel_id.isdigit()
+                or channel_id not in available_ids
+            ):
+                fields["allowed_channel_ids"] = (
+                    "اختر قنوات نصية تابعة لهذا الخادم فقط."
+                )
+                break
+            clean_channels.append(channel_id)
+        channel_ids = list(dict.fromkeys(clean_channels))
+
+    if fields:
+        return json_error(400, "validation", fields=fields)
+
+    try:
+        updated = await prime_ai_service.save_settings(
+            guild.id,
+            int(session["id"]),
+            enabled=body["enabled"],
+            system_prompt=body["system_prompt"],
+            allowed_channel_ids=channel_ids,
+            expected_revision=revision,
+        )
+    except prime_ai_service.AISettingsConflict as conflict:
+        return json_error(
+            409,
+            "conflict",
+            settings=_prime_ai_public_settings(conflict.current),
+        )
+    except ValueError as error:
+        return json_error(
+            400,
+            "validation",
+            fields={"_": str(error)},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to save PRIME AI settings for guild %s by user %s",
+            guild.id,
+            session["id"],
+        )
+        return json_error(503, "ai_storage_unavailable")
+
+    return web.json_response({
+        "ok": True,
+        "settings": _prime_ai_public_settings(updated),
+    })
+
+
+@routes.post('/api/guild/{guild_id}/ai/memories')
+async def api_add_prime_ai_memory(req):
+    session, guild = await authorize(req, write=True)
+    body = await read_json_body(req)
+    content = body.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return json_error(
+            400,
+            "validation",
+            fields={"content": "اكتب محتوى الذاكرة."},
+        )
+    if len(content) > prime_ai_service.MAX_MEMORY_LENGTH:
+        return json_error(
+            400,
+            "validation",
+            fields={
+                "content": (
+                    f"الحد الأقصى {prime_ai_service.MAX_MEMORY_LENGTH} حرف."
+                )
+            },
+        )
+    scope = str(body.get("scope", "SERVER")).upper()
+    scope_id = str(body.get("scope_id", ""))
+    storage_guild_id = guild.id
+    if scope == "GLOBAL":
+        if not await _is_prime_ai_bot_owner(int(session["id"]), guild):
+            return json_error(403, "forbidden")
+        storage_guild_id = 0
+    if scope == "CHANNEL" and scope_id not in {str(item.id) for item in getattr(guild, "channels", ())}:
+        return json_error(400, "validation", fields={"scope_id": "القناة ليست ضمن هذا الخادم."})
+    if scope == "ROLE" and scope_id not in {str(item.id) for item in getattr(guild, "roles", ())}:
+        return json_error(400, "validation", fields={"scope_id": "الرتبة ليست ضمن هذا الخادم."})
+    if scope == "USER":
+        member = guild.get_member(int(scope_id or 0))
+        if member is None and scope_id.isdigit():
+            try:
+                member = await guild.fetch_member(int(scope_id))
+            except Exception:
+                member = None
+        if member is None:
+            return json_error(400, "validation", fields={"scope_id": "العضو ليس ضمن هذا الخادم."})
+    try:
+        memory = await prime_ai_service.add_memory(
+            storage_guild_id,
+            int(session["id"]),
+            content,
+            scope=scope,
+            scope_id=scope_id,
+            expires_in_days=body.get("expires_in_days"),
+        )
+    except prime_ai_service.AIMemoryLimitReached:
+        return json_error(409, "memory_limit_reached")
+    except ValueError:
+        return json_error(
+            400,
+            "validation",
+            fields={"content": "محتوى الذاكرة غير صالح."},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to add PRIME AI memory for guild %s by user %s",
+            guild.id,
+            session["id"],
+        )
+        return json_error(503, "ai_storage_unavailable")
+    return web.json_response({"ok": True, "memory": memory})
+
+
+@routes.post('/api/guild/{guild_id}/ai/memories/{memory_id}/delete')
+async def api_delete_prime_ai_memory(req):
+    session, guild = await authorize(req, write=True)
+    raw_memory_id = req.match_info.get("memory_id", "")
+    if not raw_memory_id.isascii() or not raw_memory_id.isdigit():
+        return json_error(404, "not_found")
+    memory_id = int(raw_memory_id)
+    try:
+        deleted = await prime_ai_service.delete_memory(
+            guild.id,
+            int(session["id"]),
+            memory_id,
+        )
+        if not deleted:
+            global_memories = await prime_ai_service.list_memories(
+                0, scope="GLOBAL", include_disabled=True, limit=500
+            )
+            if any(int(item["id"]) == memory_id for item in global_memories):
+                if not await _is_prime_ai_bot_owner(int(session["id"]), guild):
+                    return json_error(403, "forbidden")
+                deleted = await prime_ai_service.delete_memory(
+                    0,
+                    int(session["id"]),
+                    memory_id,
+                )
+    except Exception:
+        logger.exception(
+            "Failed to delete PRIME AI memory for guild %s by user %s",
+            guild.id,
+            session["id"],
+        )
+        return json_error(503, "ai_storage_unavailable")
+    if not deleted:
+        return json_error(404, "not_found")
+    return web.json_response({"ok": True})
+
+
+@routes.get('/api/guild/{guild_id}/ai/audit')
+async def api_get_prime_ai_audit(req):
+    _, guild = await authorize(req)
+    try:
+        events = await prime_ai_service.list_audit(guild.id)
+    except Exception:
+        logger.exception(
+            "Failed to read PRIME AI audit events for guild %s", guild.id
+        )
+        return json_error(503, "ai_storage_unavailable")
+    return web.json_response({"events": events})
+
+
+@routes.post('/api/guild/{guild_id}/ai/test')
+async def api_test_prime_ai(req):
+    session, guild = await authorize(req, write=True)
+    actor_id = int(session["id"])
+    wait = prime_ai_service.allow_request(
+        guild.id,
+        actor_id,
+        action="dashboard-test",
+        limit=4,
+        window_seconds=60,
+    )
+    if wait:
+        return json_error(
+            429,
+            "rate_limited",
+            retry_after=int(wait) + 1,
+        )
+    body = await read_json_body(req)
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return json_error(
+            400,
+            "validation",
+            fields={"prompt": "اكتب رسالة الاختبار."},
+        )
+    if len(prompt) > prime_ai_service.MAX_TEST_PROMPT:
+        return json_error(
+            400,
+            "validation",
+            fields={
+                "prompt": (
+                    f"الحد الأقصى {prime_ai_service.MAX_TEST_PROMPT} حرف."
+                )
+            },
+        )
+
+    bot = bot_ref
+    shared_session = getattr(bot, "session", None) if bot else None
+    if shared_session is None:
+        await prime_ai_service.record_audit(
+            guild.id,
+            actor_id,
+            "اختبار PRIME AI",
+            "فشل",
+            "جلسة البوت المشتركة غير متاحة.",
+        )
+        return json_error(503, "ai_runtime_unavailable")
+    try:
+        answer = await prime_ai_service.generate_response(
+            shared_session,
+            guild.id,
+            actor_id,
+            None,
+            prompt,
+            bypass_guild_controls=True,
+            audit_action="اختبار PRIME AI",
+        )
+    except prime_ai_service.AIProviderUnavailable as error:
+        if error.status_code == 429:
+            return json_error(429, "ai_provider_rate_limited")
+        return json_error(502, "ai_provider_unavailable")
+    except ValueError:
+        return json_error(
+            400,
+            "validation",
+            fields={"prompt": "رسالة الاختبار غير صالحة."},
+        )
+    except Exception:
+        logger.exception(
+            "PRIME AI dashboard test failed for guild %s by user %s",
+            guild.id,
+            actor_id,
+        )
+        return json_error(503, "ai_runtime_unavailable")
+    return web.json_response({"ok": True, "answer": answer})
+
+
 @routes.get('/api/guild/{guild_id}/settings')
 async def api_get_settings(req):
     _, guild = await authorize(req)
@@ -4726,7 +5478,9 @@ async def static_asset(req):
     name = req.match_info["name"]
     types = {
         "app.css": "text/css",
+        "ai-control.css": "text/css",
         "leveling-card-assets.css": "text/css",
+        "ai-control.js": "application/javascript",
         "app.js": "application/javascript",
         "login-hero-clean.png": "image/png",
     }

@@ -113,6 +113,37 @@ class StreakDatabaseMigrationTests(unittest.IsolatedAsyncioTestCase):
         ))
         self.assertEqual(tuple(daily_row), (1, 345))
 
+    async def test_streak_analytics_aggregates_existing_records_only(self):
+        await database.init_db()
+        async with database.connect() as db:
+            await db.executemany(
+                """
+                INSERT INTO user_levels (guild_id, user_id, current_streak, best_streak)
+                VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (700, 201, 5, 9),
+                    (700, 202, 3, 6),
+                    (700, 203, 0, 4),
+                    (700, 204, 0, 0),
+                    (701, 201, 99, 100),
+                ],
+            )
+            await db.commit()
+
+        result = await database.get_streak_dashboard_analytics(700)
+
+        self.assertEqual(result, {
+            "tracked_members": 3,
+            "current_streak_members": 2,
+            "total_current_streak_days": 8,
+            "average_current_streak": 4.0,
+            "highest_current_streak": 5,
+            "members_with_best_streak": 3,
+            "average_best_streak": 6.33,
+            "highest_best_streak": 9,
+        })
+
     async def test_unique_daily_key_blocks_only_same_guild_user_and_date(self):
         await database.init_db()
         rows = (

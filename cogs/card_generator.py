@@ -205,21 +205,26 @@ class Card:
         ImageDraw.Draw(mask).ellipse((0, 0, size[0]-1, size[1]-1), fill=255)
         self.image.paste(avatar, (x*SCALE, y*SCALE), mask)
 
-    def bar(self, box, progress, animated=False, style="gradient"):
+    def bar(self, box, progress, animated=False, style="gradient", direction="ltr"):
         x, y, w, h = box
+        rtl = direction == "rtl"
         self.panel((x, y, x+w, y+h), radius=h//2, fill="#23212e")
         fill_width = max(0, int(w*progress))
+        fill_left = w - fill_width if rtl else 0
         if fill_width:
             # Clip the fill to a rounded mask; never draw a false minimum progress.
             mask = Image.new("L", (w*SCALE, h*SCALE))
             md = ImageDraw.Draw(mask)
-            md.rounded_rectangle((0, 0, fill_width*SCALE-1, h*SCALE-1),
+            md.rounded_rectangle((fill_left*SCALE, 0,
+                                  (fill_left+fill_width)*SCALE-1, h*SCALE-1),
                                  radius=min(h, fill_width)*SCALE//2, fill=255)
             gradient = Image.new("RGB", (w*SCALE, h*SCALE))
             gd = ImageDraw.Draw(gradient)
             start = ImageColor.getrgb(self.accent)
             for column in range(w*SCALE):
                 t = column / max(1, w*SCALE-1)
+                if rtl:
+                    t = 1 - t
                 if style == "solid":
                     color = start
                 else:
@@ -235,12 +240,16 @@ class Card:
             if style == "segmented":
                 segment = max(12, int(w / 12)) * SCALE
                 for xpos in range(segment, fill_width * SCALE, segment):
-                    self.draw.line((x*SCALE+xpos, y*SCALE+1, x*SCALE+xpos, (y+h)*SCALE-1),
+                    position = fill_width*SCALE - xpos if rtl else xpos
+                    position += fill_left*SCALE
+                    self.draw.line((x*SCALE+position, y*SCALE+1,
+                                    x*SCALE+position, (y+h)*SCALE-1),
                                    fill="#11111a", width=2*SCALE)
             elif style == "neon":
                 halo = Image.new("RGBA", self.image.size)
                 ImageDraw.Draw(halo).rounded_rectangle(
-                    (x*SCALE, y*SCALE, (x+fill_width)*SCALE, (y+h)*SCALE),
+                    ((x+fill_left)*SCALE, y*SCALE,
+                     (x+fill_left+fill_width)*SCALE, (y+h)*SCALE),
                     radius=h*SCALE//2, outline=self.accent, width=5*SCALE,
                 )
                 halo = halo.filter(ImageFilter.GaussianBlur(6*SCALE))
@@ -665,8 +674,8 @@ def _draw_streak_emblem(card, center, diameter, stage_image, reaction, theme):
     halo = halo.filter(ImageFilter.GaussianBlur(12*scale))
     card.image = Image.alpha_composite(card.image.convert("RGBA"), halo).convert("RGB")
     card.draw = ImageDraw.Draw(card.image)
-    card.draw.ellipse((x-radius*scale, y-radius*scale,
-                       x+radius*scale, y+radius*scale),
+    card.draw.ellipse(((x-radius)*scale, (y-radius)*scale,
+                       (x+radius)*scale, (y+radius)*scale),
                       fill=theme["deep"], outline=theme["accent"], width=3*scale)
     if stage_image:
         try:
@@ -687,32 +696,98 @@ def _draw_streak_emblem(card, center, diameter, stage_image, reaction, theme):
                   True, center=True, width=diameter-8)
 
 
-def _draw_streak_milestone_track(card, current, active_stage, progress):
-    left, y, gap, radius = 327, 132, 55, 13
-    active_key = str((active_stage or {}).get("stage_key") or "")
-    active_index = next(
-        (i for i, (_, key, _) in enumerate(STREAK_CARD_MILESTONES) if key == active_key),
-        0,
-    )
-    for index in range(len(STREAK_CARD_MILESTONES)-1):
-        x1, x2 = left + index*gap, left + (index+1)*gap
-        card.line((x1, y, x2, y), "#29334A", 5)
-        if index < active_index:
-            color, fraction = _streak_card_theme(
-                {"stage_key": STREAK_CARD_MILESTONES[index+1][1]}
-            )["accent"], 1.0
-        elif index == active_index:
-            color, fraction = card.accent, progress
-        else:
-            continue
-        if fraction > 0:
-            card.line((x1, y, x1 + (x2-x1)*fraction, y), color, 5)
+def format_streak_days_remaining(remaining):
+    days = number(remaining)
+    if days == 1:
+        return "يوم واحد"
+    if days == 2:
+        return "يومين"
+    if 3 <= days <= 10:
+        return f"{days} أيام"
+    return f"{days} يومًا"
 
-    for index, (threshold, key, icon) in enumerate(STREAK_CARD_MILESTONES):
-        x = left + index*gap
+
+def _streak_card_milestones(stages):
+    if stages is None:
+        return [
+            {"threshold": threshold, "stage_key": key, "reaction": icon, "name": ""}
+            for threshold, key, icon in STREAK_CARD_MILESTONES
+        ]
+    milestones = []
+    for stage in stages:
+        if not isinstance(stage, dict) or not stage.get("enabled", 1):
+            continue
+        threshold = number(stage.get("threshold"))
+        if threshold <= 0:
+            continue
+        milestone = dict(stage)
+        milestone["threshold"] = threshold
+        milestone["stage_key"] = str(milestone.get("stage_key") or "")
+        milestone["name"] = str(milestone.get("name") or "")
+        milestone["reaction"] = str(milestone.get("reaction") or "")
+        milestones.append(milestone)
+    return sorted(
+        milestones,
+        key=lambda milestone: (milestone["threshold"], milestone["stage_key"]),
+    )
+
+
+def _draw_streak_milestone_track(
+    card, current, active_stage, next_stage, progress, stages=None
+):
+    milestones = _streak_card_milestones(stages)
+    if not milestones:
+        card.text((500, 131), "لا توجد مراحل مفعّلة", 10, MUTED,
+                  center=True, width=450)
+        return
+
+    active_key = str((active_stage or {}).get("stage_key") or "")
+    next_key = str((next_stage or {}).get("stage_key") or "")
+    active_index = next(
+        (i for i, milestone in enumerate(milestones)
+         if milestone["stage_key"] == active_key and active_key),
+        None,
+    )
+    next_index = next(
+        (i for i, milestone in enumerate(milestones)
+         if milestone["stage_key"] == next_key and next_key),
+        None,
+    )
+
+    max_visible = 7
+    if len(milestones) > max_visible:
+        anchor = active_index if active_index is not None else (next_index or 0)
+        start = max(0, min(anchor - max_visible // 2, len(milestones) - max_visible))
+        milestones = milestones[start:start + max_visible]
+
+    # PRIME cards read right-to-left: the earliest milestone starts on the right.
+    visible = list(reversed(milestones))
+    left, right, y, radius = 264, 736, 127, 13
+    if len(visible) == 1:
+        positions = [(left + right) / 2]
+    else:
+        gap = (right - left) / (len(visible) - 1)
+        positions = [left + index * gap for index in range(len(visible))]
+
+    for index in range(len(visible) - 1):
+        left_stage, right_stage = visible[index], visible[index + 1]
+        x1, x2 = positions[index], positions[index + 1]
+        card.line((x1, y, x2, y), "#29334A", 5)
+        if left_stage["threshold"] <= current:
+            card.line((x1, y, x2, y), card.accent, 5)
+        elif active_key and right_stage["stage_key"] == active_key:
+            portion = min(1.0, max(0.0, progress))
+            if portion > 0:
+                card.line((x2, y, x2 - (x2 - x1) * portion, y), card.accent, 5)
+
+    focus_key = active_key or next_key
+    for milestone, x in zip(visible, positions):
+        threshold = milestone["threshold"]
+        key = milestone["stage_key"]
         reached = current >= threshold
-        theme = _streak_card_theme({"stage_key": key})
-        if key == active_key:
+        focused = bool(focus_key) and key == focus_key
+        theme = _streak_card_theme(milestone)
+        if focused:
             ring = Image.new("RGBA", card.image.size)
             ImageDraw.Draw(ring).ellipse(
                 ((x-radius-5)*SCALE, (y-radius-5)*SCALE,
@@ -726,57 +801,28 @@ def _draw_streak_milestone_track(card, current, active_stage, progress):
             ((x-radius)*SCALE, (y-radius)*SCALE,
              (x+radius)*SCALE, (y+radius)*SCALE),
             fill=theme["accent"] if reached else "#111725",
-            outline=theme["accent"] if reached else "#485064",
+            outline=theme["accent"] if reached or focused else "#485064",
             width=2*SCALE,
         )
-        if icon:
-            card.text((x, y-8), icon, 10, "#10121c" if reached else MUTED,
+        reaction = milestone["reaction"]
+        if reaction:
+            card.text((x, y-8), reaction, 10, "#10121c" if reached else MUTED,
                       True, center=True, width=radius*2)
-        card.text((x, y+20), str(threshold), 9,
-                  theme["accent"] if key == active_key else MUTED,
-                  key == active_key, center=True, width=40)
+        card.text((x, y+19), str(threshold), 9,
+                  theme["accent"] if focused else MUTED, focused,
+                  center=True, width=70)
+        if milestone["name"]:
+            card.text((x, y+32), milestone["name"], 8, MUTED,
+                      center=True, width=70)
 
 
 def _draw_streak_progress(card, progress, theme):
-    x, y, width, height = 326, 203, 338, 11
-    card.bar((x, y, width, height), progress, False, theme["bar"])
-    end = x + int(width * progress)
-    if progress <= 0:
-        return
-    if theme["motif"] == "ember":
-        for offset in (18, 54, 90):
-            position = end - offset
-            if position > x:
-                card.draw.ellipse(((position-2)*SCALE, (y+2)*SCALE,
-                                   (position+2)*SCALE, (y+6)*SCALE),
-                                  fill="#F2FFF7")
-    elif theme["motif"] == "flame":
-        card.draw.polygon(
-            [(end*SCALE, (y-4)*SCALE), ((end-5)*SCALE, (y+height//2)*SCALE),
-             (end*SCALE, (y+height+4)*SCALE), ((end+5)*SCALE, (y+height//2)*SCALE)],
-            fill=theme["glow"],
-        )
-    elif theme["motif"] == "blaze":
-        for offset in range(12, min(width, int(width*progress)), 32):
-            position = x + offset
-            card.draw.line(((position-3)*SCALE, (y+height-1)*SCALE,
-                            (position+4)*SCALE, (y+1)*SCALE),
-                           fill="#FFE7CB", width=2*SCALE)
-    elif theme["motif"] == "volcano":
-        card.draw.line((x*SCALE, (y+height-2)*SCALE, end*SCALE,
-                        (y+height-2)*SCALE), fill="#FFB779", width=2*SCALE)
-    elif theme["motif"] == "crown":
-        for offset in (24, 84, 144, 204, 264, 324):
-            position = x + offset
-            if position < end:
-                card.draw.ellipse(((position-2)*SCALE, (y-3)*SCALE,
-                                   (position+2)*SCALE, (y+1)*SCALE),
-                                  fill="#FFF1BB")
-    elif theme["motif"] == "eternal":
-        card.text((end, y-7), "∞", 15, "#FFF1FF", True, center=True, width=20)
+    card.bar((294, 203, 444, 11), progress, False, theme["bar"], direction="rtl")
 
 
-def _render_streak_card(user_name, handle, state, stage, next_stage, ranks, avatar, stage_image):
+def _render_streak_card(
+    user_name, handle, state, stage, next_stage, ranks, avatar, stage_image, stages=None
+):
     stage = stage or {}
     theme = _streak_card_theme(stage)
     accent = theme["accent"]
@@ -806,41 +852,41 @@ def _render_streak_card(user_name, handle, state, stage, next_stage, ranks, avat
     reaction = str(stage.get("reaction") or "")
     stage_description = str(stage.get("description") or "")
 
-    # Left stats, milestone journey, and member identity follow the wide PRIME
-    # reference while remaining part of the shared Card renderer.
-    card.panel((28, 33, 280, 268), radius=20, fill="#0A101C", outline=_mix_hex("#334052", accent, 0.36))
-    card.panel((296, 33, 704, 268), radius=20, fill="#0A101C", outline=_mix_hex("#334052", accent, 0.36))
-    card.panel((720, 33, 972, 268), radius=20, fill="#0A101C", outline=_mix_hex("#334052", accent, 0.36))
+    # The right-to-left hierarchy follows the approved PRIME streak-card layout.
+    card.panel((28, 33, 228, 268), radius=20, fill="#0A101C", outline=_mix_hex("#334052", accent, 0.36))
+    card.panel((244, 33, 756, 268), radius=20, fill="#0A101C", outline=_mix_hex("#334052", accent, 0.36))
+    card.panel((772, 33, 972, 268), radius=20, fill="#0A101C", outline=_mix_hex("#334052", accent, 0.36))
 
-    card.text((49, 49), "PRIME / DAILY STREAK", 10, accent, True)
-    card.text((48, 77), "أفضل ستريك", 12, MUTED, True)
-    card.text((48, 99), f"{best:,}", 22, WHITE, True)
-    card.line((48, 136, 260, 136), "#30384A")
-    card.text((48, 151), "ترتيب السيرفر", 11, MUTED, True)
-    card.text((48, 171), f"#{number(ranks.get('server_rank'), 1)}", 18, WHITE, True)
-    card.text((158, 151), "الترتيب العالمي", 11, MUTED, True)
-    card.text((158, 171), f"#{number(ranks.get('global_rank'), 1)}", 18, WHITE, True)
-    card.text((48, 222), stage_description, 9, MUTED, width=210)
+    card.text((46, 49), "PRIME / DAILY STREAK", 9, accent, True, width=164)
+    card.text((46, 77), "أفضل ستريك", 11, MUTED, True)
+    card.text((46, 99), f"{best:,}", 22, WHITE, True)
+    card.panel((129, 94, 211, 122), radius=14, fill=theme["deep"], outline=accent)
+    card.text((170, 101), f"{reaction} {stage_name}".strip(), 9, WHITE, True,
+              center=True, width=76)
+    card.line((46, 136, 210, 136), "#30384A")
+    card.text((46, 151), "ترتيب السيرفر", 9, MUTED, True, width=76)
+    card.text((46, 171), f"#{number(ranks.get('server_rank'), 1)}", 18, WHITE, True)
+    card.text((128, 151), "الترتيب العالمي", 9, MUTED, True, width=82)
+    card.text((128, 171), f"#{number(ranks.get('global_rank'), 1)}", 18, WHITE, True)
+    card.text((46, 222), stage_description, 9, MUTED, width=164)
 
-    card.text((500, 52), f"باقي {remaining} يوم على لقب {next_name}" if next_stage
-              else f"بلغت أعلى مرحلة · {stage_name}", 14, WHITE, True,
-              center=True, width=365)
-    _draw_streak_milestone_track(card, current, stage, progress)
+    headline = (
+        f"باقي {format_streak_days_remaining(remaining)} على {next_name}"
+        if next_stage else f"بلغت أعلى مرحلة · {stage_name}"
+    )
+    card.text((500, 52), headline, 14, WHITE, True, center=True, width=466)
+    _draw_streak_milestone_track(card, current, stage, next_stage, progress, stages)
     _draw_streak_progress(card, progress, theme)
-    card.text((500, 231), f"تقدم {progress:.0%} · المرحلة {stage_name}",
-              11, accent, True, center=True, width=350)
-    if stage_description:
-        card.text((500, 250), stage_description, 9, MUTED, center=True, width=360)
+    card.text((270, 201), f"{progress:.0%}", 9, MUTED, center=True, width=32)
 
-    card.avatar((738, 78), 105, avatar, progress=progress)
-    card.text((906, 54), user_name, 13, WHITE, True, center=True, width=122)
-    card.text((906, 87), f"{current:,}", 38, accent, True, center=True, width=120)
-    card.text((906, 131), "يوم متتالٍ", 12, MUTED, True, center=True, width=120)
-    card.panel((851, 159, 960, 198), radius=18, fill=theme["deep"], outline=accent)
-    card.text((906, 168), f"{reaction} {stage_name}".strip(), 12, WHITE, True,
-              center=True, width=104)
-    _draw_streak_emblem(card, (906, 229), 38, stage_image, reaction, theme)
-    card.text((906, 253), f"أفضل رقم {best:,}", 9, MUTED, True, center=True, width=116)
+    card.avatar((784, 101), 70, avatar, progress=progress)
+    card.text((908, 52), user_name, 12, WHITE, True, center=True, width=108)
+    card.text((908, 86), f"{current:,}", 34, accent, True, center=True, width=108)
+    card.text((908, 126), "يوم متتالٍ", 11, MUTED, True, center=True, width=108)
+    card.panel((858, 154, 958, 192), radius=17, fill=theme["deep"], outline=accent)
+    card.text((908, 163), f"{reaction} {stage_name}".strip(), 11, WHITE, True,
+              center=True, width=94)
+    _draw_streak_emblem(card, (908, 226), 34, stage_image, reaction, theme)
 
     output = io.BytesIO()
     card.image.resize((1000, 300), Image.Resampling.LANCZOS).save(output, format="PNG")
@@ -848,7 +894,7 @@ def _render_streak_card(user_name, handle, state, stage, next_stage, ranks, avat
     return output
 
 
-async def generate_streak_card(user, state, stage, next_stage, ranks):
+async def generate_streak_card(user, state, stage, next_stage, ranks, stages=None):
     """Render a streak progress image through the existing bounded card pipeline."""
     user_name = str(getattr(user, "display_name", None) or getattr(user, "name", "Member"))
     handle = "@" + str(getattr(user, "name", "member"))
@@ -867,6 +913,7 @@ async def generate_streak_card(user, state, stage, next_stage, ranks):
             dict(ranks or {}),
             avatar,
             stage_image,
+            [dict(item) for item in stages] if stages is not None else None,
         )
 
 

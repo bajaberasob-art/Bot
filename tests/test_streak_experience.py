@@ -12,7 +12,11 @@ import discord
 from PIL import Image
 
 import database
-from cogs.card_generator import _streak_card_theme, generate_streak_card
+from cogs.card_generator import (
+    _streak_card_theme,
+    format_streak_days_remaining,
+    generate_streak_card,
+)
 from cogs.levels import Levels
 from streak_experience import build_streak_context, format_time_remaining
 
@@ -67,6 +71,12 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
             webhook_id=None,
             content="hello",
         )
+
+    def test_remaining_days_use_arabic_singular_dual_and_plural_forms(self):
+        self.assertEqual(format_streak_days_remaining(1), "يوم واحد")
+        self.assertEqual(format_streak_days_remaining(2), "يومين")
+        self.assertEqual(format_streak_days_remaining(3), "3 أيام")
+        self.assertEqual(format_streak_days_remaining(11), "11 يومًا")
 
     async def test_default_stages_are_data_driven_and_extend_past_365_days(self):
         stages = await database.get_streak_stages()
@@ -418,9 +428,10 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
         message = self.make_message(channel=channel)
         message.add_reaction = AsyncMock(side_effect=forbidden)
         message.delete = AsyncMock()
+        generate_card = AsyncMock(return_value=io.BytesIO(b"card"))
         with patch(
             "cogs.levels.generate_streak_card",
-            new=AsyncMock(return_value=io.BytesIO(b"card")),
+            new=generate_card,
         ):
             await self.cog.on_message(message)
             await asyncio.gather(
@@ -431,6 +442,11 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((row["current_streak"], row["best_streak"]), (1, 1))
         self.assertEqual(row["text_xp"], 0)
         message.add_reaction.assert_awaited_once_with("🔥")
+        generate_card.assert_awaited_once()
+        self.assertEqual(
+            generate_card.await_args.kwargs["stages"],
+            await database.get_streak_stages(),
+        )
         channel.send.assert_awaited_once()
         self.assertEqual(set(channel.send.await_args.kwargs), {"file"})
         self.assertEqual(
@@ -544,7 +560,8 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_channel.send.await_count, 0)
 
     async def test_progress_card_renders_without_a_stage_asset(self):
-        stage = (await database.get_streak_stages())[0]
+        stages = await database.get_streak_stages()
+        stage = stages[0]
         state = {
             "current_streak": 1,
             "best_streak": 4,
@@ -556,8 +573,9 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
                 self.member,
                 state,
                 stage,
-                (await database.get_streak_stages())[1],
+                stages[1],
                 {"server_rank": 1, "global_rank": 1},
+                stages=stages,
             )
         with Image.open(result) as image:
             self.assertEqual(image.size, (1000, 300))
@@ -586,6 +604,7 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
                     stage,
                     next_stage,
                     {"server_rank": index + 1, "global_rank": index + 10},
+                    stages=stages,
                 )
                 image.seek(0)
                 cards.add(image.read())
@@ -596,6 +615,53 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(cards), 7)
         self.assertEqual(len(accents), 7)
+
+    async def test_streak_card_uses_configured_stage_names_and_thresholds(self):
+        stages = await database.get_streak_stages()
+        await database.upsert_streak_stage(
+            {
+                "stage_key": "millennium",
+                "threshold": 1000,
+                "name": "الألفية",
+                "message": "وصل {user} إلى {streak} يومًا.",
+                "image": None,
+                "color": "#88CCFF",
+                "reaction": "💠",
+                "description": "ألف يوم متواصل.",
+                "glow": 100,
+                "particle": "neon",
+            }
+        )
+        stages = await database.get_streak_stages()
+        stage = stages[-2]
+        next_stage = stages[-1]
+        state = {
+            "current_streak": 365,
+            "best_streak": 365,
+            "remaining": 635,
+            "progress": 0.0,
+        }
+        with patch("cogs.card_generator.fetch_image", new=AsyncMock(return_value=None)):
+            original = await generate_streak_card(
+                self.member,
+                state,
+                stage,
+                next_stage,
+                {"server_rank": 1, "global_rank": 1},
+                stages=stages,
+            )
+            edited_stages = [dict(item) for item in stages]
+            edited_stages[-1]["threshold"] = 1200
+            edited_stages[-1]["name"] = "ذروة"
+            edited = await generate_streak_card(
+                self.member,
+                {**state, "remaining": 835},
+                stage,
+                edited_stages[-1],
+                {"server_rank": 1, "global_rank": 1},
+                stages=edited_stages,
+            )
+        self.assertNotEqual(original.getvalue(), edited.getvalue())
 
 
 if __name__ == "__main__":

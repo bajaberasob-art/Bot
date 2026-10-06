@@ -133,6 +133,13 @@
     source: null,
     newer: false,
     activeView: sessionStorage.getItem("dashboard-view") || "overview",
+    aiControlCleanup: null,
+    themeTokens: null,
+    themeSaved: null,
+    themeDraft: null,
+    themeDirty: false,
+    themeSaving: false,
+    themeError: "",
     drawerOpen: false,
     overviewRange: sessionStorage.getItem("overview-range") || "7d",
     overviewHeatMode: "written",
@@ -387,6 +394,180 @@
       throw error;
     }
   }
+  function primeAIRequest(method, url, body) {
+    if (method === "GET") return api(url, { cache: "no-store" });
+    if (method === "POST") return writeApi(url, body || {});
+    return Promise.reject(new Error("unsupported_method"));
+  }
+  const THEME_PRESET_SOURCES = [
+    ["prime-blue", "أزرق PRIME", "primary", "secondary"],
+    ["indigo", "نيلي", "secondary", "accent"],
+    ["sky", "سماوي", "accent", "chart2"],
+    ["emerald", "زمردي", "chart2", "chart3"],
+    ["amber", "عنبر", "chart3", "chart4"],
+    ["rose", "وردي", "chart4", "chart5"],
+    ["violet", "بنفسجي", "chart5", "destructive"],
+    ["crimson", "قرمزي", "destructive", "primary"],
+    ["ice-blue", "أزرق جليدي", "foreground", "accent"],
+    ["muted-silver", "فضي", "mutedForeground", "foreground"],
+    ["blue-amber", "أزرق وعنبر", "primary", "chart3"],
+    ["indigo-emerald", "نيلي وزمردي", "secondary", "chart2"],
+    ["sky-violet", "سماوي وبنفسجي", "accent", "chart5"],
+    ["emerald-rose", "زمردي ووردي", "chart2", "chart4"],
+    ["amber-indigo", "عنبر ونيلي", "chart3", "secondary"],
+    ["rose-sky", "وردي وسماوي", "chart4", "accent"],
+    ["violet-blue", "بنفسجي وأزرق", "chart5", "primary"],
+    ["crimson-amber", "قرمزي وعنبر", "destructive", "chart3"],
+    ["ice-indigo", "جليدي ونيلي", "foreground", "secondary"],
+    ["silver-violet", "فضي وبنفسجي", "mutedForeground", "chart5"],
+  ];
+  const THEME_COLOR_FIELDS = [
+    ["primary", "لون التمييز والأزرار"],
+    ["secondary", "اللون الثانوي"],
+    ["background", "خلفية اللوحة"],
+    ["surface", "البطاقات والأسطح"],
+    ["surfaceAlt", "السطح الثانوي"],
+    ["text", "النص"],
+    ["muted", "النص الثانوي"],
+    ["border", "الحدود"],
+  ];
+  function themeTokenValue(mode, role) {
+    return state.themeTokens?.color?.[mode]?.[role]?.$value || "";
+  }
+  function buildDashboardTheme(mode, primary, secondary, preset = "custom", buttonStyle = "solid") {
+    return {
+      preset,
+      primary,
+      secondary,
+      background: themeTokenValue(mode, "background"),
+      surface: themeTokenValue(mode, "card"),
+      surfaceAlt: themeTokenValue(mode, "popover"),
+      text: themeTokenValue(mode, "foreground"),
+      muted: themeTokenValue(mode, "mutedForeground"),
+      border: themeTokenValue(mode, "border"),
+      buttonStyle,
+    };
+  }
+  function systemDashboardTheme() {
+    return buildDashboardTheme(
+      "dark",
+      themeTokenValue("dark", "primary"),
+      themeTokenValue("dark", "secondary"),
+      "prime-default",
+    );
+  }
+  function tokenFontStack(name) {
+    return (state.themeTokens?.typography?.fontFamily?.[name]?.$value || [])
+      .map((family) => /^[a-z-]+$/i.test(family) ? family : `"${String(family).replaceAll('"', "")}"`)
+      .join(", ");
+  }
+  function applyDashboardFoundationTokens() {
+    const root = document.documentElement;
+    const sans = tokenFontStack("sans");
+    const mono = tokenFontStack("mono");
+    const radius = state.themeTokens?.radius?.base?.$value;
+    const spacing = state.themeTokens?.spacing?.base?.$value;
+    if (!sans || !mono || !radius || !spacing) throw Error("theme_tokens_invalid");
+    root.style.setProperty("--prime-font-sans", sans);
+    root.style.setProperty("--prime-font-mono", mono);
+    root.style.setProperty("--prime-radius-base", radius);
+    root.style.setProperty("--prime-spacing-base", spacing);
+  }
+  function dashboardThemePresets() {
+    return THEME_PRESET_SOURCES.map(([id, label, primaryRole, secondaryRole]) => {
+      const theme = buildDashboardTheme(
+        "dark",
+        themeTokenValue("dark", primaryRole),
+        themeTokenValue("dark", secondaryRole),
+        id,
+      );
+      return { id, label, theme };
+    });
+  }
+  function applyDashboardTheme(theme) {
+    const root = document.documentElement;
+    if (!theme) {
+      root.classList.remove("dashboard-theme-enabled");
+      delete root.dataset.dashboardButtonStyle;
+      [
+        "--bg", "--surface", "--surface-2", "--line", "--text", "--muted",
+        "--blue", "--blurple", "--overview-ink", "--overview-muted",
+        "--overview-panel", "--overview-panel-raised", "--overview-border",
+        "--overview-blue", "--overview-cyan", "--prime-bg-base",
+        "--prime-bg-surface", "--prime-bg-card", "--prime-indigo",
+        "--prime-purple", "--prime-border", "--theme-action-foreground",
+      ].forEach((name) => root.style.removeProperty(name));
+      return;
+    }
+    const mapped = {
+      "--bg": theme.background,
+      "--surface": theme.surface,
+      "--surface-2": theme.surfaceAlt,
+      "--line": theme.border,
+      "--text": theme.text,
+      "--muted": theme.muted,
+      "--blue": theme.primary,
+      "--blurple": theme.secondary,
+      "--overview-ink": theme.text,
+      "--overview-muted": theme.muted,
+      "--overview-panel": theme.surface,
+      "--overview-panel-raised": theme.surfaceAlt,
+      "--overview-border": theme.border,
+      "--overview-blue": theme.primary,
+      "--overview-cyan": theme.secondary,
+      "--prime-bg-base": theme.background,
+      "--prime-bg-surface": theme.surface,
+      "--prime-bg-card": theme.surface,
+      "--prime-indigo": theme.primary,
+      "--prime-purple": theme.secondary,
+      "--prime-border": theme.border,
+      "--theme-action-foreground": themeActionForeground(theme.primary),
+    };
+    root.classList.add("dashboard-theme-enabled");
+    root.dataset.dashboardButtonStyle = theme.buttonStyle;
+    Object.entries(mapped).forEach(([name, value]) => root.style.setProperty(name, value));
+  }
+  function themeActionForeground(background) {
+    const dark = themeTokenValue("dark", "background");
+    const light = themeTokenValue("light", "primaryForeground");
+    const toLuminance = (hex) => {
+      const channels = hex.match(/[0-9a-f]{2}/gi)?.map((part) => parseInt(part, 16) / 255) || [];
+      if (channels.length !== 3) return 0;
+      const linear = channels.map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    };
+    const bg = toLuminance(background);
+    const darkL = toLuminance(dark), lightL = toLuminance(light);
+    const contrast = (luminance) => (Math.max(bg, luminance) + 0.05) / (Math.min(bg, luminance) + 0.05);
+    return contrast(darkL) >= contrast(lightL) ? dark : light;
+  }
+  async function loadDashboardTheme() {
+    const [tokensResponse, themeResponse] = await Promise.all([
+      api("api/design-system/tokens", { cache: "no-store" }),
+      api("api/user/theme", { cache: "no-store" }),
+    ]);
+    const [tokens, saved] = await Promise.all([
+      readJson(tokensResponse, {}),
+      readJson(themeResponse, {}),
+    ]);
+    const sans = tokens.typography?.fontFamily?.sans?.$value;
+    const mono = tokens.typography?.fontFamily?.mono?.$value;
+    if (
+      !tokensResponse.ok || !tokens.color?.dark || !tokens.color?.light || !themeResponse.ok
+      || !Array.isArray(sans) || !sans.length
+      || !Array.isArray(mono) || !mono.length
+      || typeof tokens.radius?.base?.$value !== "string"
+      || typeof tokens.spacing?.base?.$value !== "string"
+    ) {
+      throw Error("theme_load_failed");
+    }
+    state.themeTokens = tokens;
+    applyDashboardFoundationTokens();
+    state.themeSaved = saved.theme && typeof saved.theme === "object" ? saved.theme : null;
+    state.themeDraft = state.themeSaved ? clone(state.themeSaved) : null;
+    state.themeDirty = false;
+    applyDashboardTheme(state.themeSaved);
+  }
   // Shared components
   function avatar(src, name) {
     const a = el("div", { class: "avatar" });
@@ -500,6 +681,7 @@
     economy: { label: "الاقتصاد", icon: "◌", hint: "Economy" },
     community: { label: "المجتمع", icon: "◎", hint: "Community" },
     ai: { label: "الذكاء الاصطناعي", icon: "✧", hint: "AI Tools" },
+    appearance: { label: "المظهر الشخصي", icon: "◐", hint: "Personal Theme" },
     settings: { label: "الإعدادات", icon: "⚙", hint: "Configuration" },
     system: { label: "النظام", icon: "⌁", hint: "Runtime" },
   };
@@ -653,13 +835,14 @@
       navButton("economy"),
       navButton("community"),
       navButton("ai"),
+      navButton("appearance"),
       navButton("settings"),
       navButton("system"),
     );
     const moreButton = el(
       "button",
       {
-         class: `nav-item ${["onboarding", "gaming", "subscriptions", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
+         class: `nav-item ${["onboarding", "gaming", "subscriptions", "clan", "security", "moderation", "analytics", "leveling", "economy", "community", "ai", "appearance", "settings", "system"].includes(state.activeView) ? "active" : ""}`,
         type: "button",
         "aria-expanded": "false",
         onClick: () => {
@@ -9223,8 +9406,237 @@
     queueMicrotask(lvRender);
     return root;
   }
+  function syncThemeEditor() {
+    const theme = state.themeDraft || systemDashboardTheme();
+    THEME_COLOR_FIELDS.forEach(([key]) => {
+      const input = $(`#theme-color-${key}`);
+      if (input && theme[key]) input.value = theme[key];
+      const value = $(`[data-theme-color-value="${key}"]`);
+      if (value) value.textContent = theme[key] || "";
+    });
+    document.querySelectorAll("[data-theme-preset]").forEach((button) => {
+      const selected = button.dataset.themePreset === theme.preset;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    document.querySelectorAll("[data-theme-button-style]").forEach((button) => {
+      const selected = button.dataset.themeButtonStyle === theme.buttonStyle;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    const save = $(".theme-save");
+    if (save) {
+      save.disabled = !state.themeDirty || state.themeSaving || !state.online;
+      save.textContent = state.themeSaving ? "جارٍ الحفظ…" : "حفظ المظهر";
+    }
+    const status = $(".theme-save-status");
+    if (status) {
+      status.textContent = state.themeSaving
+        ? "جارٍ حفظ المظهر في حسابك…"
+        : state.themeDirty
+          ? "معاينة مؤقتة — احفظ لتثبيت التغييرات لحسابك"
+          : state.themeSaved
+            ? "المظهر محفوظ لحساب Discord الخاص بك"
+            : "المظهر الحالي هو الافتراضي؛ لن يتغير للمستخدمين الآخرين";
+      status.classList.toggle("is-dirty", state.themeDirty);
+    }
+  }
+  function setThemeDraft(nextTheme) {
+    state.themeDraft = nextTheme;
+    state.themeDirty = true;
+    applyDashboardTheme(nextTheme);
+    syncThemeEditor();
+  }
+  async function saveDashboardTheme() {
+    if (!state.themeDirty || state.themeSaving || !state.themeDraft) return;
+    state.themeSaving = true;
+    syncThemeEditor();
+    try {
+      const response = await writeApi("api/user/theme", { theme: state.themeDraft });
+      const data = await readJson(response, {});
+      if (!response.ok || !data.ok || !data.theme) {
+        toast(data.error === "validation" ? "تحقق من ألوان المظهر ثم حاول مجدداً" : "تعذر حفظ المظهر");
+        return;
+      }
+      state.themeSaved = clone(data.theme);
+      state.themeDraft = clone(data.theme);
+      state.themeDirty = false;
+      toast("تم حفظ المظهر لحسابك فقط", "success", 3200);
+    } catch (error) {
+      if (error.message !== "unauth") toast("تعذر الاتصال لحفظ المظهر");
+    } finally {
+      state.themeSaving = false;
+      syncThemeEditor();
+    }
+  }
+  async function resetDashboardTheme() {
+    if (state.themeSaving) return;
+    state.themeSaving = true;
+    syncThemeEditor();
+    try {
+      const response = await writeApi("api/user/theme", { theme: null });
+      const data = await readJson(response, {});
+      if (!response.ok || !data.ok) {
+        toast("تعذر استعادة المظهر الافتراضي");
+        return;
+      }
+      state.themeSaved = null;
+      state.themeDraft = systemDashboardTheme();
+      state.themeDirty = false;
+      applyDashboardTheme(null);
+      toast("تمت استعادة مظهر PRIME الافتراضي", "success", 3200);
+    } catch (error) {
+      if (error.message !== "unauth") toast("تعذر الاتصال لاستعادة المظهر");
+    } finally {
+      state.themeSaving = false;
+      syncThemeEditor();
+    }
+  }
+  function appearanceView() {
+    if (state.themeError || !state.themeTokens) {
+      return el("section", { class: "theme-settings-view" },
+        el("div", { class: "theme-settings-heading" },
+          el("span", { class: "theme-kicker", text: "PRIME / PERSONAL STYLE" }),
+          el("h1", { text: "المظهر الشخصي" })),
+        el("div", { class: "theme-error", role: "alert" },
+          el("strong", { text: "تعذر تحميل خيارات المظهر" }),
+          el("p", { text: "تعذر قراءة رموز PRIME أو إعدادات حسابك. لم يتم تطبيق إعدادات بديلة." }),
+          el("button", { type: "button", class: "btn primary", text: "إعادة المحاولة", onClick: async () => {
+            state.themeError = "";
+            try {
+              await loadDashboardTheme();
+              renderPage();
+            } catch (_) {
+              state.themeError = "theme_load_failed";
+              renderPage();
+            }
+          } })));
+    }
+    const currentTheme = state.themeDraft || systemDashboardTheme();
+    if (!state.themeDraft) state.themeDraft = currentTheme;
+    const presets = dashboardThemePresets();
+    const presetGrid = el("div", { class: "theme-preset-grid", "aria-label": "المظاهر الجاهزة" },
+      ...presets.map(({ id, label, theme }) => el("button", {
+        type: "button",
+        class: "theme-preset",
+        "data-theme-preset": id,
+        "aria-pressed": String(currentTheme.preset === id),
+        style: `--swatch-primary:${theme.primary};--swatch-secondary:${theme.secondary}`,
+        onClick: () => setThemeDraft(clone(theme)),
+      },
+        el("span", { class: "theme-preset-swatches", "aria-hidden": "true" },
+          el("i"), el("i"), el("i")),
+        el("span", { class: "theme-preset-copy" },
+          el("strong", { text: label }),
+          el("small", { text: "PRIME · AMOLED" })))));
+    const colorControls = el("div", { class: "theme-color-grid" },
+      ...THEME_COLOR_FIELDS.map(([key, label]) => {
+        const input = el("input", {
+          id: `theme-color-${key}`,
+          type: "color",
+          value: currentTheme[key],
+          "aria-label": label,
+        });
+        input.addEventListener("input", () => {
+          const base = state.themeDraft || systemDashboardTheme();
+          setThemeDraft({ ...base, preset: "custom", [key]: input.value });
+        });
+        return el("label", { class: "theme-color-control", for: `theme-color-${key}` },
+          el("span", { class: "theme-color-chip", "aria-hidden": "true" }, input),
+          el("span", { class: "theme-color-copy" },
+            el("strong", { text: label }),
+            el("code", { "data-theme-color-value": key, text: currentTheme[key] })));
+      }));
+    const buttonStyles = el("div", {
+      class: "theme-button-options",
+      role: "group",
+      "aria-label": "نمط الأزرار",
+    },
+      ...[
+        ["solid", "ممتلئ", "زر بارز"],
+        ["soft", "هادئ", "زر بلون مخفف"],
+        ["outline", "محدد", "زر بإطار"],
+      ].map(([id, label, hint]) => el("button", {
+        type: "button",
+        class: "theme-button-option",
+        "data-theme-button-style": id,
+        "aria-pressed": String(currentTheme.buttonStyle === id),
+        onClick: () => setThemeDraft({
+          ...(state.themeDraft || systemDashboardTheme()),
+          buttonStyle: id,
+        }),
+      },
+        el("span", { class: `theme-button-sample theme-button-${id}`, text: "PRIME" }),
+        el("strong", { text: label }),
+        el("small", { text: hint }))));
+    const preview = el("section", {
+      class: "theme-preview-panel",
+      "aria-label": "معاينة مباشرة للمظهر",
+    },
+      el("div", { class: "theme-preview-heading" },
+        el("div", {}, el("span", { class: "theme-kicker", text: "LIVE PREVIEW" }),
+          el("h2", { text: "معاينة لوحة PRIME" })),
+        el("span", { class: "theme-live-pill", text: "مباشر" })),
+      el("div", { class: "theme-preview-shell" },
+        el("aside", { class: "theme-preview-sidebar" },
+          el("strong", { text: "PRIME" }),
+          el("span", { class: "theme-preview-nav is-active", text: "نظرة عامة" }),
+          el("span", { class: "theme-preview-nav", text: "التذاكر" }),
+          el("span", { class: "theme-preview-nav", text: "الأوامر" })),
+        el("div", { class: "theme-preview-main" },
+          el("div", { class: "theme-preview-topline" },
+            el("span", { text: "مركز القيادة" }),
+            el("span", { class: "theme-preview-avatar", text: "P" })),
+          el("div", { class: "theme-preview-stats" },
+            el("div", {}, el("small", { text: "الأعضاء" }), el("strong", { text: "1,284" })),
+            el("div", {}, el("small", { text: "حالة البوت" }),
+              el("strong", { class: "theme-preview-online", text: "متصل" }))),
+          el("div", { class: "theme-preview-card" },
+            el("span", { class: "theme-preview-accent" }),
+            el("div", {}, el("strong", { text: "أدوات السيرفر" }),
+              el("small", { text: "إدارة PRIME من مساحة واحدة" })),
+            el("button", { type: "button", class: "theme-preview-action", text: "فتح الإعدادات" })))));
+    const page = el("section", { class: "theme-settings-view" },
+      el("header", { class: "theme-settings-heading" },
+        el("div", {},
+          el("span", { class: "theme-kicker", text: "PRIME / PERSONAL STYLE" }),
+          el("h1", { text: "المظهر الشخصي" }),
+          el("p", { text: "اختر مظهراً للوحة، عدّل الألوان والأزرار، وشاهد التغيير فوراً. تفضيلاتك مرتبطة بحسابك فقط." })),
+        el("span", { class: "theme-account-badge", text: "خاص بحسابك" })),
+      el("div", { class: "theme-settings-layout" },
+        el("div", { class: "theme-settings-main" },
+          el("section", { class: "theme-editor-panel" },
+            el("div", { class: "theme-section-heading" },
+              el("div", {}, el("h2", { text: "المظاهر الجاهزة" }),
+                el("p", { text: "20 تركيبة مبنية على ألوان PRIME Design System." })),
+              el("span", { class: "theme-count", text: "20" })),
+            presetGrid),
+          el("section", { class: "theme-editor-panel" },
+            el("div", { class: "theme-section-heading" },
+              el("div", {}, el("h2", { text: "تخصيص الألوان" }),
+                el("p", { text: "غيّر الألوان التي تريدها؛ سيظهر التعديل مباشرة على اللوحة." }))),
+            colorControls),
+          el("section", { class: "theme-editor-panel" },
+            el("div", { class: "theme-section-heading" },
+              el("div", {}, el("h2", { text: "شكل الأزرار" }),
+                el("p", { text: "اختر طريقة عرض الأزرار الأساسية." }))),
+            buttonStyles)),
+        el("div", { class: "theme-settings-aside" },
+          preview,
+          el("div", { class: "theme-save-panel" },
+            el("div", { class: "theme-save-status", role: "status", "aria-live": "polite" }),
+            el("div", { class: "theme-save-actions" },
+              el("button", { type: "button", class: "theme-reset", text: "استعادة الافتراضي", onClick: resetDashboardTheme }),
+              el("button", { type: "button", class: "theme-save btn primary", text: "حفظ المظهر", disabled: !state.themeDirty, onClick: saveDashboardTheme }))))));
+    queueMicrotask(syncThemeEditor);
+    return page;
+  }
   function renderPage() {
     const main = $("#main");
+    if (typeof state.aiControlCleanup === "function") {
+      state.aiControlCleanup();
+      state.aiControlCleanup = null;
+    }
     main.replaceChildren();
     if (state.newer) {
       const n = el("div", {
@@ -9258,7 +9670,27 @@
     else if (view === "analytics") main.append(analyticsView());
     else if (view === "economy") main.append(economyView());
     else if (view === "leveling") main.append(levelingView());
-    else if (["moderation", "community", "ai", "system"].includes(view)) main.append(operationsView(view));
+    else if (view === "ai") {
+      const panel = el("div", { class: "prime-ai-host" });
+      main.append(panel);
+      if (window.PrimeAIControl?.mount) {
+        state.aiControlCleanup = window.PrimeAIControl.mount(panel, {
+          guildId: state.guild.id,
+          request: primeAIRequest,
+          toast,
+        });
+      } else {
+        panel.append(
+          el("div", {
+            class: "notice",
+            role: "alert",
+            text: "تعذر تحميل وحدة PRIME AI. أعد تحميل لوحة التحكم.",
+          }),
+        );
+      }
+    }
+    else if (view === "appearance") main.append(appearanceView());
+    else if (["moderation", "community", "system"].includes(view)) main.append(operationsView(view));
     else main.append(settingsView());
     renderDock();
     renderDynamic();
@@ -10055,6 +10487,12 @@
         me = await readJson(r, {});
       if (!me.auth) return redirect();
       state.session = me.session;
+      try {
+        await loadDashboardTheme();
+      } catch (error) {
+        if (error.message === "unauth") throw error;
+        state.themeError = "theme_load_failed";
+      }
       if (!state.session.guilds?.length) {
         const inviteUrl = state.session.invite_url;
          const botReady = state.session.bot_ready === true;

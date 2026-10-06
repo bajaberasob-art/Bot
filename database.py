@@ -222,6 +222,52 @@ def connect(row_factory=None) -> _Connection:
     return _Connection(row_factory)
 
 
+async def get_user_dashboard_theme(user_id: str) -> Optional[Dict[str, Any]]:
+    """Read the signed-in Discord user's private dashboard theme."""
+    async with connect() as db:
+        async with db.execute(
+            "SELECT theme_json FROM user_dashboard_preferences WHERE user_id = ?",
+            (str(user_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        return None
+    try:
+        value = json.loads(row[0])
+    except (TypeError, ValueError):
+        logger.warning("Ignoring invalid dashboard theme JSON for user %s", user_id)
+        return None
+    return value if isinstance(value, dict) else None
+
+
+async def save_user_dashboard_theme(
+    user_id: str,
+    theme: Optional[Dict[str, Any]],
+) -> None:
+    """Save or clear one Discord user's dashboard theme without touching guild settings."""
+    async with connect() as db:
+        if theme is None:
+            await db.execute(
+                "DELETE FROM user_dashboard_preferences WHERE user_id = ?",
+                (str(user_id),),
+            )
+        else:
+            await db.execute(
+                """
+                INSERT INTO user_dashboard_preferences (user_id, theme_json)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    theme_json = excluded.theme_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    str(user_id),
+                    json.dumps(theme, ensure_ascii=False, separators=(",", ":")),
+                ),
+            )
+        await db.commit()
+
+
 async def _apply_streak_database_migration(db: aiosqlite.Connection) -> None:
     """Add streak state and the daily ledger without replacing existing rows.
 
@@ -677,6 +723,198 @@ async def init_db() -> None:
                     PRIMARY KEY (user_id, guild_id)
                 );
             """)
+            # Personal dashboard preferences are keyed to the Discord account,
+            # not a guild, so one user's theme never changes another user's UI.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS user_dashboard_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    theme_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            # PRIME AI is an additive server-scoped layer. It stores only
+            # operator settings, explicitly supplied memories, and metadata
+            # audit events; it does not duplicate XP, streak, or subscription
+            # state and does not persist chat transcripts.
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    system_prompt TEXT NOT NULL DEFAULT '',
+                    allowed_channel_ids TEXT NOT NULL DEFAULT '[]',
+                    allowed_channels_migrated INTEGER NOT NULL DEFAULT 0
+                        CHECK (allowed_channels_migrated IN (0, 1)),
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    updated_by INTEGER,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            async with db.execute("PRAGMA table_info(prime_ai_settings)") as cur:
+                ai_settings_columns = {str(row[1]) for row in await cur.fetchall()}
+            if "allowed_channels_migrated" not in ai_settings_columns:
+                await db.execute(
+                    "ALTER TABLE prime_ai_settings ADD COLUMN "
+                    "allowed_channels_migrated INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (allowed_channels_migrated IN (0, 1))"
+                )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_memories (
+                    memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    created_by INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    scope TEXT NOT NULL DEFAULT 'SERVER',
+                    scope_id TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    expires_at TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    source TEXT NOT NULL DEFAULT 'ADMIN',
+                    confidence REAL NOT NULL DEFAULT 1.0,
+                    status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    owner_user_id INTEGER,
+                    candidate_expires_at TEXT,
+                    confirmation_message_id INTEGER
+                );
+            """)
+            # Additive compatibility for workspaces that already have the
+            # original server-only PRIME AI memory table.
+            async with db.execute("PRAGMA table_info(prime_ai_memories)") as cur:
+                memory_columns = {str(row[1]) for row in await cur.fetchall()}
+            for column, declaration in (
+                ("scope", "TEXT NOT NULL DEFAULT 'SERVER'"),
+                ("scope_id", "TEXT NOT NULL DEFAULT ''"),
+                ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+                ("expires_at", "TEXT"),
+                # ALTER TABLE ADD COLUMN requires a constant default. Existing
+                # rows inherit their original creation timestamp below.
+                ("updated_at", "TEXT NOT NULL DEFAULT ''"),
+                ("source", "TEXT NOT NULL DEFAULT 'ADMIN'"),
+                ("confidence", "REAL NOT NULL DEFAULT 1.0"),
+                ("status", "TEXT NOT NULL DEFAULT 'ACTIVE'"),
+                ("owner_user_id", "INTEGER"),
+                ("candidate_expires_at", "TEXT"),
+                ("confirmation_message_id", "INTEGER"),
+            ):
+                if column not in memory_columns:
+                    await db.execute(
+                        f"ALTER TABLE prime_ai_memories ADD COLUMN {column} {declaration}"
+                    )
+            await db.execute(
+                "UPDATE prime_ai_memories SET updated_at = created_at "
+                "WHERE updated_at IS NULL OR updated_at = ''"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_memories_owner_status "
+                "ON prime_ai_memories(guild_id, scope, owner_user_id, status, memory_id DESC);"
+            )
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_audit (
+                    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    detail TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_control_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    updated_by INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_skills (
+                    guild_id INTEGER NOT NULL,
+                    skill_key TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    revision INTEGER NOT NULL DEFAULT 0,
+                    updated_by INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, skill_key)
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_operations (
+                    operation_id TEXT PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER,
+                    request TEXT NOT NULL DEFAULT '',
+                    detected_intent TEXT NOT NULL DEFAULT '',
+                    skill TEXT NOT NULL DEFAULT '',
+                    tools_json TEXT NOT NULL DEFAULT '[]',
+                    target_json TEXT NOT NULL DEFAULT '{}',
+                    permissions_json TEXT NOT NULL DEFAULT '{}',
+                    confirmation TEXT NOT NULL DEFAULT 'required',
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    steps_json TEXT NOT NULL DEFAULT '[]',
+                    execution_result TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT NOT NULL,
+                    message_id INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_moderation_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    message_content TEXT NOT NULL DEFAULT '',
+                    detection_type TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    rule_matched TEXT NOT NULL DEFAULT '',
+                    action TEXT NOT NULL DEFAULT 'LOG',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT
+                );
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prime_ai_request_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER,
+                    channel_id INTEGER,
+                    skill TEXT NOT NULL DEFAULT 'conversation',
+                    mode TEXT NOT NULL DEFAULT 'CHAT',
+                    result TEXT NOT NULL DEFAULT 'success',
+                    latency_ms INTEGER NOT NULL DEFAULT 0,
+                    tokens_used INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_memories_guild "
+                "ON prime_ai_memories(guild_id, scope, scope_id, memory_id DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_audit_guild "
+                "ON prime_ai_audit(guild_id, audit_id DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_operations_guild "
+                "ON prime_ai_operations(guild_id, created_at DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_moderation_guild "
+                "ON prime_ai_moderation_events(guild_id, created_at DESC);"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_prime_ai_requests_guild "
+                "ON prime_ai_request_events(guild_id, created_at DESC);"
+            )
 
             # Phase 1 Lona leveling foundation. These tables are independent
             # of wallet/economy data and are additive to the existing schema.
@@ -3271,6 +3509,70 @@ async def get_streak_ranks(guild_id: int, user_id: int) -> Dict[str, int]:
         ) as cur:
             global_rank = int((await cur.fetchone())["rank"])
     return {"server_rank": server_rank, "global_rank": global_rank}
+
+
+async def get_streak_leaderboard(
+    guild_id: int,
+    limit: int = 10,
+) -> List[Dict[str, int]]:
+    """Read the existing server streak records without creating parallel state."""
+    limit = max(1, min(20, int(limit)))
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT user_id, MAX(COALESCE(current_streak, 0)) AS current_streak
+            FROM user_levels
+            WHERE guild_id = ? AND COALESCE(current_streak, 0) > 0
+            GROUP BY user_id
+            ORDER BY current_streak DESC, user_id ASC
+            LIMIT ?
+            """,
+            (int(guild_id), limit),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [
+        {"user_id": int(row["user_id"]), "current_streak": int(row["current_streak"])}
+        for row in rows
+    ]
+
+
+async def get_streak_dashboard_analytics(guild_id: int) -> Dict[str, Any]:
+    """Aggregate existing streak records without synthesizing member or history data."""
+    async with connect(aiosqlite.Row) as db:
+        async with db.execute(
+            """
+            SELECT
+                COUNT(*) AS tracked_members,
+                COALESCE(SUM(CASE WHEN COALESCE(current_streak, 0) > 0 THEN 1 ELSE 0 END), 0)
+                    AS current_streak_members,
+                COALESCE(SUM(COALESCE(current_streak, 0)), 0)
+                    AS total_current_streak_days,
+                COALESCE(AVG(CASE WHEN COALESCE(current_streak, 0) > 0
+                    THEN current_streak END), 0) AS average_current_streak,
+                COALESCE(MAX(COALESCE(current_streak, 0)), 0)
+                    AS highest_current_streak,
+                COALESCE(SUM(CASE WHEN COALESCE(best_streak, 0) > 0 THEN 1 ELSE 0 END), 0)
+                    AS members_with_best_streak,
+                COALESCE(AVG(CASE WHEN COALESCE(best_streak, 0) > 0
+                    THEN best_streak END), 0) AS average_best_streak,
+                COALESCE(MAX(COALESCE(best_streak, 0)), 0) AS highest_best_streak
+            FROM user_levels
+            WHERE guild_id = ?
+              AND (COALESCE(current_streak, 0) > 0 OR COALESCE(best_streak, 0) > 0)
+            """,
+            (int(guild_id),),
+        ) as cur:
+            row = await cur.fetchone()
+    return {
+        "tracked_members": int(row["tracked_members"] or 0),
+        "current_streak_members": int(row["current_streak_members"] or 0),
+        "total_current_streak_days": int(row["total_current_streak_days"] or 0),
+        "average_current_streak": round(float(row["average_current_streak"] or 0), 2),
+        "highest_current_streak": int(row["highest_current_streak"] or 0),
+        "members_with_best_streak": int(row["members_with_best_streak"] or 0),
+        "average_best_streak": round(float(row["average_best_streak"] or 0), 2),
+        "highest_best_streak": int(row["highest_best_streak"] or 0),
+    }
 
 
 async def set_streak_reminder(

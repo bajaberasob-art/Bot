@@ -373,7 +373,7 @@ class Levels(EngagementXP, commands.Cog):
                         exc_info=True,
                     )
 
-            _, ranks, context, _ = await self._build_streak_context(message, state)
+            stages, ranks, context, _ = await self._build_streak_context(message, state)
             card_state = {
                 **state,
                 "remaining": context["remaining"],
@@ -386,6 +386,7 @@ class Levels(EngagementXP, commands.Cog):
                 context["stage"],
                 context["next_stage"],
                 ranks,
+                stages=stages,
             )
             # A confirmed streak is represented only by its standalone PNG.
             # Keep success, stage-up and milestone prose out of this channel flow.
