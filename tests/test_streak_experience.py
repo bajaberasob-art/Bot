@@ -414,6 +414,17 @@ class StreakExperienceTests(unittest.IsolatedAsyncioTestCase):
                 "message": "تم تفعيل التذكير مجدداً",
             }}}}},
         )
+        async with database.connect() as db:
+            await db.execute(
+                "UPDATE streak_reminder_settings SET enabled_at = ? "
+                "WHERE guild_id = ? AND user_id = ?",
+                (
+                    datetime(2026, 10, 6, 19, tzinfo=RIYADH).isoformat(),
+                    self.guild_id,
+                    self.user_id,
+                ),
+            )
+            await db.commit()
         next_delivery = await database.claim_due_streak_reminders(
             datetime(2026, 10, 6, 20, 31, tzinfo=RIYADH)
         )
